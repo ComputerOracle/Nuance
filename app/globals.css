@@ -1,0 +1,123 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------
+ * Design tokens
+ * Colors are oklch to match the source design 1:1. Generated Tailwind
+ * utilities: bg-bg, text-fg, bg-surface-1, border-border-2, etc.
+ * ------------------------------------------------------------------- */
+@theme {
+  --color-bg: oklch(0.15 0.02 279);
+  --color-fg: oklch(0.94 0.01 279);
+
+  --color-fg-muted: oklch(0.75 0.01 279); /* nav links */
+  --color-fg-dim: oklch(0.68 0.01 279); /* hero subtext */
+  --color-fg-dim-2: oklch(0.62 0.01 279); /* card body copy */
+  --color-fg-faint: oklch(0.55 0.01 279); /* eyebrows, stat labels */
+  --color-fg-faint-2: oklch(0.5 0.01 279); /* footer, ticker strip */
+  --color-fg-hover: oklch(0.7 0.01 279);
+
+  --color-surface-1: oklch(0.18 0.02 279); /* feature/use-case cards */
+  --color-surface-2: oklch(0.16 0.03 279); /* demo panel, network panel */
+  --color-surface-3: oklch(0.13 0.02 279); /* validator row */
+
+  --color-border-1: oklch(0.26 0.02 279); /* card border */
+  --color-border-2: oklch(0.28 0.03 279); /* panel border */
+  --color-border-3: oklch(0.22 0.02 279); /* section dividers */
+  --color-border-4: oklch(0.3 0.02 279); /* badge border */
+  --color-border-5: oklch(0.32 0.02 279); /* outline button border */
+  --color-border-6: oklch(0.34 0.02 279); /* nav "Launch App" border */
+
+  --color-chip: oklch(0.2 0.02 279); /* badge background */
+  --color-chip-hover: oklch(0.24 0.02 279); /* nav / demo button bg */
+  --color-chip-hover-2: oklch(0.28 0.02 279); /* nav / demo button bg:hover */
+
+  --color-accent: oklch(0.95 0 0); /* primary (white) CTA bg */
+  --color-accent-fg: oklch(0.1 0 0); /* primary CTA text */
+
+  --color-dot-queued: oklch(0.28 0.02 279);
+  --color-dot-active: oklch(0.34 0.02 279);
+  --color-dot-done: oklch(0.4 0 0 / 0.4);
+
+  --color-verdict-bg: oklch(0.4 0 0 / 0.15);
+  --color-verdict-border: oklch(0.5 0 0 / 0.4);
+
+  /* App-only semantic tokens (status badges, consensus verdicts, votes) */
+  --color-positive: oklch(0.72 0.16 165); /* approved / YES / consensus-approved */
+  --color-positive-text: oklch(0.78 0.16 165);
+  --color-positive-fg: oklch(0.12 0.02 165); /* text on solid positive button */
+  --color-negative: oklch(0.6 0.19 30); /* disputed / NO / consensus-disputed */
+  --color-negative-text: oklch(0.78 0.15 30);
+  --color-review: oklch(0.62 0.2 305); /* in_review, active nav dot, analyzing */
+  --color-review-text: oklch(0.78 0.14 305);
+  --color-info: oklch(0.62 0.17 248); /* in_progress */
+  --color-info-text: oklch(0.78 0.13 248);
+  --color-warn-text: oklch(0.75 0.16 90); /* mid trust score */
+  --color-neutral: oklch(0.3 0.01 279); /* pending badge */
+  --color-pending-text: oklch(0.65 0.01 279);
+  --color-nav-active: oklch(0.19 0.02 279);
+  --color-fg-meta: oklch(0.6 0.01 279); /* secondary meta text */
+  --color-fg-bright: oklch(0.85 0.01 279); /* wallet address, reasoning copy */
+  --color-overlay: oklch(0.05 0 0); /* modal scrim */
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-brand-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+}
+
+/* Layered (not global) so utility classes like text-accent-fg still win:
+   Tailwind v4's utilities live in a CSS cascade layer, and any unlayered
+   rule beats a layered one regardless of specificity. */
+@layer base {
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: oklch(0.32 0.03 279);
+    border-radius: 4px;
+  }
+}
