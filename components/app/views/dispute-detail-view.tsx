@@ -1,42 +1,195 @@
-import type { Dispute, DisputeVerdict } from "@/components/app/types";
+import { useEffect, useRef, useState } from "react";
+import type { Dispute, DisputeEvidence, DisputeMessage, DisputeVerdict } from "@/components/app/types";
 import { ConsensusPanel, type ConsensusVerdict } from "@/components/app/consensus-panel";
+import { formatAddress } from "@/components/app/status";
+import * as api from "@/lib/api";
 
 export function DisputeDetailView({
   dispute,
   stage,
-  evidenceText,
   verdict,
+  currentWalletAddress,
   onBack,
-  onEvidenceChange,
-  onSubmitEvidence,
+  onEvidenceSubmitted,
   onEnforceRuling,
 }: {
   dispute: Dispute;
   stage: number;
-  evidenceText: string;
   verdict: DisputeVerdict | null;
+  currentWalletAddress?: string | null;
   onBack: () => void;
-  onEvidenceChange: (v: string) => void;
-  onSubmitEvidence: () => void;
+  onEvidenceSubmitted?: (jobId: string) => void;
   onEnforceRuling: () => void;
 }) {
+  const [messages, setMessages] = useState<DisputeMessage[]>([]);
+  const [evidenceList, setEvidenceList] = useState<DisputeEvidence[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [evidenceDesc, setEvidenceDesc] = useState("");
+  const [evidenceLink, setEvidenceLink] = useState("");
+  const [sendingMsg, setSendingMsg] = useState(false);
+  const [submittingEv, setSubmittingEv] = useState(false);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  // Poll messages every 3s
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchMessages = async () => {
+      try {
+        const data = await api.getDisputeMessages(dispute.id);
+        if (!cancelled) {
+          setMessages(
+            data.map((m) => ({
+              id: m.id,
+              disputeId: m.dispute_id,
+              senderAddress: m.sender_address,
+              content: m.content,
+              createdAt: m.created_at,
+            }))
+          );
+        }
+      } catch {
+        // Fallback silently during polling
+      }
+    };
+
+    fetchMessages();
+    const interval = setInterval(fetchMessages, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [dispute.id]);
+
+  // Poll evidence every 4s
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchEvidence = async () => {
+      try {
+        const data = await api.getDisputeEvidence(dispute.id);
+        if (!cancelled) {
+          setEvidenceList(
+            data.map((e) => ({
+              id: e.id,
+              disputeId: e.dispute_id,
+              submitterAddress: e.submitter_address,
+              description: e.description,
+              link: e.link,
+              createdAt: e.created_at,
+            }))
+          );
+        }
+      } catch {
+        // Fallback silently during polling
+      }
+    };
+
+    fetchEvidence();
+    const interval = setInterval(fetchEvidence, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [dispute.id]);
+
+  // Scroll chat on new messages
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length]);
+
+  const handleSendMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!chatInput.trim() || sendingMsg) return;
+    setSendingMsg(true);
+    setErrorBanner(null);
+    try {
+      const res = await api.sendDisputeMessage(dispute.id, chatInput.trim());
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: res.id,
+          disputeId: res.dispute_id,
+          senderAddress: res.sender_address,
+          content: res.content,
+          createdAt: res.created_at,
+        },
+      ]);
+      setChatInput("");
+    } catch (err) {
+      setErrorBanner(
+        err instanceof Error ? err.message : "Failed to send message. Connect your wallet."
+      );
+    } finally {
+      setSendingMsg(false);
+    }
+  };
+
+  const handleSubmitEvidence = async () => {
+    if (!evidenceDesc.trim() || submittingEv) return;
+    setSubmittingEv(true);
+    setErrorBanner(null);
+    try {
+      const res = await api.submitEvidence(
+        dispute.id,
+        evidenceDesc.trim(),
+        evidenceLink.trim() || null
+      );
+      setEvidenceList((prev) => [
+        ...prev,
+        {
+          id: res.id,
+          disputeId: res.dispute_id,
+          submitterAddress: res.submitter_address,
+          description: res.description,
+          link: res.link,
+          createdAt: res.created_at,
+        },
+      ]);
+      setEvidenceDesc("");
+      setEvidenceLink("");
+      if (res.consensus_job_id && onEvidenceSubmitted) {
+        onEvidenceSubmitted(String(res.consensus_job_id));
+      }
+    } catch (err) {
+      setErrorBanner(
+        err instanceof Error ? err.message : "Failed to submit evidence. Connect your wallet."
+      );
+    } finally {
+      setSubmittingEv(false);
+    }
+  };
+
   const consensusVerdict: ConsensusVerdict | null = verdict
     ? {
         label: verdict.label,
-        colorClass: "text-positive-text",
-        panelBgClass: "bg-positive/10",
-        panelBorderClass: "border-positive/30",
+        colorClass: verdict.approved ? "text-positive-text" : "text-negative-text",
+        panelBgClass: verdict.approved ? "bg-positive/10" : "bg-negative/10",
+        panelBorderClass: verdict.approved ? "border-positive/30" : "border-negative/30",
         reasoning: verdict.reasoning,
         actions: (
           <button
             onClick={onEnforceRuling}
-            className="cursor-pointer rounded-lg border-none bg-positive px-4 py-2.5 text-[13px] font-semibold text-positive-fg transition-[filter] hover:brightness-110"
+            className={`cursor-pointer rounded-lg border-none px-4 py-2.5 text-[13px] font-semibold transition-[filter] hover:brightness-110 ${
+              verdict.approved
+                ? "bg-positive text-positive-fg"
+                : "bg-negative text-white"
+            }`}
           >
             Enforce Ruling On-Chain
           </button>
         ),
       }
     : null;
+
+  const normalizedCurrent = currentWalletAddress?.toLowerCase();
+  const isParticipant =
+    Boolean(normalizedCurrent) &&
+    (normalizedCurrent === dispute.openedByAddress.toLowerCase() ||
+      normalizedCurrent === dispute.counterpartyAddress.toLowerCase());
+  const isTerminal =
+    dispute.statusKey === "approved" || stage === 3 || verdict !== null;
 
   return (
     <div style={{ animation: "fadeUp 0.3s ease" }}>
@@ -46,48 +199,234 @@ export function DisputeDetailView({
       >
         ← Back to court
       </div>
-      <div className="font-display text-2xl font-bold">
-        {dispute.agentA}{" "}
-        <span className="font-medium text-fg-meta">vs</span> {dispute.agentB}
-      </div>
-      <div className="mt-2 max-w-[640px] text-sm text-fg-dim-2">
-        {dispute.issue}
+
+      {isTerminal && (
+        <div className="mb-4 rounded-xl border border-positive/30 bg-positive/10 px-4 py-3 text-xs font-medium text-positive-text flex items-center justify-between">
+          <span>
+            ✓ This dispute room has been adjudicated by AI Validator Consensus and is preserved as a historical record.
+          </span>
+          <span className="font-mono text-[11px] font-semibold uppercase tracking-wider">
+            Settled
+          </span>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="font-display text-2xl font-bold">
+            {formatAddress(dispute.openedByAddress)}{" "}
+            <span className="font-medium text-fg-meta">vs</span>{" "}
+            {formatAddress(dispute.counterpartyAddress)}
+          </div>
+          <div className="mt-1 text-sm text-fg-dim-2">
+            Dispute Room #{dispute.id} · Stake:{" "}
+            <span className="font-semibold text-fg font-brand-mono">
+              {dispute.amount.toLocaleString()} USDC
+            </span>
+          </div>
+        </div>
+        <div className="rounded-full border border-border-4 bg-surface-2 px-3 py-1 text-xs font-mono text-fg-meta">
+          Status: {dispute.statusKey}
+        </div>
       </div>
 
-      <div className="mt-7 grid grid-cols-1 gap-6 lg:grid-cols-[1.1fr_1fr]">
-        <div>
-          <div className="mb-2.5 text-xs uppercase tracking-wide text-fg-meta">
-            Evidence
-          </div>
-          {stage === 0 && (
-            <>
-              <textarea
-                value={evidenceText}
-                onChange={(e) => onEvidenceChange(e.target.value)}
-                placeholder="Submit transaction logs, message transcripts, or a plain-language account of what happened…"
-                className="min-h-[120px] w-full resize-y rounded-lg border border-border-4 bg-surface-1 p-3 font-sans text-[13px] text-fg placeholder:text-fg-faint-2"
-              />
-              <button
-                onClick={onSubmitEvidence}
-                disabled={!evidenceText.trim()}
-                className="mt-2.5 cursor-pointer rounded-lg border border-border-6 bg-chip-hover px-4.5 py-2.5 text-[13px] font-semibold transition-colors hover:bg-chip-hover-2 disabled:cursor-default"
-                style={{ opacity: evidenceText.trim() ? 1 : 0.5 }}
+      <div className="mt-4 rounded-xl border border-border-1 bg-surface-1 p-4">
+        <div className="text-xs uppercase tracking-wide text-fg-meta">
+          Issue / Reason for Dispute
+        </div>
+        <div className="mt-1 text-sm text-fg">{dispute.issue}</div>
+      </div>
+
+      {errorBanner && (
+        <div className="mt-4 rounded-lg border border-negative/35 bg-negative/12 px-3.5 py-2.5 text-xs text-negative-text">
+          {errorBanner}
+        </div>
+      )}
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+        {/* Left Column: Live Chat & Evidence Repository */}
+        <div className="flex flex-col gap-6">
+          {/* Dispute Chat Room */}
+          <div className="rounded-xl border border-border-1 bg-surface-1 flex flex-col h-[400px]">
+            <div className="border-b border-border-1 px-4 py-3 flex items-center justify-between">
+              <div className="text-xs font-semibold uppercase tracking-wide text-fg-meta">
+                Dispute Room Dialogue
+              </div>
+              <div className="flex items-center gap-1.5 text-[11px] text-fg-meta">
+                <span className="inline-block h-2 w-2 rounded-full bg-positive animate-pulse" />
+                Live Feed
+              </div>
+            </div>
+
+            {/* Messages Stream */}
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+              {messages.length === 0 ? (
+                <div className="m-auto text-center text-xs text-fg-meta py-8">
+                  No messages yet. Counterparties can state their claims here.
+                </div>
+              ) : (
+                messages.map((m) => {
+                  const isMe = normalizedCurrent && m.senderAddress.toLowerCase() === normalizedCurrent;
+                  const isClaimant = m.senderAddress.toLowerCase() === dispute.openedByAddress.toLowerCase();
+                  return (
+                    <div
+                      key={m.id}
+                      className={`flex flex-col max-w-[85%] ${
+                        isMe ? "self-end items-end" : "self-start items-start"
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 mb-1 text-[11px] text-fg-meta font-brand-mono">
+                        <span>{formatAddress(m.senderAddress)}</span>
+                        {isClaimant && (
+                          <span className="rounded bg-chip-hover px-1 py-0.2 text-[9px] uppercase font-sans">
+                            Claimant
+                          </span>
+                        )}
+                        {isMe && (
+                          <span className="text-[10px] text-fg-dim-2 font-sans font-semibold">
+                            (You)
+                          </span>
+                        )}
+                      </div>
+                      <div
+                        className={`rounded-xl px-3.5 py-2 text-sm leading-relaxed ${
+                          isMe
+                            ? "bg-accent-solid text-white"
+                            : "bg-surface-2 border border-border-4 text-fg"
+                        }`}
+                      >
+                        {m.content}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+              <div ref={chatBottomRef} />
+            </div>
+
+            {/* Chat Input or Locked / Observer State */}
+            {isTerminal ? (
+              <div className="border-t border-border-1 p-3 text-center text-xs text-fg-meta font-medium bg-surface-2/50">
+                🔒 Dialogue is closed. Ruling has been recorded by AI Consensus.
+              </div>
+            ) : !isParticipant ? (
+              <div className="border-t border-border-1 p-3 text-center text-xs text-fg-meta font-medium bg-surface-2/50">
+                👁 Viewing as observer. Only dispute counterparties can send messages.
+              </div>
+            ) : (
+              <form
+                onSubmit={handleSendMessage}
+                className="border-t border-border-1 p-3 flex gap-2"
               >
-                Submit to Validators
-              </button>
-            </>
-          )}
+                <input
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="State your case or respond to counterparty…"
+                  className="flex-1 rounded-lg border border-border-4 bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-fg-faint-2 focus:outline-none focus:border-border-6"
+                />
+                <button
+                  type="submit"
+                  disabled={!chatInput.trim() || sendingMsg}
+                  className="cursor-pointer rounded-lg border border-border-6 bg-chip-hover px-4 py-2 text-xs font-semibold transition-colors hover:bg-chip-hover-2 disabled:cursor-default disabled:opacity-50"
+                >
+                  {sendingMsg ? "Sending…" : "Send"}
+                </button>
+              </form>
+            )}
+          </div>
+
+          {/* Evidence Repository & Submission */}
+          <div className="rounded-xl border border-border-1 bg-surface-1 p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-xs font-semibold uppercase tracking-wide text-fg-meta">
+                Submitted Evidence ({evidenceList.length})
+              </div>
+            </div>
+
+            {evidenceList.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border-4 p-4 text-center text-xs text-fg-meta">
+                No formal evidence records attached yet.
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2.5 mb-5">
+                {evidenceList.map((ev) => (
+                  <div
+                    key={ev.id}
+                    className="rounded-lg border border-border-4 bg-surface-2 p-3.5"
+                  >
+                    <div className="flex items-center justify-between text-xs text-fg-meta mb-1 font-brand-mono">
+                      <span>Submitted by {formatAddress(ev.submitterAddress)}</span>
+                      <span>{new Date(ev.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                    </div>
+                    <div className="text-sm text-fg">{ev.description}</div>
+                    {ev.link && (
+                      <a
+                        href={ev.link}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 inline-flex items-center gap-1 text-xs text-info hover:underline font-mono"
+                      >
+                        🔗 View Attached Link / Spec →
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Evidence Submission Form or Closed / Observer Indicator */}
+            <div className="mt-4 border-t border-border-1 pt-4">
+              {isTerminal ? (
+                <div className="rounded-lg border border-border-4 bg-surface-2/50 p-3 text-center text-xs text-fg-meta">
+                  📁 Evidence submission is closed. Case evaluation has completed.
+                </div>
+              ) : !isParticipant ? (
+                <div className="rounded-lg border border-border-4 bg-surface-2/50 p-3 text-center text-xs text-fg-meta">
+                  👁 Viewing as observer. Only dispute counterparties can submit evidence.
+                </div>
+              ) : (
+                <>
+                  <div className="mb-2 text-xs font-medium text-fg-dim-2">
+                    Submit New Evidence & Request AI Adjudication
+                  </div>
+                  <textarea
+                    value={evidenceDesc}
+                    onChange={(e) => setEvidenceDesc(e.target.value)}
+                    placeholder="Describe transaction logs, bug diffs, contract specs, or deliverables…"
+                    className="min-h-[80px] w-full resize-y rounded-lg border border-border-4 bg-surface-2 p-3 font-sans text-xs text-fg placeholder:text-fg-faint-2 focus:outline-none focus:border-border-6"
+                  />
+                  <input
+                    value={evidenceLink}
+                    onChange={(e) => setEvidenceLink(e.target.value)}
+                    placeholder="Optional link (e.g. GitHub issue, PR, Figma URL, transaction hash)"
+                    className="mt-2 w-full rounded-lg border border-border-4 bg-surface-2 px-3 py-2 font-mono text-xs text-fg placeholder:text-fg-faint-2 focus:outline-none focus:border-border-6"
+                  />
+                  <button
+                    onClick={handleSubmitEvidence}
+                    disabled={!evidenceDesc.trim() || submittingEv}
+                    className="mt-3 cursor-pointer rounded-lg border border-border-6 bg-chip-hover px-4 py-2.5 text-xs font-semibold transition-colors hover:bg-chip-hover-2 disabled:cursor-default disabled:opacity-50"
+                  >
+                    {submittingEv ? "Submitting to Validators…" : "Submit Evidence & Deliberate"}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
         </div>
 
-        <ConsensusPanel
-          title="Internet Court Ruling"
-          subtitle="3-of-3 GenVM validators review evidence and rule."
-          stage={stage}
-          analyzingLabel="Reviewing evidence…"
-          doneLabel="Ruling recorded"
-          idleText="Awaiting evidence submission…"
-          verdict={consensusVerdict}
-        />
+        {/* Right Column: AI Validator Consensus Panel */}
+        <div>
+          <ConsensusPanel
+            title="Internet Court Ruling"
+            subtitle="3-of-3 GenVM validators evaluate dialogue and evidence in real-time."
+            stage={stage}
+            analyzingLabel="Reviewing chat history & evidence…"
+            doneLabel="Ruling recorded"
+            idleText="Awaiting evidence submission to initiate deliberation…"
+            verdict={consensusVerdict}
+            sticky
+          />
+        </div>
       </div>
     </div>
   );

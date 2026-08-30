@@ -7,6 +7,12 @@ import {
   GENLAYER_BRADBURY,
   GENLAYER_BRADBURY_ADD_CHAIN_PARAMS,
 } from "@/components/app/genlayer-chain";
+import {
+  clearAuthToken,
+  requestNonce,
+  setUnauthorizedHandler,
+  verifySignature,
+} from "@/lib/api";
 
 export type WalletConnectionStatus = "idle" | "connecting" | "connected";
 
@@ -37,22 +43,6 @@ function formatNativeBalance(weiHex: string, displayDecimals = 4): string {
 function utf8ToHex(str: string): string {
   const bytes = new TextEncoder().encode(str);
   return "0x" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function signInMessage(address: string): string {
-  const nonce =
-    typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : Math.random().toString(36).slice(2);
-  return [
-    "Sign in to Nuance",
-    "",
-    "This request will not trigger a blockchain transaction or cost any gas fees.",
-    "",
-    `Wallet: ${address}`,
-    `Nonce: ${nonce}`,
-    `Issued At: ${new Date().toISOString()}`,
-  ].join("\n");
 }
 
 function describeError(err: unknown): string {
@@ -116,6 +106,7 @@ export function useWalletConnection() {
         .catch(() => {});
     }
     providerRef.current = null;
+    clearAuthToken();
     setStatus("idle");
     setWalletName("");
     setAddress("");
@@ -135,14 +126,19 @@ export function useWalletConnection() {
         const addr = accounts[0];
         if (!addr) throw new Error("No account returned by wallet.");
 
-        // Prove control of the account with a real signature — no
-        // transaction, no gas, matching what the connect modal tells the
-        // user this step does. Rejecting the signature aborts the
-        // connection rather than falling back to an unverified account.
-        await provider.request({
+        // Server-issued nonce + message: signing the exact string the
+        // backend hands back (rather than one built locally) is what lets
+        // POST /auth/verify recover the signer and issue a session JWT —
+        // no transaction, no gas, matching what the connect modal tells
+        // the user this step does. Rejecting the signature, or a failed
+        // verify, aborts the connection rather than falling back to an
+        // unverified account.
+        const { message } = await requestNonce(addr);
+        const signature = (await provider.request({
           method: "personal_sign",
-          params: [utf8ToHex(signInMessage(addr)), addr],
-        });
+          params: [utf8ToHex(message), addr],
+        })) as string;
+        await verifySignature(addr, message, signature);
 
         const chainIdHex = (await provider.request({ method: "eth_chainId" })) as string;
 
@@ -173,6 +169,7 @@ export function useWalletConnection() {
         return true;
       } catch (err) {
         providerRef.current = null;
+        clearAuthToken();
         setStatus("idle");
         setError(describeError(err));
         return false;
@@ -217,6 +214,14 @@ export function useWalletConnection() {
   }, []);
 
   useEffect(() => teardownListeners, [teardownListeners]);
+
+  // lib/api.ts has no React state of its own — wiring disconnect() up as
+  // its unauthorized handler is what lets a 401 (expired/invalid JWT) on
+  // any request drop the wallet's connected state too.
+  useEffect(() => {
+    setUnauthorizedHandler(disconnect);
+    return () => setUnauthorizedHandler(null);
+  }, [disconnect]);
 
   return {
     status,
