@@ -47,12 +47,12 @@ export function CreateEscrowView({
         </div>
         <div>
           <div className="mb-1.5 text-[13px] text-fg-meta">
-            Counterparty wallet or handle
+            Counterparty wallet address
           </div>
           <input
             value={formCounterparty}
             onChange={(e) => onCounterpartyChange(e.target.value)}
-            placeholder="0x… or @handle"
+            placeholder="0x…"
             className="w-full rounded-lg border border-border-4 bg-surface-1 px-3 py-2.5 font-brand-mono text-sm text-fg placeholder:text-fg-faint-2"
           />
         </div>

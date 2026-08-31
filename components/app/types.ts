@@ -28,7 +28,8 @@ export interface Milestone {
 export interface Escrow {
   id: number;
   title: string;
-  counterparty: string;
+  creatorAddress: string;
+  counterpartyAddress: string;
   total: number;
   statusKey: StatusKey;
   milestones: Milestone[];
@@ -41,28 +42,55 @@ export interface Prediction {
   yesPrice: number;
   volume: number;
   resolveDate: string;
+  resolutionDate?: string;
   aiSummary: string;
+  statusKey?: string;
+  outcome?: string | null;
+  resolutionReasoning?: string | null;
+  resolvedAt?: string | null;
+  positions?: Position[];
 }
 
 export interface Position {
+  id?: number;
   side: "yes" | "no";
   amount: number;
+  payout?: number | null;
+  status?: string;
+}
+
+export interface DisputeMessage {
+  id: number;
+  disputeId: number;
+  senderAddress: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface DisputeEvidence {
+  id: number;
+  disputeId: number;
+  submitterAddress: string;
+  description: string;
+  link?: string | null;
+  createdAt: string;
 }
 
 export interface Dispute {
   id: number;
-  agentA: string;
-  agentB: string;
+  escrowId: number;
+  openedByAddress: string;
+  counterpartyAddress: string;
   issue: string;
   amount: number;
   statusKey: StatusKey;
+  messages?: DisputeMessage[];
+  evidence?: DisputeEvidence[];
 }
 
 export interface DisputeVerdict {
   label: string;
-  color: string;
-  panelBg: string;
-  panelBorder: string;
+  approved: boolean;
   reasoning: string;
 }
 

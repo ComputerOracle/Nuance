@@ -1,0 +1,430 @@
+// Strongly-typed fetch wrapper around the Nuance FastAPI backend.
+//
+// Owns: the JWT (localStorage), attaching it to every request, reacting to
+// a 401 by dropping it and notifying whoever registered as the
+// "unauthorized" handler (see setUnauthorizedHandler — wired up by
+// use-wallet-connection.ts so an expired/invalid session also disconnects
+// the wallet), and the raw backend DTO shapes (snake_case, matching
+// backend/app/schemas.py exactly). UI-shape mapping into this app's own
+// Escrow/Dispute/Milestone types happens in nuance-app.tsx, not here.
+
+import type { StatusKey } from "@/components/app/types";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8010";
+
+const TOKEN_STORAGE_KEY = "nuance_token";
+
+// --- Token storage -----------------------------------------------------
+
+function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // Private-browsing / storage-disabled contexts can throw on access.
+    return null;
+  }
+}
+
+function setToken(token: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } catch {
+    // Session just won't persist — not fatal.
+  }
+}
+
+function clearStoredToken(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // see setToken
+  }
+}
+
+/** True once a JWT has been stored by a successful verifySignature(). */
+export function hasAuthToken(): boolean {
+  return getToken() !== null;
+}
+
+/** Explicit drop — called on wallet disconnect so no stale session survives it. */
+export function clearAuthToken(): void {
+  clearStoredToken();
+}
+
+// --- Unauthorized handling ------------------------------------------------
+
+type UnauthorizedListener = () => void;
+let unauthorizedListener: UnauthorizedListener | null = null;
+
+/** Registered once by useWalletConnection so a 401 from anywhere can drop
+ * the wallet's connected state — this module has no React state of its own. */
+export function setUnauthorizedHandler(listener: UnauthorizedListener | null): void {
+  unauthorizedListener = listener;
+}
+
+// --- Core request wrapper --------------------------------------------------
+
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+// FastAPI error bodies are either {"detail": "message"} or, on a 422
+// validation failure, {"detail": [{"msg": "...", ...}, ...]}.
+function errorMessage(body: unknown, fallback: string): string {
+  if (body && typeof body === "object" && "detail" in body) {
+    const detail = (body as { detail: unknown }).detail;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      return detail
+        .map((d) =>
+          d && typeof d === "object" && "msg" in d
+            ? String((d as { msg: unknown }).msg)
+            : String(d)
+        )
+        .join("; ");
+    }
+  }
+  return fallback;
+}
+
+async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const token = getToken();
+  const headers = new Headers(init.headers);
+  headers.set("Content-Type", "application/json");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+
+  if (res.status === 401) {
+    clearStoredToken();
+    unauthorizedListener?.();
+  }
+
+  if (!res.ok) {
+    let body: unknown = null;
+    try {
+      body = await res.json();
+    } catch {
+      // Non-JSON error body (e.g. a proxy's HTML error page) — fall through.
+    }
+    throw new ApiError(
+      res.status,
+      errorMessage(body, res.statusText || `Request failed (${res.status})`)
+    );
+  }
+
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+// --- Backend DTOs (snake_case — mirrors backend/app/schemas.py) -----------
+
+export interface ApiMilestone {
+  id: number;
+  name: string;
+  amount: string; // Decimal, serialized as a string (e.g. "500.00")
+  status_key: StatusKey;
+  criteria: string;
+  order_index: number;
+}
+
+export interface ApiEscrow {
+  id: number;
+  creator_address: string;
+  counterparty_address: string;
+  title: string;
+  total: string;
+  status_key: StatusKey;
+  created_at: string;
+  milestones: ApiMilestone[];
+}
+
+export interface ApiDeliverableSubmission {
+  id: number;
+  milestone_id: number;
+  wallet: string;
+  text: string;
+  submitted_at: string;
+  consensus_job_id: number | null;
+}
+
+export interface ApiDisputeMessage {
+  id: number;
+  dispute_id: number;
+  sender_address: string;
+  content: string;
+  created_at: string;
+}
+
+export interface ApiDisputeEvidence {
+  id: number;
+  dispute_id: number;
+  submitter_address: string;
+  description: string;
+  link: string | null;
+  created_at: string;
+  consensus_job_id: number | null;
+}
+
+export interface ApiDispute {
+  id: number;
+  escrow_id: number;
+  milestone_id: number | null;
+  opened_by_address: string;
+  issue: string;
+  status_key: StatusKey;
+  ruling: string | null;
+  enforced_by: string | null;
+  created_at: string;
+  resolved_at: string | null;
+  messages: ApiDisputeMessage[];
+  evidence: ApiDisputeEvidence[];
+}
+
+export interface ApiValidatorResult {
+  name: string;
+  vote: "approve" | "dispute";
+  confidence: number;
+  reasoning: string;
+}
+
+export interface ApiConsensusVerdict {
+  label: string;
+  approved: boolean;
+  confidence: number;
+  reasoning: string;
+}
+
+export interface ApiConsensusStatus {
+  stage: number;
+  validator_results: ApiValidatorResult[] | null;
+  verdict: ApiConsensusVerdict | null;
+}
+
+export interface ApiPredictionPosition {
+  id: number;
+  prediction_id: number;
+  wallet_address: string;
+  side: string;
+  amount: number;
+  payout?: number | null;
+  status?: string;
+  created_at: string;
+}
+
+export interface ApiPrediction {
+  id: number;
+  title: string;
+  description: string;
+  category: string;
+  resolution_date: string;
+  volume: number;
+  status_key: string;
+  outcome: string | null;
+  resolution_reasoning?: string | null;
+  created_at: string;
+  resolved_at?: string | null;
+  positions: ApiPredictionPosition[];
+}
+
+export interface ApiNonceResponse {
+  nonce: string;
+  message: string;
+}
+
+export interface ApiTokenResponse {
+  access_token: string;
+  token_type: string;
+  wallet_address: string;
+}
+
+export interface ApiUserSettings {
+  notify_on: boolean;
+  auto_escalate_on: boolean;
+}
+
+export interface ApiUser {
+  wallet_address: string;
+  display_name: string | null;
+  created_at: string;
+  settings?: ApiUserSettings | null;
+}
+
+export interface CreateEscrowPayload {
+  title: string;
+  counterparty_address: string;
+  total: number;
+  criteria?: string | null;
+}
+
+export interface EnforceDisputePayload {
+  approved: boolean;
+  ruling?: string | null;
+}
+
+// --- Auth -----------------------------------------------------------------
+
+export async function requestNonce(walletAddress: string): Promise<ApiNonceResponse> {
+  return apiFetch<ApiNonceResponse>("/auth/nonce", {
+    method: "POST",
+    body: JSON.stringify({ wallet_address: walletAddress }),
+  });
+}
+
+/** Verifies the signed nonce message and stores the returned JWT on success. */
+export async function verifySignature(
+  walletAddress: string,
+  message: string,
+  signature: string
+): Promise<ApiTokenResponse> {
+  const result = await apiFetch<ApiTokenResponse>("/auth/verify", {
+    method: "POST",
+    body: JSON.stringify({ wallet_address: walletAddress, message, signature }),
+  });
+  setToken(result.access_token);
+  return result;
+}
+
+export async function getMe(): Promise<ApiUser> {
+  return apiFetch<ApiUser>("/auth/me");
+}
+
+export async function updateMe(payload: { display_name?: string | null }): Promise<ApiUser> {
+  return apiFetch<ApiUser>("/auth/me", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateSettings(payload: {
+  notify_on?: boolean;
+  auto_escalate_on?: boolean;
+}): Promise<ApiUserSettings> {
+  return apiFetch<ApiUserSettings>("/auth/settings", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+// --- Escrows ----------------------------------------------------------
+
+export async function getEscrows(): Promise<ApiEscrow[]> {
+  return apiFetch<ApiEscrow[]>("/escrows");
+}
+
+export async function getEscrow(id: number): Promise<ApiEscrow> {
+  return apiFetch<ApiEscrow>(`/escrows/${id}`);
+}
+
+export async function createEscrow(payload: CreateEscrowPayload): Promise<ApiEscrow> {
+  return apiFetch<ApiEscrow>("/escrows", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function submitDeliverable(
+  escrowId: number,
+  text: string
+): Promise<ApiDeliverableSubmission> {
+  return apiFetch<ApiDeliverableSubmission>(`/escrows/${escrowId}/deliverable`, {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
+}
+
+export async function releaseMilestone(escrowId: number): Promise<ApiEscrow> {
+  return apiFetch<ApiEscrow>(`/escrows/${escrowId}/release`, { method: "POST" });
+}
+
+// --- Disputes ---------------------------------------------------------
+
+export async function getDisputes(): Promise<ApiDispute[]> {
+  return apiFetch<ApiDispute[]>("/disputes");
+}
+
+export async function getDispute(id: number): Promise<ApiDispute> {
+  return apiFetch<ApiDispute>(`/disputes/${id}`);
+}
+
+export async function getDisputeMessages(disputeId: number): Promise<ApiDisputeMessage[]> {
+  return apiFetch<ApiDisputeMessage[]>(`/disputes/${disputeId}/messages`);
+}
+
+export async function sendDisputeMessage(
+  disputeId: number,
+  content: string
+): Promise<ApiDisputeMessage> {
+  return apiFetch<ApiDisputeMessage>(`/disputes/${disputeId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
+export async function getDisputeEvidence(disputeId: number): Promise<ApiDisputeEvidence[]> {
+  return apiFetch<ApiDisputeEvidence[]>(`/disputes/${disputeId}/evidence`);
+}
+
+export async function submitEvidence(
+  disputeId: number,
+  description: string,
+  link?: string | null
+): Promise<ApiDisputeEvidence> {
+  return apiFetch<ApiDisputeEvidence>(`/disputes/${disputeId}/evidence`, {
+    method: "POST",
+    body: JSON.stringify({ description, link: link || null }),
+  });
+}
+
+export async function enforceRuling(
+  disputeId: number,
+  payload: EnforceDisputePayload
+): Promise<ApiDispute> {
+  return apiFetch<ApiDispute>(`/disputes/${disputeId}/enforce`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+// --- Consensus --------------------------------------------------------
+
+export async function getConsensusStatus(jobId: number): Promise<ApiConsensusStatus> {
+  return apiFetch<ApiConsensusStatus>(`/consensus/${jobId}`);
+}
+
+// --- Predictions ------------------------------------------------------
+
+export async function getPredictions(): Promise<ApiPrediction[]> {
+  return apiFetch<ApiPrediction[]>("/predictions");
+}
+
+export async function getPrediction(id: number): Promise<ApiPrediction> {
+  return apiFetch<ApiPrediction>(`/predictions/${id}`);
+}
+
+export async function placeBet(
+  predictionId: number,
+  side: "YES" | "NO" | "yes" | "no",
+  amount: number
+): Promise<ApiPrediction> {
+  return apiFetch<ApiPrediction>(`/predictions/${predictionId}/bet`, {
+    method: "POST",
+    body: JSON.stringify({ side: side.toUpperCase(), amount }),
+  });
+}
+
+export async function resolvePrediction(predictionId: number): Promise<ApiPrediction> {
+  return apiFetch<ApiPrediction>(`/predictions/${predictionId}/resolve`, {
+    method: "POST",
+  });
+}
+
+

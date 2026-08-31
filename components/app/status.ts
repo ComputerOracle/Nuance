@@ -64,3 +64,13 @@ export function activeMilestoneIndex<T extends { statusKey: StatusKey }>(
   );
   return idx === -1 ? 0 : idx;
 }
+
+export function formatAddress(address?: string | null): string {
+  if (!address) return "0x0000…0000";
+  const trimmed = address.trim();
+  if (trimmed.startsWith("0x") && trimmed.length >= 10) {
+    return `${trimmed.slice(0, 6)}…${trimmed.slice(-4)}`;
+  }
+  return trimmed;
+}
+

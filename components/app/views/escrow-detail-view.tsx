@@ -1,6 +1,6 @@
 import type { Escrow, EscrowVerdict } from "@/components/app/types";
 import { StatusBadge } from "@/components/app/status-badge";
-import { activeMilestoneIndex } from "@/components/app/status";
+import { activeMilestoneIndex, formatAddress } from "@/components/app/status";
 import { ConsensusPanel, type ConsensusVerdict } from "@/components/app/consensus-panel";
 
 export function EscrowDetailView({
@@ -64,7 +64,11 @@ export function EscrowDetailView({
           <div className="mt-1.5 text-sm text-fg-dim-2">
             Counterparty{" "}
             <span className="font-brand-mono text-fg-bright">
-              {escrow.counterparty}
+              {formatAddress(escrow.counterpartyAddress)}
+            </span>{" "}
+            · Creator{" "}
+            <span className="font-brand-mono text-fg-bright">
+              {formatAddress(escrow.creatorAddress)}
             </span>{" "}
             · Total{" "}
             <span className="font-semibold text-fg">
@@ -102,24 +106,40 @@ export function EscrowDetailView({
                   {m.amount.toLocaleString()} USDC
                 </div>
 
-                {isActive && stage === 0 && (
-                  <div className="mt-3.5 border-t border-border-1 pt-3.5">
-                    <textarea
-                      value={deliverableText}
-                      onChange={(e) => onDeliverableChange(e.target.value)}
-                      placeholder="Paste deliverable URL, PR link, or describe the completed work for AI review…"
-                      className="min-h-[78px] w-full resize-y rounded-lg border border-border-4 bg-surface-3 px-3 py-2.5 font-sans text-[13px] text-fg placeholder:text-fg-faint-2"
-                    />
-                    <button
-                      onClick={onSubmitDeliverable}
-                      disabled={!deliverableText.trim()}
-                      className="mt-2.5 cursor-pointer rounded-lg border border-border-6 bg-chip-hover px-4.5 py-2.5 text-[13px] font-semibold transition-colors hover:bg-chip-hover-2 disabled:cursor-default"
-                      style={{ opacity: deliverableText.trim() ? 1 : 0.5 }}
-                    >
-                      Submit for AI Review
-                    </button>
+                {m.statusKey === "approved" && (
+                  <div className="mt-3 rounded-lg border border-positive/30 bg-positive/10 px-3 py-2 text-xs font-medium text-positive-text">
+                    ✓ Milestone deliverable approved by AI Consensus.
                   </div>
                 )}
+
+                {m.statusKey === "disputed" && (
+                  <div className="mt-3 rounded-lg border border-negative/30 bg-negative/10 px-3 py-2 text-xs font-medium text-negative-text">
+                    ⚠ Milestone deliverable disputed by AI Consensus.
+                  </div>
+                )}
+
+                {isActive &&
+                  stage === 0 &&
+                  m.statusKey === "in_progress" &&
+                  escrow.statusKey !== "approved" &&
+                  escrow.statusKey !== "disputed" && (
+                    <div className="mt-3.5 border-t border-border-1 pt-3.5">
+                      <textarea
+                        value={deliverableText}
+                        onChange={(e) => onDeliverableChange(e.target.value)}
+                        placeholder="Paste deliverable URL, PR link, or describe the completed work for AI review…"
+                        className="min-h-[78px] w-full resize-y rounded-lg border border-border-4 bg-surface-3 px-3 py-2.5 font-sans text-[13px] text-fg placeholder:text-fg-faint-2"
+                      />
+                      <button
+                        onClick={onSubmitDeliverable}
+                        disabled={!deliverableText.trim()}
+                        className="mt-2.5 cursor-pointer rounded-lg border border-border-6 bg-chip-hover px-4.5 py-2.5 text-[13px] font-semibold transition-colors hover:bg-chip-hover-2 disabled:cursor-default"
+                        style={{ opacity: deliverableText.trim() ? 1 : 0.5 }}
+                      >
+                        Submit for AI Review
+                      </button>
+                    </div>
+                  )}
               </div>
             );
           })}
