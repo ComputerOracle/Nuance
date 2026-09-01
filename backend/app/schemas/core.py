@@ -2,6 +2,10 @@
 
 Every model uses ConfigDict (not the V1 `class Config`) and field_validator
 (not the V1 `@validator`) per the project's Pydantic V2 requirement.
+
+Governance's schemas live in governance.py instead — see
+app/schemas/__init__.py for the re-export that makes the split invisible
+to every other importer.
 """
 
 from __future__ import annotations
@@ -320,6 +324,28 @@ class PredictionBetCreate(BaseModel):
         if v_norm not in ("YES", "NO"):
             raise ValueError("Side must be 'YES' or 'NO'.")
         return v_norm
+
+
+# --- Validator / Agent directories -----------------------------------------
+#
+# Both are computed on read from real history (ConsensusJob rows) — see
+# routers/validators.py and routers/agents.py — not stored anywhere, so
+# there's no *Create schema, only a read shape.
+
+
+class ValidatorStatRead(BaseModel):
+    name: str
+    cases_judged: int
+    accuracy_pct: float
+    is_active: bool
+    last_active_at: datetime | None = None
+
+
+class AgentStatRead(BaseModel):
+    wallet_address: str
+    category: str
+    cases_judged: int
+    trust_score: int
 
 
 

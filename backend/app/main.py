@@ -1,9 +1,7 @@
 """FastAPI entrypoint.
 
-Scope note: this prompt wires up the app, the DB lifecycle, CORS, a health
-check, and the auth/escrows/disputes routers. Predictions/governance/
-validators/agents/settings land in later prompts and get mounted here the
-same way with `app.include_router(...)`.
+Scope note: settings land as part of the auth router (`PATCH /auth/
+settings`, see routers/auth.py) rather than their own module.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import models  # noqa: F401 — import registers tables on Base.metadata
 from app.config import get_settings
 from app.db import dispose_engine, init_db
-from app.routers import auth, consensus, disputes, escrows, predictions
+from app.routers import agents, auth, consensus, disputes, escrows, governance, predictions, validators
 
 settings = get_settings()
 
@@ -53,6 +51,9 @@ app.include_router(escrows.router)
 app.include_router(disputes.router)
 app.include_router(consensus.router)
 app.include_router(predictions.router)
+app.include_router(governance.router)
+app.include_router(validators.router)
+app.include_router(agents.router)
 
 
 @app.get("/health")

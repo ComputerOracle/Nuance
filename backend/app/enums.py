@@ -40,3 +40,21 @@ class ConsensusStage(IntEnum):
     QUEUED = 1
     ANALYZING = 2
     DONE = 3
+
+
+class ProposalStatus(StrEnum):
+    """A governance proposal's lifecycle. finalize() (routers/governance.py)
+    is the only thing that moves ACTIVE -> PASSED/REJECTED; EXECUTED is
+    reserved for a future action that actually applies a passed proposal's
+    effect (see ROADMAP.md Part 1) and isn't set by anything yet."""
+
+    ACTIVE = "active"
+    PASSED = "passed"
+    REJECTED = "rejected"
+    EXECUTED = "executed"
+
+
+class VoteChoice(StrEnum):
+    FOR = "for"
+    AGAINST = "against"
+    ABSTAIN = "abstain"

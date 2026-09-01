@@ -1,5 +1,10 @@
 """SQLAlchemy 2.0 async models — User, UserSettings, Escrow, Milestone,
-DeliverableSubmission, ConsensusJob, Dispute, DisputeEvidence.
+DeliverableSubmission, ConsensusJob, Dispute, DisputeEvidence, Prediction,
+PredictionPosition.
+
+Governance's Proposal/Vote live in governance.py instead — see
+app/models/__init__.py for the re-export that makes the split invisible
+to every other importer.
 """
 
 from __future__ import annotations

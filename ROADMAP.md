@@ -189,6 +189,9 @@ Everything in this section is **built and verified working today** (24/24 backen
 
 ### 3.1 Governance Engine
 
+> [!NOTE]
+> **Backend shipped (2026-09-01).** `Proposal`/`Vote` models, all four endpoints, and the quorum/pass-threshold finalize logic are live — `backend/app/models/governance.py`, `backend/app/schemas/governance.py`, `backend/app/routers/governance.py`, mounted in `main.py`. Re-voting flips as designed (verified live: a wallet voting FOR then AGAINST moves `total_for` back to 0, not to -1). 14 new pytest tests in `backend/tests/test_governance.py`, all passing alongside the existing 24. Frozen response shapes captured live in `lib/fixtures/proposals.json` / `proposal-detail.json` (the Sync Point below) — the frontend wiring bullets underneath are still open.
+
 #### Data model
 
 ```python
@@ -272,6 +275,9 @@ stateDiagram-v2
 - [ ] `GovernanceView`: add a disabled state + optimistic UI while a vote is in flight; surface `quorum_met`/turnout, not just the for/against bar.
 
 ### 3.2 Validator & Agent Directory
+
+> [!NOTE]
+> **Backend shipped (2026-09-01), simplified from the design below.** `GET /validators` and `GET /agents` are live (`backend/app/routers/validators.py`, `routers/agents.py`) — computed **on read**, straight from `ConsensusJob` history, rather than the persisted `ValidatorStat`/`AgentProfile` tables sketched below. No new tables, no incremental-recompute hooks to keep in sync: an agent's `trust_score` is win-rate across every `ConsensusJob` where that wallet was the milestone submitter or dispute claimant, and a validator's `accuracy_pct` is how often its own vote matched the final verdict. Deliberately **not** included: a `stake` figure — there's no real GEN staking data yet, and a fabricated number would be worse than omitting the field. Both endpoints correctly return `[]` on a history-free database rather than seed rows. If read load ever makes the on-the-fly aggregation too slow, revisit the persisted-table design below then — not before.
 
 Today `ValidatorDirectoryEntry`/`AgentDirectoryEntry` are static arrays. The fix is to derive both from data the system already produces — `ConsensusJob.validator_results` and escrow/dispute outcomes — rather than hand-maintaining numbers.
 
