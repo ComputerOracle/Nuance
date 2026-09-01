@@ -403,7 +403,13 @@ async def _apply_verdict_to_state(
 
         dispute.ruling = verdict_reasoning
         dispute.resolved_at = datetime.now(timezone.utc)
-        dispute.status_key = StatusKey.APPROVED
+        # Bug fix: this used to be a bare `StatusKey.APPROVED` regardless of
+        # verdict_approved, so a rejected claim and an upheld one were
+        # indistinguishable from Dispute.status_key alone — anything reading
+        # it (e.g. routers/agents.py's trust-score calc, which deliberately
+        # reads ConsensusJob.verdict_approved instead for exactly this
+        # reason) would see every resolved dispute as "approved".
+        dispute.status_key = StatusKey.APPROVED if verdict_approved else StatusKey.REJECTED
 
         escrow = dispute.escrow
         if verdict_approved:

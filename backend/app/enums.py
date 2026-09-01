@@ -19,6 +19,11 @@ class StatusKey(StrEnum):
     IN_PROGRESS = "in_progress"
     PENDING = "pending"
     DISPUTED = "disputed"
+    # A dispute whose claim was rejected by consensus (counterparty's
+    # position/delivery stood) — distinct from DISPUTED, which means "still
+    # open/unresolved". Only ever set on a Dispute row, never a Milestone or
+    # Escrow — see services/consensus.py::_apply_verdict_to_state.
+    REJECTED = "rejected"
 
 
 class ConsensusSubjectType(StrEnum):

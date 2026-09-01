@@ -3,7 +3,10 @@ export type StatusKey =
   | "in_review"
   | "in_progress"
   | "pending"
-  | "disputed";
+  | "disputed"
+  // A dispute whose claim was rejected by consensus — only ever set on a
+  // Dispute, never a Milestone/Escrow. Distinct from "disputed" (still open).
+  | "rejected";
 
 export type View =
   | "dashboard"
