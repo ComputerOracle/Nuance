@@ -2,6 +2,10 @@
 
 Every model uses ConfigDict (not the V1 `class Config`) and field_validator
 (not the V1 `@validator`) per the project's Pydantic V2 requirement.
+
+Governance's schemas live in governance.py instead — see
+app/schemas/__init__.py for the re-export that makes the split invisible
+to every other importer.
 """
 
 from __future__ import annotations
@@ -167,6 +171,12 @@ class ValidatorResult(BaseModel):
     vote: str
     confidence: int = Field(ge=0, le=100)
     reasoning: str
+    # Which provider actually produced this verdict — "gemini" / "anthropic"
+    # / "openai" on success, or "heuristic" if every configured provider
+    # failed and the deterministic offline fallback answered instead.
+    # Optional/nullable so older stored ConsensusJob rows (persisted before
+    # this field existed) still deserialize cleanly.
+    provider: str | None = None
 
 
 class ConsensusJobRead(BaseModel):
@@ -302,6 +312,7 @@ class PredictionRead(BaseModel):
     status_key: str
     outcome: str | None = None
     resolution_reasoning: str | None = None
+    resolution_source_url: str | None = None
     created_at: datetime
     resolved_at: datetime | None = None
     positions: list[PredictionPositionRead] = []
@@ -320,6 +331,28 @@ class PredictionBetCreate(BaseModel):
         if v_norm not in ("YES", "NO"):
             raise ValueError("Side must be 'YES' or 'NO'.")
         return v_norm
+
+
+# --- Validator / Agent directories -----------------------------------------
+#
+# Both are computed on read from real history (ConsensusJob rows) — see
+# routers/validators.py and routers/agents.py — not stored anywhere, so
+# there's no *Create schema, only a read shape.
+
+
+class ValidatorStatRead(BaseModel):
+    name: str
+    cases_judged: int
+    accuracy_pct: float
+    is_active: bool
+    last_active_at: datetime | None = None
+
+
+class AgentStatRead(BaseModel):
+    wallet_address: str
+    category: str
+    cases_judged: int
+    trust_score: int
 
 
 

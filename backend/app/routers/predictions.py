@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -33,12 +33,25 @@ async def _get_prediction_or_404(prediction_id: int, db: AsyncSession) -> Predic
 
 
 @router.get("", response_model=list[PredictionRead])
-async def list_predictions(db: AsyncSession = Depends(get_db)) -> list[Prediction]:
-    result = await db.execute(
-        select(Prediction)
-        .options(selectinload(Prediction.positions))
-        .order_by(Prediction.id.asc())
-    )
+async def list_predictions(
+    status: str | None = "open",
+    db: AsyncSession = Depends(get_db),
+) -> list[Prediction]:
+    """Defaults to only `status_key == "open"` markets so unreviewed drafts
+    (`"pending_review"`, see services/market_generator.py) never leak into
+    the public betting feed just because a caller forgot to filter.
+
+    `status=None` or `status="all"` (case-insensitive) returns every market
+    regardless of status — e.g. for an internal review queue. Any other
+    value filters to that exact status, matched case-insensitively since
+    status_key casing isn't consistent across the codebase today (markets
+    are created as lowercase "open"/"pending_review", but
+    services/prediction_oracle.py resolves them to uppercase "RESOLVED").
+    """
+    query = select(Prediction).options(selectinload(Prediction.positions)).order_by(Prediction.id.asc())
+    if status is not None and status.strip().lower() != "all":
+        query = query.where(func.lower(Prediction.status_key) == status.strip().lower())
+    result = await db.execute(query)
     return list(result.scalars().all())
 
 

@@ -19,6 +19,11 @@ class StatusKey(StrEnum):
     IN_PROGRESS = "in_progress"
     PENDING = "pending"
     DISPUTED = "disputed"
+    # A dispute whose claim was rejected by consensus (counterparty's
+    # position/delivery stood) — distinct from DISPUTED, which means "still
+    # open/unresolved". Only ever set on a Dispute row, never a Milestone or
+    # Escrow — see services/consensus.py::_apply_verdict_to_state.
+    REJECTED = "rejected"
 
 
 class ConsensusSubjectType(StrEnum):
@@ -40,3 +45,21 @@ class ConsensusStage(IntEnum):
     QUEUED = 1
     ANALYZING = 2
     DONE = 3
+
+
+class ProposalStatus(StrEnum):
+    """A governance proposal's lifecycle. finalize() (routers/governance.py)
+    is the only thing that moves ACTIVE -> PASSED/REJECTED; EXECUTED is
+    reserved for a future action that actually applies a passed proposal's
+    effect (see ROADMAP.md Part 1) and isn't set by anything yet."""
+
+    ACTIVE = "active"
+    PASSED = "passed"
+    REJECTED = "rejected"
+    EXECUTED = "executed"
+
+
+class VoteChoice(StrEnum):
+    FOR = "for"
+    AGAINST = "against"
+    ABSTAIN = "abstain"

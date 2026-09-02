@@ -38,6 +38,16 @@ const STATUS_META: Record<StatusKey, StatusMeta> = {
     badgeText: "text-negative-text",
     cardBorder: "border-negative/40",
   },
+  // Placeholder styling — a resolved-but-not-upheld dispute, kept neutral
+  // (not positive/negative) since it isn't inherently a "bad" outcome for
+  // the app. Product may want a more distinct look; flagging rather than
+  // guessing further into design territory.
+  rejected: {
+    label: "Rejected",
+    badgeBg: "bg-neutral",
+    badgeText: "text-pending-text",
+    cardBorder: "border-border-4",
+  },
 };
 
 export function statusMeta(key: StatusKey): StatusMeta {

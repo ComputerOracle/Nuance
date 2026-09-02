@@ -1,0 +1,82 @@
+"""Pydantic request/response schemas, as a package.
+
+Split from a single schemas.py once governance.py needed its own module —
+every schema is re-exported here so `from app.schemas import EscrowRead,
+ProposalRead` keeps working exactly as before the split.
+"""
+
+from __future__ import annotations
+
+from app.schemas.core import (
+    AgentStatRead,
+    ConsensusJobRead,
+    ConsensusStatus,
+    ConsensusVerdict,
+    DeliverableSubmissionCreate,
+    DeliverableSubmissionRead,
+    DisputeEnforceRequest,
+    DisputeEvidenceCreate,
+    DisputeEvidenceRead,
+    DisputeMessageCreate,
+    DisputeMessageRead,
+    DisputeRead,
+    EscrowCreate,
+    EscrowRead,
+    MilestoneRead,
+    NonceRequest,
+    NonceResponse,
+    PredictionBetCreate,
+    PredictionPositionRead,
+    PredictionRead,
+    TokenResponse,
+    UserRead,
+    UserSettingsRead,
+    UserSettingsUpdate,
+    UserUpdate,
+    ValidatorResult,
+    ValidatorStatRead,
+    VerifyRequest,
+)
+from app.schemas.governance import (
+    ProposalCreate,
+    ProposalDetailRead,
+    ProposalRead,
+    VoteCreate,
+    VoteRead,
+)
+
+__all__ = [
+    "AgentStatRead",
+    "ConsensusJobRead",
+    "ConsensusStatus",
+    "ConsensusVerdict",
+    "DeliverableSubmissionCreate",
+    "DeliverableSubmissionRead",
+    "DisputeEnforceRequest",
+    "DisputeEvidenceCreate",
+    "DisputeEvidenceRead",
+    "DisputeMessageCreate",
+    "DisputeMessageRead",
+    "DisputeRead",
+    "EscrowCreate",
+    "EscrowRead",
+    "MilestoneRead",
+    "NonceRequest",
+    "NonceResponse",
+    "PredictionBetCreate",
+    "PredictionPositionRead",
+    "PredictionRead",
+    "ProposalCreate",
+    "ProposalDetailRead",
+    "ProposalRead",
+    "TokenResponse",
+    "UserRead",
+    "UserSettingsRead",
+    "UserSettingsUpdate",
+    "UserUpdate",
+    "ValidatorResult",
+    "ValidatorStatRead",
+    "VerifyRequest",
+    "VoteCreate",
+    "VoteRead",
+]
