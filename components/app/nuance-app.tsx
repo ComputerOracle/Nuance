@@ -20,12 +20,8 @@ import { formatAddress } from "@/components/app/status";
 import type { Eip1193Provider } from "@/components/app/eip1193";
 import * as api from "@/lib/api";
 import type { ApiDispute, ApiEscrow, ApiMilestone } from "@/lib/api";
-import {
-  AGENT_DIRECTORY,
-  INITIAL_PROPOSALS,
-  VALIDATOR_DIRECTORY,
-} from "@/components/app/data";
 import type {
+  AgentDirectoryEntry,
   Dispute,
   DisputeVerdict,
   Escrow,
@@ -34,6 +30,7 @@ import type {
   Position,
   Prediction,
   Proposal,
+  ValidatorDirectoryEntry,
   View,
 } from "@/components/app/types";
 
@@ -128,6 +125,82 @@ function mapPrediction(p: api.ApiPrediction): Prediction {
       payout: pos.payout,
       status: pos.status,
     })) || [],
+  };
+}
+
+function mapProposal(p: api.ApiProposal): Proposal {
+  return {
+    id: p.id,
+    title: p.title,
+    summary: p.description,
+    category: p.category,
+    status: p.status === "active" ? "Active" : "Closed",
+    rawStatus: p.status,
+    totalFor: p.total_for,
+    totalAgainst: p.total_against,
+    totalAbstain: p.total_abstain,
+    forPct: p.for_pct,
+    againstPct: p.against_pct,
+    abstainPct: p.abstain_pct,
+    turnoutPct: p.turnout_pct,
+    quorumThreshold: p.quorum_threshold,
+    passThreshold: p.pass_threshold,
+    quorumMet: p.quorum_met,
+    endTime: p.end_time,
+    userVote: p.user_vote,
+  };
+}
+
+function mapValidator(v: api.ApiValidatorStat): ValidatorDirectoryEntry {
+  return {
+    name: v.name,
+    accuracyPct: v.accuracy_pct,
+    casesJudged: v.cases_judged,
+    isActive: v.is_active,
+    lastActiveAt: v.last_active_at,
+  };
+}
+
+function mapAgent(a: api.ApiAgentStat): AgentDirectoryEntry {
+  return {
+    walletAddress: a.wallet_address,
+    category: a.category,
+    casesJudged: a.cases_judged,
+    trustScore: a.trust_score,
+  };
+}
+
+// Mirrors the backend's own re-vote rule (routers/governance.py::
+// _adjust_tally): back the previous choice's weight out of the running
+// totals before adding the new one in, rather than stacking a second
+// ballot on top. turnoutPct/quorumMet aren't recomputed here — they depend
+// on the total eligible-voter count, which the frontend doesn't have — so
+// they're left at their last server-known value until castVote() resolves
+// and mapProposal() overwrites this whole object with the real thing.
+function applyOptimisticVote(proposal: Proposal, choice: "For" | "Against"): Proposal {
+  const newChoice = choice === "For" ? "for" : "against";
+  let totalFor = proposal.totalFor;
+  let totalAgainst = proposal.totalAgainst;
+  const totalAbstain = proposal.totalAbstain;
+
+  if (proposal.userVote === "for") totalFor -= 1;
+  else if (proposal.userVote === "against") totalAgainst -= 1;
+  if (newChoice === "for") totalFor += 1;
+  else totalAgainst += 1;
+
+  const decided = totalFor + totalAgainst;
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+
+  return {
+    ...proposal,
+    totalFor,
+    totalAgainst,
+    userVote: newChoice,
+    forPct: decided ? round1((100 * totalFor) / decided) : 0,
+    againstPct: decided ? round1((100 * totalAgainst) / decided) : 0,
+    abstainPct: totalFor + totalAgainst + totalAbstain
+      ? round1((100 * totalAbstain) / (totalFor + totalAgainst + totalAbstain))
+      : 0,
   };
 }
 
@@ -265,8 +338,19 @@ export function NuanceApp() {
   );
 
   // Governance --------------------------------------------------------------
-  const [proposals, setProposals] = useState<Proposal[]>(INITIAL_PROPOSALS);
-  const [votes, setVotes] = useState<Record<number, "For" | "Against">>({});
+  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [proposalsLoading, setProposalsLoading] = useState(true);
+  const [proposalsError, setProposalsError] = useState<string | null>(null);
+  const [voteError, setVoteError] = useState<string | null>(null);
+  const [pendingVoteId, setPendingVoteId] = useState<number | null>(null);
+
+  const [validators, setValidators] = useState<ValidatorDirectoryEntry[]>([]);
+  const [validatorsLoading, setValidatorsLoading] = useState(true);
+  const [validatorsError, setValidatorsError] = useState<string | null>(null);
+
+  const [agents, setAgents] = useState<AgentDirectoryEntry[]>([]);
+  const [agentsLoading, setAgentsLoading] = useState(true);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
 
   // Settings ------------------------------------------------------------
   const [notifyOn, setNotifyOn] = useState(true);
@@ -289,6 +373,12 @@ export function NuanceApp() {
     setDisputesError(null);
     setPredictionsLoading(true);
     setPredictionsError(null);
+    setProposalsLoading(true);
+    setProposalsError(null);
+    setValidatorsLoading(true);
+    setValidatorsError(null);
+    setAgentsLoading(true);
+    setAgentsError(null);
 
     let loadedEscrows: Escrow[] = [];
     try {
@@ -340,6 +430,33 @@ export function NuanceApp() {
       setPredictionsError(errorText(err, "Failed to load predictions from backend."));
     } finally {
       setPredictionsLoading(false);
+    }
+
+    try {
+      const apiProposals = await api.getProposals();
+      setProposals(apiProposals.map(mapProposal));
+    } catch (err) {
+      setProposalsError(errorText(err, "Failed to load proposals from backend."));
+    } finally {
+      setProposalsLoading(false);
+    }
+
+    try {
+      const apiValidators = await api.getValidators();
+      setValidators(apiValidators.map(mapValidator));
+    } catch (err) {
+      setValidatorsError(errorText(err, "Failed to load validators from backend."));
+    } finally {
+      setValidatorsLoading(false);
+    }
+
+    try {
+      const apiAgents = await api.getAgents();
+      setAgents(apiAgents.map(mapAgent));
+    } catch (err) {
+      setAgentsError(errorText(err, "Failed to load agents from backend."));
+    } finally {
+      setAgentsLoading(false);
     }
   };
 
@@ -578,19 +695,26 @@ export function NuanceApp() {
   }
 
   // Governance handlers -----------------------------------------------------
-  function vote(id: number, choice: "For" | "Against") {
-    setProposals((prev) =>
-      prev.map((p) => {
-        if (p.id !== id) return p;
-        const bump = 4;
-        const forPct =
-          choice === "For"
-            ? Math.min(100, p.forPct + bump)
-            : Math.max(0, p.forPct - bump);
-        return { ...p, forPct, againstPct: 100 - forPct };
-      })
-    );
-    setVotes((prev) => ({ ...prev, [id]: choice }));
+  async function vote(id: number, choice: "For" | "Against") {
+    const target = proposals.find((p) => p.id === id);
+    if (!target || target.status !== "Active" || pendingVoteId != null) return;
+
+    setVoteError(null);
+    setPendingVoteId(id);
+    const previous = target;
+    // Optimistic update — reflected immediately, reconciled with the
+    // server's authoritative tally below (or rolled back on failure).
+    setProposals((prev) => prev.map((p) => (p.id === id ? applyOptimisticVote(p, choice) : p)));
+
+    try {
+      const updated = await api.castVote(id, choice);
+      setProposals((prev) => prev.map((p) => (p.id === id ? mapProposal(updated) : p)));
+    } catch (err) {
+      setProposals((prev) => prev.map((p) => (p.id === id ? previous : p)));
+      setVoteError(errorText(err, "Failed to cast vote."));
+    } finally {
+      setPendingVoteId(null);
+    }
   }
 
   // Wallet handlers -----------------------------------------------------
@@ -776,15 +900,40 @@ export function NuanceApp() {
             </>
           ) : null)}
 
-        {view === "governance" && (
-          <GovernanceView proposals={proposals} votes={votes} onVote={vote} />
-        )}
+        {view === "governance" &&
+          (proposalsLoading ? (
+            <LoadingState label="Loading proposals from backend…" />
+          ) : proposalsError ? (
+            <ErrorCard message={proposalsError} onRetry={loadData} />
+          ) : (
+            <>
+              {voteError && <ErrorBanner message={voteError} />}
+              <GovernanceView
+                proposals={proposals}
+                walletConnected={wallet.status === "connected"}
+                pendingVoteId={pendingVoteId}
+                onVote={vote}
+              />
+            </>
+          ))}
 
-        {view === "validators" && (
-          <ValidatorsView validators={VALIDATOR_DIRECTORY} />
-        )}
+        {view === "validators" &&
+          (validatorsLoading ? (
+            <LoadingState label="Loading validator network from backend…" />
+          ) : validatorsError ? (
+            <ErrorCard message={validatorsError} onRetry={loadData} />
+          ) : (
+            <ValidatorsView validators={validators} />
+          ))}
 
-        {view === "agents" && <AgentsView agents={AGENT_DIRECTORY} />}
+        {view === "agents" &&
+          (agentsLoading ? (
+            <LoadingState label="Loading agent directory from backend…" />
+          ) : agentsError ? (
+            <ErrorCard message={agentsError} onRetry={loadData} />
+          ) : (
+            <AgentsView agents={agents} />
+          ))}
 
         {view === "settings" && (
           <SettingsView

@@ -101,23 +101,40 @@ export interface Proposal {
   id: number;
   title: string;
   summary: string;
+  category: string;
+  status: "Active" | "Closed";
+  rawStatus: "active" | "passed" | "rejected" | "executed";
+  totalFor: number;
+  totalAgainst: number;
+  totalAbstain: number;
+  // For/against as a share of decided ballots (abstains excluded); abstain
+  // as a share of turnout. Mirrors backend/app/routers/governance.py::_progress.
   forPct: number;
   againstPct: number;
-  status: "Active" | "Closed";
+  abstainPct: number;
+  turnoutPct: number;
+  quorumThreshold: number;
+  passThreshold: number;
+  quorumMet: boolean;
+  endTime: string;
+  // The connected wallet's own vote, if any — null if not voted or not
+  // authenticated (not the same as having voted "abstain").
+  userVote: "for" | "against" | "abstain" | null;
 }
 
 export interface ValidatorDirectoryEntry {
   name: string;
-  accuracy: number;
-  cases: number;
-  stake: string;
+  accuracyPct: number;
+  casesJudged: number;
+  isActive: boolean;
+  lastActiveAt: string | null;
 }
 
 export interface AgentDirectoryEntry {
-  name: string;
+  walletAddress: string;
   category: string;
-  txns: number;
-  score: number;
+  casesJudged: number;
+  trustScore: number;
 }
 
 export interface EscrowVerdict {

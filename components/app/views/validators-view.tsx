@@ -1,5 +1,11 @@
 import type { ValidatorDirectoryEntry } from "@/components/app/types";
 
+function formatLastActive(iso: string | null): string {
+  if (!iso) return "No cases yet";
+  const date = new Date(iso);
+  return `Active ${date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+}
+
 export function ValidatorsView({
   validators,
 }: {
@@ -24,22 +30,26 @@ export function ValidatorsView({
               <div className="font-brand-mono text-[15px] font-semibold">
                 {v.name}
               </div>
-              <div className="h-2 w-2 rounded-full bg-positive" />
+              <div
+                className={`h-2 w-2 rounded-full ${v.isActive ? "bg-positive" : "bg-border-4"}`}
+              />
             </div>
             <div className="mt-3 flex gap-5">
               <div>
                 <div className="text-[11px] text-fg-meta">Accuracy</div>
                 <div className="mt-0.5 text-sm font-semibold">
-                  {v.accuracy}%
+                  {v.accuracyPct}%
                 </div>
               </div>
               <div>
-                <div className="text-[11px] text-fg-meta">Cases</div>
-                <div className="mt-0.5 text-sm font-semibold">{v.cases}</div>
+                <div className="text-[11px] text-fg-meta">Cases judged</div>
+                <div className="mt-0.5 text-sm font-semibold">{v.casesJudged}</div>
               </div>
               <div>
-                <div className="text-[11px] text-fg-meta">Stake</div>
-                <div className="mt-0.5 text-sm font-semibold">{v.stake}</div>
+                <div className="text-[11px] text-fg-meta">Status</div>
+                <div className="mt-0.5 text-sm font-semibold">
+                  {formatLastActive(v.lastActiveAt)}
+                </div>
               </div>
             </div>
           </div>

@@ -235,6 +235,74 @@ export interface ApiPrediction {
   positions: ApiPredictionPosition[];
 }
 
+export type ApiVoteChoice = "for" | "against" | "abstain";
+export type ApiProposalStatus = "active" | "passed" | "rejected" | "executed";
+
+export interface ApiVote {
+  id: number;
+  proposal_id: number;
+  voter_address: string;
+  choice: ApiVoteChoice;
+  voting_power: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiProposal {
+  id: number;
+  title: string;
+  description: string;
+  category: string;
+  proposer_address: string;
+  status: ApiProposalStatus;
+  start_time: string;
+  end_time: string;
+  quorum_threshold: number;
+  pass_threshold: number;
+  total_for: number;
+  total_against: number;
+  total_abstain: number;
+  created_at: string;
+  // Computed fresh by the backend on every read — see
+  // backend/app/schemas/governance.py's ProposalRead docstring.
+  turnout_pct: number;
+  for_pct: number;
+  against_pct: number;
+  abstain_pct: number;
+  quorum_met: boolean;
+  // The requesting wallet's own vote, if any and if authenticated. Absent
+  // (null) on an anonymous request — not the same as "voted abstain".
+  user_vote: ApiVoteChoice | null;
+}
+
+export interface ApiProposalDetail extends ApiProposal {
+  votes: ApiVote[];
+}
+
+export interface CreateProposalPayload {
+  title: string;
+  description: string;
+  category?: string;
+  voting_period_days?: number;
+  quorum_threshold?: number;
+  pass_threshold?: number;
+}
+
+export interface ApiValidatorStat {
+  name: string;
+  cases_judged: number;
+  accuracy_pct: number;
+  is_active: boolean;
+  last_active_at: string | null;
+}
+
+export interface ApiAgentStat {
+  wallet_address: string;
+  category: string;
+  cases_judged: number;
+  trust_score: number;
+}
+
 export interface ApiNonceResponse {
   nonce: string;
   message: string;
@@ -425,6 +493,45 @@ export async function resolvePrediction(predictionId: number): Promise<ApiPredic
   return apiFetch<ApiPrediction>(`/predictions/${predictionId}/resolve`, {
     method: "POST",
   });
+}
+
+// --- Governance ---------------------------------------------------------
+
+export async function getProposals(): Promise<ApiProposal[]> {
+  return apiFetch<ApiProposal[]>("/proposals");
+}
+
+export async function getProposal(id: number): Promise<ApiProposalDetail> {
+  return apiFetch<ApiProposalDetail>(`/proposals/${id}`);
+}
+
+export async function createProposal(payload: CreateProposalPayload): Promise<ApiProposal> {
+  return apiFetch<ApiProposal>("/proposals", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+// `choice` is case-insensitive on the backend (VoteCreate._normalize_choice
+// lowercases before validating), so callers can pass "For"/"Against" as-is.
+export async function castVote(
+  proposalId: number,
+  choice: ApiVoteChoice | "For" | "Against" | "Abstain"
+): Promise<ApiProposal> {
+  return apiFetch<ApiProposal>(`/proposals/${proposalId}/vote`, {
+    method: "POST",
+    body: JSON.stringify({ choice }),
+  });
+}
+
+// --- Validators & agents --------------------------------------------------
+
+export async function getValidators(): Promise<ApiValidatorStat[]> {
+  return apiFetch<ApiValidatorStat[]>("/validators");
+}
+
+export async function getAgents(): Promise<ApiAgentStat[]> {
+  return apiFetch<ApiAgentStat[]>("/agents");
 }
 
 
