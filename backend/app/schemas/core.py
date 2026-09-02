@@ -171,6 +171,12 @@ class ValidatorResult(BaseModel):
     vote: str
     confidence: int = Field(ge=0, le=100)
     reasoning: str
+    # Which provider actually produced this verdict — "gemini" / "anthropic"
+    # / "openai" on success, or "heuristic" if every configured provider
+    # failed and the deterministic offline fallback answered instead.
+    # Optional/nullable so older stored ConsensusJob rows (persisted before
+    # this field existed) still deserialize cleanly.
+    provider: str | None = None
 
 
 class ConsensusJobRead(BaseModel):
@@ -306,6 +312,7 @@ class PredictionRead(BaseModel):
     status_key: str
     outcome: str | None = None
     resolution_reasoning: str | None = None
+    resolution_source_url: str | None = None
     created_at: datetime
     resolved_at: datetime | None = None
     positions: list[PredictionPositionRead] = []

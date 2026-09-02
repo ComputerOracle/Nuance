@@ -1,4 +1,5 @@
-"""The AI-validator consensus engine — plan.md section 4, made real with Gemini.
+"""The AI-validator consensus engine — plan.md section 4, now backed by
+three distinct providers instead of three calls to the same one.
 
 `run_consensus` is scheduled as a FastAPI BackgroundTask by
 routers/escrows.py and routers/disputes.py right after they synchronously
@@ -8,16 +9,45 @@ lifecycle end to end: QUEUED -> ANALYZING -> DONE.
 
 Runs its own DB session (rather than reusing the request's) since it
 executes after the HTTP request that scheduled it has already returned.
+
+--- Multi-model consensus ------------------------------------------------
+
+Each validator persona has its own primary provider and its own persona
+flavor (mirrors plan.md's "three independent minds" framing rather than
+three copies of the same model):
+
+  - Validator-Alpha ("The Formalist") -> Google Gemini
+  - Validator-Beta  ("The Realist")   -> Anthropic Claude
+  - Validator-Gamma ("The Auditor")   -> OpenAI
+
+`VALIDATOR_NAMES` itself is unchanged from the single-provider version —
+routers/validators.py's stats and the frontend's ConsensusPanel both match
+on this exact list/order (see routers/validators.py's docstring), and
+nothing about switching providers requires renaming the personas.
+
+Resilient fallback: `_run_validator_with_fallback` tries a persona's
+primary provider first, then walks the remaining two providers in
+`_fallback_chain` order on *any* failure — a missing API key, a 429, a
+connection timeout, a 5xx, or anything else an SDK call can raise. If
+every provider is unconfigured or fails, it degrades to
+`_deterministic_heuristic_verdict` (a keyword-driven, hash-seeded stand-in
+verdict — same input always produces the same output) rather than ever
+failing the consensus job outright. Every hop is logged as a warning for
+observability.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Literal
 
+import anthropic
+import openai
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, Field
@@ -41,7 +71,24 @@ settings = get_settings()
 # call actually resolves first.
 VALIDATOR_NAMES = ("Validator-Alpha", "Validator-Beta", "Validator-Gamma")
 
-MODEL = "gemini-3.5-flash"
+PERSONA_TITLES: dict[str, str] = {
+    "Validator-Alpha": "The Formalist",
+    "Validator-Beta": "The Realist",
+    "Validator-Gamma": "The Auditor",
+}
+
+# Each persona's primary provider — see module docstring.
+PERSONA_PRIMARY_PROVIDER: dict[str, str] = {
+    "Validator-Alpha": "gemini",
+    "Validator-Beta": "anthropic",
+    "Validator-Gamma": "openai",
+}
+
+PROVIDER_MODELS: dict[str, str] = {
+    "gemini": "gemini-2.5-flash",
+    "anthropic": "claude-3-5-sonnet-latest",
+    "openai": "gpt-4o-mini",
+}
 
 # Floor enforced below so a fast LLM response doesn't make the frontend's
 # consensus panel flash instead of feeling like real deliberation
@@ -61,26 +108,24 @@ class ValidatorVerdict(BaseModel):
     )
 
 
-# Only network/rate-limit/server-side failures are worth retrying
-_RETRYABLE_ERRORS = (errors.APIError,)
-
-
 def _persona_system_prompt(name: str, subject_type: ConsensusSubjectType) -> str:
+    title = PERSONA_TITLES.get(name, name)
     if subject_type == ConsensusSubjectType.DISPUTE:
         return (
-            f"You are {name}, one of three independent AI validators on GenLayer's Internet Court "
-            "for Nuance. Your role is to adjudicate disputes between counterparties based on the "
-            "agreement terms, the chat transcript/arguments exchanged, and all submitted evidence. "
-            "Evaluate the claims objectively. Vote 'approve' if the claimant's dispute/evidence is "
-            "justified and supported; vote 'dispute' (reject claimant's claim) if the counterparty's "
-            "position is valid or if the claim lacks sufficient evidence. Provide structured JSON with "
-            "vote ('approve' or 'dispute'), confidence (0-100), and concise reasoning."
+            f"You are {name} ('{title}'), one of three independent AI validators on GenLayer's "
+            "Internet Court for Nuance. Your role is to adjudicate disputes between counterparties "
+            "based on the agreement terms, the chat transcript/arguments exchanged, and all "
+            "submitted evidence. Evaluate the claims objectively. Vote 'approve' if the claimant's "
+            "dispute/evidence is justified and supported; vote 'dispute' (reject claimant's claim) "
+            "if the counterparty's position is valid or if the claim lacks sufficient evidence. "
+            "Provide structured JSON with vote ('approve' or 'dispute'), confidence (0-100), and "
+            "concise reasoning."
         )
     return (
-        f"You are {name}, one of three independent AI validators adjudicating a milestone deliverable "
-        "for Nuance. Read the criteria and the submitted text, then provide your independent judgment as "
-        "structured JSON with vote (approve or dispute), confidence (0-100), and reasoning. "
-        "Be skeptical of vague, unsupported, or evasive submissions."
+        f"You are {name} ('{title}'), one of three independent AI validators adjudicating a "
+        "milestone deliverable for Nuance. Read the criteria and the submitted text, then provide "
+        "your independent judgment as structured JSON with vote (approve or dispute), confidence "
+        "(0-100), and reasoning. Be skeptical of vague, unsupported, or evasive submissions."
     )
 
 
@@ -93,14 +138,35 @@ def _build_user_prompt(context: str, submission_text: str) -> str:
     )
 
 
+def _result_from_verdict(name: str, verdict: ValidatorVerdict) -> dict:
+    return {
+        "name": name,
+        "vote": verdict.vote,
+        "confidence": int(verdict.confidence),
+        "reasoning": verdict.reasoning,
+    }
+
+
+# --- Provider calls ---------------------------------------------------------
+#
+# One `_call_<provider>` per SDK, each with its own retry policy for that
+# SDK's own transient-error types (rate limits, connection issues, 5xx).
+# Retries are exhausted *within* a provider before `_run_validator_with_
+# fallback` below gives up on it and moves to the next one in the chain —
+# so a single 429 doesn't immediately burn a fallback hop.
+
+_GEMINI_RETRYABLE_ERRORS = (errors.APIError,)
+
+
 @retry(
-    retry=retry_if_exception_type(_RETRYABLE_ERRORS),
+    retry=retry_if_exception_type(_GEMINI_RETRYABLE_ERRORS),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=8),
     reraise=True,
 )
-async def _call_validator(
+async def _call_gemini(
     client: genai.Client,
+    model: str,
     name: str,
     subject_type: ConsensusSubjectType,
     context: str,
@@ -112,55 +178,263 @@ async def _call_validator(
         response_schema=ValidatorVerdict,
         temperature=0.5,
     )
-    prompt = _build_user_prompt(context, submission_text)
-
     response = await client.aio.models.generate_content(
-        model=MODEL,
-        contents=prompt,
+        model=model,
+        contents=_build_user_prompt(context, submission_text),
         config=config,
     )
 
     if response.parsed and isinstance(response.parsed, ValidatorVerdict):
-        parsed = response.parsed
-        return {
-            "name": name,
-            "vote": parsed.vote,
-            "confidence": int(parsed.confidence),
-            "reasoning": parsed.reasoning,
-        }
-
+        return _result_from_verdict(name, response.parsed)
     if response.text:
-        data = json.loads(response.text)
-        return {
-            "name": name,
-            "vote": data.get("vote", "dispute"),
-            "confidence": int(data.get("confidence", 0)),
-            "reasoning": data.get("reasoning", ""),
-        }
-
-    raise ValueError("Empty response received from validator.")
+        return _result_from_verdict(name, ValidatorVerdict(**json.loads(response.text)))
+    raise ValueError("Empty response received from Gemini validator.")
 
 
-async def _run_validator(
-    client: genai.Client,
+_ANTHROPIC_RETRYABLE_ERRORS = (
+    anthropic.RateLimitError,
+    anthropic.APIConnectionError,
+    anthropic.APITimeoutError,
+    anthropic.InternalServerError,
+)
+
+# Forcing this exact tool call is Anthropic's structured-output equivalent
+# of Gemini's response_schema / OpenAI's response_format=json_object.
+_ANTHROPIC_VERDICT_TOOL = {
+    "name": "submit_verdict",
+    "description": "Submit your structured validator verdict for this case.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "vote": {"type": "string", "enum": ["approve", "dispute"]},
+            "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+            "reasoning": {"type": "string"},
+        },
+        "required": ["vote", "confidence", "reasoning"],
+    },
+}
+
+
+@retry(
+    retry=retry_if_exception_type(_ANTHROPIC_RETRYABLE_ERRORS),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    reraise=True,
+)
+async def _call_anthropic(
+    client: anthropic.AsyncAnthropic,
+    model: str,
     name: str,
     subject_type: ConsensusSubjectType,
     context: str,
     submission_text: str,
 ) -> dict:
-    """A validator that exhausts its retries doesn't get to silently vanish
-    from the panel — it's recorded as a zero-confidence abstention so the
-    majority vote below always has three ballots to count."""
-    try:
-        return await _call_validator(client, name, subject_type, context, submission_text)
-    except Exception as exc:  # noqa: BLE001 — any exhausted-retry failure degrades to an abstention
-        logger.warning("Validator %s failed after retries: %s", name, exc)
-        return {
-            "name": name,
-            "vote": "dispute",
-            "confidence": 0,
-            "reasoning": f"Validator unavailable: {exc}",
-        }
+    response = await client.messages.create(
+        model=model,
+        max_tokens=512,
+        temperature=0.5,
+        system=_persona_system_prompt(name, subject_type),
+        messages=[{"role": "user", "content": _build_user_prompt(context, submission_text)}],
+        tools=[_ANTHROPIC_VERDICT_TOOL],
+        tool_choice={"type": "tool", "name": "submit_verdict"},
+    )
+
+    for block in response.content:
+        if getattr(block, "type", None) == "tool_use" and block.name == "submit_verdict":
+            return _result_from_verdict(name, ValidatorVerdict(**block.input))
+    raise ValueError("Anthropic response did not include the expected submit_verdict tool call.")
+
+
+_OPENAI_RETRYABLE_ERRORS = (
+    openai.RateLimitError,
+    openai.APIConnectionError,
+    openai.APITimeoutError,
+    openai.InternalServerError,
+)
+
+
+@retry(
+    retry=retry_if_exception_type(_OPENAI_RETRYABLE_ERRORS),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    reraise=True,
+)
+async def _call_openai(
+    client: openai.AsyncOpenAI,
+    model: str,
+    name: str,
+    subject_type: ConsensusSubjectType,
+    context: str,
+    submission_text: str,
+) -> dict:
+    system_prompt = (
+        f"{_persona_system_prompt(name, subject_type)}\n\n"
+        "Respond with only a single json object (no prose, no markdown fences) containing "
+        "exactly these keys: \"vote\" ('approve' or 'dispute'), \"confidence\" (integer 0-100), "
+        "\"reasoning\" (string)."
+    )
+    response = await client.chat.completions.create(
+        model=model,
+        temperature=0.5,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": _build_user_prompt(context, submission_text)},
+        ],
+    )
+
+    content = response.choices[0].message.content if response.choices else None
+    if not content:
+        raise ValueError("Empty response received from OpenAI validator.")
+    return _result_from_verdict(name, ValidatorVerdict(**json.loads(content)))
+
+
+_ProviderCaller = Callable[
+    [object, str, str, ConsensusSubjectType, str, str], Awaitable[dict]
+]
+
+_PROVIDER_CALLERS: dict[str, _ProviderCaller] = {
+    "gemini": _call_gemini,
+    "anthropic": _call_anthropic,
+    "openai": _call_openai,
+}
+
+# Fallback rotation order, before rotating each persona to start on its own
+# primary — see _fallback_chain.
+_CANONICAL_PROVIDER_ORDER: tuple[str, ...] = ("gemini", "anthropic", "openai")
+
+
+def _fallback_chain(primary: str) -> tuple[str, ...]:
+    """Primary first, then the remaining providers in their canonical
+    order — e.g. Validator-Beta's Anthropic primary falls back
+    Anthropic -> Gemini -> OpenAI."""
+    return (primary, *(p for p in _CANONICAL_PROVIDER_ORDER if p != primary))
+
+
+def _build_provider_clients(app_settings) -> dict[str, object]:
+    """Only providers with a configured API key get a client — an
+    unconfigured provider is skipped in `_run_validator_with_fallback`
+    without ever attempting a network call."""
+    clients: dict[str, object] = {}
+    if app_settings.gemini_api_key:
+        clients["gemini"] = genai.Client(api_key=app_settings.gemini_api_key)
+    if app_settings.anthropic_api_key:
+        clients["anthropic"] = anthropic.AsyncAnthropic(api_key=app_settings.anthropic_api_key)
+    if app_settings.openai_api_key:
+        clients["openai"] = openai.AsyncOpenAI(api_key=app_settings.openai_api_key)
+    return clients
+
+
+# --- Deterministic offline heuristic ---------------------------------------
+
+_HEURISTIC_POSITIVE_SIGNALS: tuple[str, ...] = (
+    "completed", "delivered", "verified", "confirmed", "resolved", "shipped",
+    "passed", "matches", "attached", "documented", "approved", "satisfied",
+    "done", "fixed",
+)
+# Deliberately no bare "evidence"/"proof" here — those nouns are neutral on
+# their own (e.g. "no evidence"/"lacks proof" is a *negative* signal), so
+# treating them as inherently positive would misread a denial as an
+# endorsement. The negative list below covers evidence/proof only in their
+# explicitly-negated forms instead.
+_HEURISTIC_NEGATIVE_SIGNALS: tuple[str, ...] = (
+    "missing", "incomplete", "unable", "lacks", "lacking", "failed", "fail",
+    "no evidence", "lack of evidence", "insufficient evidence",
+    "without evidence", "unproven", "unsupported", "not done", "did not",
+    "didn't", "never", "broken", "unresolved", "pending", "unverified",
+    "false",
+)
+
+
+def _deterministic_heuristic_verdict(name: str, submission_text: str) -> dict:
+    """Every provider in this validator's fallback chain was either
+    unconfigured or failed. Rather than failing the consensus job (or, the
+    old behavior, silently abstaining at zero confidence), produce a
+    deterministic, keyword-driven stand-in verdict — same philosophy as
+    services/market_generator.py's own `_extract_market_offline`. Same
+    input always produces the same output, so this is exercisable and
+    assertable in tests with no network call at all.
+    """
+    haystack = submission_text.lower()
+    positive_hits = sum(1 for signal in _HEURISTIC_POSITIVE_SIGNALS if signal in haystack)
+    negative_hits = sum(1 for signal in _HEURISTIC_NEGATIVE_SIGNALS if signal in haystack)
+    approved = positive_hits > negative_hits
+
+    # Deterministic but not a fixed number — derived from a stable hash of
+    # the actual input so different submissions land on different
+    # (reproducible) scores, bounded to a modest range since this is a
+    # heuristic stand-in, not a real judgment.
+    digest = hashlib.sha256(f"{name}:{submission_text}".encode("utf-8")).hexdigest()
+    confidence = 40 + (int(digest[:4], 16) % 21)  # 40-60
+
+    return {
+        "name": name,
+        "vote": "approve" if approved else "dispute",
+        "confidence": confidence,
+        "reasoning": (
+            f"Offline heuristic fallback: no LLM provider was reachable for {name}. Matched "
+            f"{positive_hits} positive vs {negative_hits} negative signal keyword(s) in the "
+            "submission — a deterministic stand-in, not an independent AI judgment."
+        ),
+    }
+
+
+async def _run_validator_with_fallback(
+    clients: dict[str, object],
+    name: str,
+    subject_type: ConsensusSubjectType,
+    context: str,
+    submission_text: str,
+) -> dict:
+    """Tries `name`'s persona-assigned primary provider first, then walks
+    the rest of `_fallback_chain` on any failure — a missing key (skipped
+    without a network call), or an exhausted-retries exception from the
+    provider itself (429, timeout, 5xx, or anything else). Never raises:
+    if every provider is unconfigured or fails, returns
+    `_deterministic_heuristic_verdict` instead of failing the job.
+    """
+    primary = PERSONA_PRIMARY_PROVIDER[name]
+    chain = _fallback_chain(primary)
+    last_error: Exception | None = None
+
+    for provider in chain:
+        client = clients.get(provider)
+        if client is None:
+            logger.warning(
+                "Validator %s: provider '%s' has no API key configured — skipping.",
+                name, provider,
+            )
+            continue
+
+        try:
+            result = await _PROVIDER_CALLERS[provider](
+                client, PROVIDER_MODELS[provider], name, subject_type, context, submission_text
+            )
+        except Exception as exc:  # noqa: BLE001 — any failure tries the next provider in the chain
+            last_error = exc
+            logger.warning(
+                "Validator %s: provider '%s' failed (%s) — falling back to the next provider.",
+                name, provider, exc,
+            )
+            continue
+
+        if provider != primary:
+            logger.warning(
+                "Validator %s: served by fallback provider '%s' (primary '%s' was unavailable).",
+                name, provider, primary,
+            )
+        result["provider"] = provider
+        return result
+
+    logger.warning(
+        "Validator %s: every configured provider failed%s — using the deterministic offline "
+        "heuristic instead of failing the consensus job.",
+        name,
+        f" (last error: {last_error})" if last_error is not None else " (none were configured)",
+    )
+    result = _deterministic_heuristic_verdict(name, submission_text)
+    result["provider"] = "heuristic"
+    return result
 
 
 def _aggregate(results: list[dict]) -> dict:
@@ -298,31 +572,24 @@ async def run_consensus(
             job.stage = int(ConsensusStage.ANALYZING)
             await db.commit()
 
-            if not settings.gemini_api_key:
+            clients = _build_provider_clients(settings)
+            if not clients:
                 logger.warning(
-                    "GEMINI_API_KEY not set — consensus job %s completed with abstentions.",
+                    "No LLM provider API keys configured (gemini/anthropic/openai) — "
+                    "consensus job %s will use the deterministic offline heuristic for "
+                    "every validator.",
                     job.id,
                 )
-                results = [
-                    {
-                        "name": name,
-                        "vote": "dispute",
-                        "confidence": 0,
-                        "reasoning": "GEMINI_API_KEY not configured.",
-                    }
+
+            deliberation = asyncio.gather(
+                *(
+                    _run_validator_with_fallback(clients, name, subject_type, context, text_payload)
                     for name in VALIDATOR_NAMES
-                ]
-            else:
-                client = genai.Client(api_key=settings.gemini_api_key)
-                deliberation = asyncio.gather(
-                    *(
-                        _run_validator(client, name, subject_type, context, text_payload)
-                        for name in VALIDATOR_NAMES
-                    )
                 )
-                results, _ = await asyncio.gather(
-                    deliberation, asyncio.sleep(MIN_DELIBERATION_SECONDS)
-                )
+            )
+            results, _ = await asyncio.gather(
+                deliberation, asyncio.sleep(MIN_DELIBERATION_SECONDS)
+            )
 
             verdict = _aggregate(results)
 
@@ -429,5 +696,3 @@ async def _apply_verdict_to_state(
                 all_approved = all(m.status_key == StatusKey.APPROVED for m in escrow.milestones)
                 if all_approved:
                     escrow.status_key = StatusKey.APPROVED
-
-

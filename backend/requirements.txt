@@ -15,6 +15,15 @@ pyjwt==2.13.0
 google-genai>=2.19.0
 tenacity==9.1.4
 
+# --- Multi-model consensus prompt (Anthropic + OpenAI fallback providers) ---
+anthropic==1.0.0
+openai==1.109.1
+
+# --- Market-generator prompt (ingestion) ---
+tweepy==4.17.0        # Twitter/X API v2 client — optional, only used if TWITTER_BEARER_TOKEN is set
+feedparser==6.0.14    # RSS/Atom fallback for GenLayer announcements
+beautifulsoup4==4.15.0  # generic webpage-scrape fallback, one tier below RSS
+
 # --- Wired in a later prompt ---
 # alembic       # schema migrations, once the schema stabilizes
 

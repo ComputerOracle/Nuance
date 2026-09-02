@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import models  # noqa: F401 — import registers tables on Base.metadata
 from app.config import get_settings
 from app.db import dispose_engine, init_db
+from app.middleware.idempotency import IdempotencyMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.routers import agents, auth, consensus, disputes, escrows, governance, predictions, validators
 
 settings = get_settings()
@@ -38,6 +40,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Starlette treats the *last* `add_middleware` call as outermost (it runs
+# first on the way in) — so this order gives, outer to inner:
+# CORS -> RateLimit -> Idempotency -> router. Rate limiting rejects before
+# idempotency ever touches its own DB lookup, and CORS headers still land
+# on the 429/409 responses either middleware can short-circuit with.
+app.add_middleware(IdempotencyMiddleware)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,

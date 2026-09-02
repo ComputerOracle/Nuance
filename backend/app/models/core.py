@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, ForeignKey, Numeric, Text, func
+from sqlalchemy import JSON, Boolean, ForeignKey, Numeric, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -218,6 +218,9 @@ class Prediction(Base):
     status_key: Mapped[str] = mapped_column(default="open")
     outcome: Mapped[str | None] = mapped_column(Text, default=None)
     resolution_reasoning: Mapped[str | None] = mapped_column(Text, default=None)
+    # The announcement/tweet a machine-generated market was extracted from —
+    # null for hand-created markets. See services/market_generator.py.
+    resolution_source_url: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(default=None)
 
@@ -242,5 +245,58 @@ class PredictionPosition(Base):
 
     prediction: Mapped["Prediction"] = relationship(back_populates="positions")
     user: Mapped["User"] = relationship(foreign_keys=[wallet_address])
+
+
+class MarketEventLog(Base):
+    """Dedup ledger for services/market_generator.py — one row per raw
+    source event (a tweet id, or a hash of an RSS/webpage entry's URL) it
+    has ever looked at, so the exact same announcement is never fed to the
+    LLM extractor twice, regardless of whether it produced a market, was
+    judged noise, or the extraction call itself failed.
+    """
+
+    __tablename__ = "market_event_log"
+
+    source_id: Mapped[str] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(default="unknown")  # "twitter" | "rss" | "web"
+    source_url: Mapped[str | None] = mapped_column(Text, default=None)
+    outcome: Mapped[str] = mapped_column(default="skipped")  # "created" | "skipped" | "error"
+    prediction_id: Mapped[int | None] = mapped_column(
+        ForeignKey("predictions.id"), default=None
+    )
+    processed_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class IdempotencyRecord(Base):
+    """Cache row backing app/middleware/idempotency.py's dedup + in-flight
+    lock guard on financial/state-changing write routes (POST /escrows,
+    POST /disputes/{id}/evidence, POST /predictions/{id}/bet, POST
+    /proposals/{id}/vote). Scoped to (key, user_address, endpoint) rather
+    than key alone — the same Idempotency-Key header value reused by two
+    different wallets, or coincidentally on two different endpoints, must
+    not collide with each other.
+    """
+
+    __tablename__ = "idempotency_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "key", "user_address", "endpoint", name="uq_idempotency_key_user_endpoint"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(Text)
+    user_address: Mapped[str] = mapped_column(ForeignKey("users.wallet_address"))
+    endpoint: Mapped[str] = mapped_column(Text)
+    request_hash: Mapped[str] = mapped_column(Text)
+    # "in_progress" while the wrapped request is still executing — acts as
+    # the in-flight lock (a second request with the same key while this is
+    # set gets 409) — "completed" once response_code/response_body are
+    # filled in and safe to replay.
+    status: Mapped[str] = mapped_column(default="in_progress")
+    response_code: Mapped[int | None] = mapped_column(default=None)
+    response_body: Mapped[dict | list | None] = mapped_column(JSON, default=None)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(default=None)
 
 

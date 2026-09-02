@@ -190,6 +190,11 @@ async def test_run_consensus_missing_job_is_a_noop(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_consensus_skips_network_without_api_key(monkeypatch):
+    """No provider API key configured at all (gemini/anthropic/openai) ->
+    every validator degrades to the deterministic offline heuristic (see
+    test_consensus_multimodel.py) rather than the old always-0-confidence
+    abstention — but the *direction* is the same: "text" has no
+    positive/negative signal keywords, so every validator still disputes."""
     milestone = await _seed_milestone()
     job = await _create_job(milestone.id)
 
@@ -198,6 +203,8 @@ async def test_run_consensus_skips_network_without_api_key(monkeypatch):
 
     monkeypatch.setattr(consensus.genai, "Client", _boom)
     monkeypatch.setattr(consensus.settings, "gemini_api_key", None)
+    monkeypatch.setattr(consensus.settings, "anthropic_api_key", None)
+    monkeypatch.setattr(consensus.settings, "openai_api_key", None)
     monkeypatch.setattr(consensus, "MIN_DELIBERATION_SECONDS", 0.01)
 
     await consensus.run_consensus(ConsensusSubjectType.MILESTONE, milestone.id, "text")
@@ -208,7 +215,8 @@ async def test_run_consensus_skips_network_without_api_key(monkeypatch):
         refreshed_escrow = await db.get(Escrow, milestone.escrow_id)
 
     assert refreshed.stage == int(ConsensusStage.DONE)
-    assert all(r["confidence"] == 0 for r in refreshed.validator_results)
+    assert all(r["provider"] == "heuristic" for r in refreshed.validator_results)
+    assert all(40 <= r["confidence"] <= 60 for r in refreshed.validator_results)
     assert refreshed.verdict_approved is False
 
     # State mutation to disputed
@@ -218,12 +226,19 @@ async def test_run_consensus_skips_network_without_api_key(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_consensus_api_error_returns_clean_fallback(monkeypatch):
+    """Gemini is configured but every call fails; Anthropic/OpenAI aren't
+    configured at all -> every validator's fallback chain is exhausted and
+    lands on the deterministic offline heuristic (see
+    test_consensus_multimodel.py for the dedicated fallback-chain tests)
+    rather than crashing the job or leaving it stuck."""
     milestone = await _seed_milestone()
     job = await _create_job(milestone.id)
 
     monkeypatch.setattr(consensus.genai, "Client", _FailingGenaiClient)
     monkeypatch.setattr(consensus, "MIN_DELIBERATION_SECONDS", 0.01)
     monkeypatch.setattr(consensus.settings, "gemini_api_key", "test-key")
+    monkeypatch.setattr(consensus.settings, "anthropic_api_key", None)
+    monkeypatch.setattr(consensus.settings, "openai_api_key", None)
 
     await consensus.run_consensus(ConsensusSubjectType.MILESTONE, milestone.id, "text")
 
@@ -232,8 +247,9 @@ async def test_run_consensus_api_error_returns_clean_fallback(monkeypatch):
         refreshed_milestone = await db.get(Milestone, milestone.id)
         refreshed_escrow = await db.get(Escrow, milestone.escrow_id)
 
+    assert all(r["provider"] == "heuristic" for r in refreshed.validator_results)
     assert refreshed.verdict_approved is False
-    assert refreshed.verdict_confidence == 0
+    assert 40 <= refreshed.verdict_confidence <= 60
     assert refreshed_milestone.status_key == StatusKey.DISPUTED
     assert refreshed_escrow.status_key == StatusKey.DISPUTED
 
