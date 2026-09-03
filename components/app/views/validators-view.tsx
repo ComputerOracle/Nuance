@@ -6,6 +6,21 @@ function formatLastActive(iso: string | null): string {
   return `Active ${date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
 }
 
+// Display labels for services/consensus.py's provider identifiers. Falls
+// back to the raw string for anything not listed here (e.g. a future
+// provider added on the backend before this map is updated).
+const PROVIDER_LABELS: Record<string, string> = {
+  gemini: "Gemini",
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  heuristic: "Offline heuristic",
+};
+
+function formatProvider(provider: string | null): string | null {
+  if (!provider) return null;
+  return `via ${PROVIDER_LABELS[provider] ?? provider}`;
+}
+
 export function ValidatorsView({
   validators,
 }: {
@@ -34,6 +49,11 @@ export function ValidatorsView({
                 className={`h-2 w-2 rounded-full ${v.isActive ? "bg-positive" : "bg-border-4"}`}
               />
             </div>
+            {formatProvider(v.lastProvider) && (
+              <div className="mt-0.5 text-[11px] text-fg-meta">
+                {formatProvider(v.lastProvider)}
+              </div>
+            )}
             <div className="mt-3 flex gap-5">
               <div>
                 <div className="text-[11px] text-fg-meta">Accuracy</div>

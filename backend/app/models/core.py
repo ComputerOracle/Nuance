@@ -270,11 +270,13 @@ class MarketEventLog(Base):
 class IdempotencyRecord(Base):
     """Cache row backing app/middleware/idempotency.py's dedup + in-flight
     lock guard on financial/state-changing write routes (POST /escrows,
-    POST /disputes/{id}/evidence, POST /predictions/{id}/bet, POST
-    /proposals/{id}/vote). Scoped to (key, user_address, endpoint) rather
-    than key alone — the same Idempotency-Key header value reused by two
-    different wallets, or coincidentally on two different endpoints, must
-    not collide with each other.
+    POST /escrows/{id}/release, POST /disputes/{id}/evidence, POST
+    /disputes/{id}/enforce, POST /predictions/{id}/bet, POST /proposals/{id}
+    /vote — see app/middleware/write_routes.py for the exact set). Scoped to
+    (key, user_address, endpoint) rather than key alone — the same
+    Idempotency-Key header value reused by two different wallets, or
+    coincidentally on two different endpoints, must not collide with each
+    other.
     """
 
     __tablename__ = "idempotency_records"

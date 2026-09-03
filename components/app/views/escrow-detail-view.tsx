@@ -87,7 +87,8 @@ export function EscrowDetailView({
           {escrow.milestones.map((m, i) => {
             const isActive =
               i === activeIdx &&
-              (m.statusKey === "in_review" ||
+              (m.statusKey === "pending" ||
+                m.statusKey === "in_review" ||
                 m.statusKey === "in_progress" ||
                 m.statusKey === "disputed");
             return (
@@ -120,7 +121,7 @@ export function EscrowDetailView({
 
                 {isActive &&
                   stage === 0 &&
-                  m.statusKey === "in_progress" &&
+                  (m.statusKey === "pending" || m.statusKey === "in_progress") &&
                   escrow.statusKey !== "approved" &&
                   escrow.statusKey !== "disputed" && (
                     <div className="mt-3.5 border-t border-border-1 pt-3.5">

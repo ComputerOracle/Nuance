@@ -30,7 +30,10 @@ async def _validator_stats(db: AsyncSession) -> list[dict]:
         )
     )
 
-    stats = {name: {"cases": 0, "matched": 0, "last_active_at": None} for name in VALIDATOR_NAMES}
+    stats = {
+        name: {"cases": 0, "matched": 0, "last_active_at": None, "last_provider": None}
+        for name in VALIDATOR_NAMES
+    }
 
     for validator_results, verdict_approved, completed_at in result.all():
         for entry in validator_results or []:
@@ -46,6 +49,10 @@ async def _validator_stats(db: AsyncSession) -> list[dict]:
                 bucket["last_active_at"] is None or completed_at > bucket["last_active_at"]
             ):
                 bucket["last_active_at"] = completed_at
+                # "provider" is a newer field (see ValidatorResult) — a job
+                # persisted before it existed just leaves this None rather
+                # than crashing on the missing key.
+                bucket["last_provider"] = entry.get("provider")
 
     stats_list = [
         {
@@ -54,6 +61,7 @@ async def _validator_stats(db: AsyncSession) -> list[dict]:
             "accuracy_pct": round(100.0 * s["matched"] / s["cases"], 1) if s["cases"] else 0.0,
             "is_active": s["cases"] > 0,
             "last_active_at": s["last_active_at"],
+            "last_provider": s["last_provider"],
         }
         for name, s in stats.items()
     ]

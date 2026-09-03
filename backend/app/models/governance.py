@@ -52,6 +52,14 @@ class Proposal(Base):
     total_against: Mapped[int] = mapped_column(default=0)
     total_abstain: Mapped[int] = mapped_column(default=0)
 
+    # Populated by POST /proposals/{id}/execute — mirrors Dispute's
+    # enforced_by/resolved_at pair. A PASSED proposal has no on-chain
+    # treasury/parameter effect wired up yet (ROADMAP.md Part 3); execute
+    # is deliberately just the formal "this decision has been enacted"
+    # status transition until a real effect exists to apply.
+    executed_by: Mapped[str | None] = mapped_column(ForeignKey("users.wallet_address"), default=None)
+    executed_at: Mapped[datetime | None] = mapped_column(default=None)
+
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     votes: Mapped[list["Vote"]] = relationship(

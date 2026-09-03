@@ -346,6 +346,11 @@ class ValidatorStatRead(BaseModel):
     accuracy_pct: float
     is_active: bool
     last_active_at: datetime | None = None
+    # Which provider ("gemini"/"anthropic"/"openai"/"heuristic") answered
+    # this validator's most recent completed case — see
+    # services/consensus.py's ValidatorResult.provider. None if it has no
+    # cases yet.
+    last_provider: str | None = None
 
 
 class AgentStatRead(BaseModel):
