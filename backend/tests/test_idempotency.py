@@ -12,6 +12,8 @@ Covers:
      header is opt-in.
   5. More than `write_rate_limit_per_minute` write requests from the same
      wallet in a rolling minute get 429.
+  6. The fund-moving routes (escrow release, dispute enforce) are
+     idempotency-protected too, not just the original four.
 """
 
 from __future__ import annotations
@@ -34,8 +36,15 @@ from sqlalchemy import func, select  # noqa: E402
 
 from app.config import get_settings  # noqa: E402
 from app.db import AsyncSessionLocal  # noqa: E402
+from app.enums import StatusKey  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Escrow, IdempotencyRecord, Prediction, PredictionPosition  # noqa: E402
+from app.models import (  # noqa: E402
+    Dispute,
+    Escrow,
+    IdempotencyRecord,
+    Prediction,
+    PredictionPosition,
+)
 
 
 @pytest.fixture
@@ -214,6 +223,88 @@ def test_missing_idempotency_key_header_is_not_deduplicated(client, wallet):
     assert second.json()["volume"] == 100  # both bets actually landed
 
     assert asyncio.run(_count_positions(pred_id)) == 2
+
+
+# --- 4b. Fund-moving routes are protected too -------------------------------
+
+
+def test_release_milestone_is_idempotency_protected(client, wallet):
+    token = _get_token(client, wallet)
+    counterparty = Account.create().address.lower()
+    create = client.post(
+        "/escrows",
+        json={
+            "title": "Release idempotency test",
+            "counterparty_address": counterparty,
+            "total": "100.00",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    escrow_id = create.json()["id"]
+    headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "release-key-1"}
+
+    first = client.post(f"/escrows/{escrow_id}/release", headers=headers)
+    assert first.status_code == 200
+    assert first.json()["status_key"] == "approved"
+
+    second = client.post(f"/escrows/{escrow_id}/release", headers=headers)
+    assert second.status_code == 200
+    assert second.json() == first.json()  # cached replay, not a real re-execution
+
+    # Without the key, a genuine second release attempt 400s (no more
+    # active milestone) — confirming the cached 200 above really did skip
+    # re-execution rather than coincidentally succeeding twice.
+    third = client.post(f"/escrows/{escrow_id}/release", headers={"Authorization": f"Bearer {token}"})
+    assert third.status_code == 400
+
+
+def test_enforce_ruling_is_idempotency_protected(client, wallet):
+    token = _get_token(client, wallet)
+    counterparty = Account.create().address.lower()
+    create = client.post(
+        "/escrows",
+        json={
+            "title": "Enforce idempotency test",
+            "counterparty_address": counterparty,
+            "total": "100.00",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    escrow = create.json()
+    escrow_id = escrow["id"]
+    milestone_id = escrow["milestones"][0]["id"]
+
+    async def _seed_dispute() -> int:
+        async with AsyncSessionLocal() as db:
+            d = Dispute(
+                escrow_id=escrow_id,
+                milestone_id=milestone_id,
+                opened_by_address=wallet.address.lower(),
+                issue="Scope mismatch",
+                status_key=StatusKey.DISPUTED,
+            )
+            db.add(d)
+            await db.commit()
+            await db.refresh(d)
+            return d.id
+
+    dispute_id = asyncio.run(_seed_dispute())
+    headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "enforce-key-1"}
+    payload = {"approved": True, "ruling": "Claimant wins."}
+
+    first = client.post(f"/disputes/{dispute_id}/enforce", json=payload, headers=headers)
+    assert first.status_code == 200
+
+    second = client.post(f"/disputes/{dispute_id}/enforce", json=payload, headers=headers)
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+    # Without the key, a genuine second enforce attempt 400s (already
+    # enforced) — same "cached, not re-executed" proof as the release test.
+    third = client.post(
+        f"/disputes/{dispute_id}/enforce", json=payload, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert third.status_code == 400
 
 
 # --- 5. Rate limiting --------------------------------------------------------

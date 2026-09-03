@@ -158,6 +158,7 @@ function mapValidator(v: api.ApiValidatorStat): ValidatorDirectoryEntry {
     casesJudged: v.cases_judged,
     isActive: v.is_active,
     lastActiveAt: v.last_active_at,
+    lastProvider: v.last_provider,
   };
 }
 

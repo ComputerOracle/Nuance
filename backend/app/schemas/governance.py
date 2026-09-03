@@ -66,6 +66,8 @@ class ProposalRead(BaseModel):
     total_for: int
     total_against: int
     total_abstain: int
+    executed_by: str | None = None
+    executed_at: datetime | None = None
     created_at: datetime
 
     # Computed by the router on every read — see module docstring.

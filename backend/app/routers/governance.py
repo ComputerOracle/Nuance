@@ -95,6 +95,8 @@ def _proposal_fields(proposal: Proposal, eligible_voters: int, user_vote: VoteCh
         "total_for": proposal.total_for,
         "total_against": proposal.total_against,
         "total_abstain": proposal.total_abstain,
+        "executed_by": proposal.executed_by,
+        "executed_at": proposal.executed_at,
         "created_at": proposal.created_at,
         "user_vote": user_vote,
         **_progress(proposal, eligible_voters),
@@ -257,4 +259,46 @@ async def finalize_proposal(
 
     await db.commit()
     await db.refresh(proposal)
+    return ProposalRead(**_proposal_fields(proposal, eligible_voters, user_vote=None))
+
+
+@router.post("/{proposal_id}/execute", response_model=ProposalRead)
+async def execute_proposal(
+    proposal_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ProposalRead:
+    """Moves a PASSED proposal to EXECUTED — the formal "this decision has
+    been enacted" marker. Not idempotent like finalize: a proposal can only
+    be executed once, so a second call 400s rather than silently returning
+    the same result, matching disputes.py's enforce_ruling precedent for
+    the same "who did this and when" shape (executed_by/executed_at here,
+    enforced_by/resolved_at there).
+
+    No real on-chain effect is wired up yet (no treasury transfer, no
+    parameter change) — see ROADMAP.md Part 3; this is deliberately scoped
+    to just the status transition until there's a real effect to apply.
+    """
+    proposal = await _get_proposal_or_404(proposal_id, db)
+
+    # Checked in this order so re-executing an already-executed proposal
+    # reports "already executed" specifically, rather than the more
+    # generic "not passed" (status has already moved to EXECUTED by then,
+    # which would otherwise mask the more useful message).
+    if proposal.executed_at is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Proposal already executed.")
+    if proposal.status != ProposalStatus.PASSED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only a passed proposal can be executed.",
+        )
+
+    proposal.status = ProposalStatus.EXECUTED
+    proposal.executed_by = current_user.wallet_address
+    proposal.executed_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(proposal)
+
+    eligible_voters = await _total_eligible_voters(db)
     return ProposalRead(**_proposal_fields(proposal, eligible_voters, user_vote=None))

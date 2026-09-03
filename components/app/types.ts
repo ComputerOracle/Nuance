@@ -128,6 +128,10 @@ export interface ValidatorDirectoryEntry {
   casesJudged: number;
   isActive: boolean;
   lastActiveAt: string | null;
+  // Which provider ("gemini" | "anthropic" | "openai" | "heuristic")
+  // answered this validator's most recent case. Null if it has none yet,
+  // or the case predates this field.
+  lastProvider: string | null;
 }
 
 export interface AgentDirectoryEntry {
