@@ -69,11 +69,35 @@ export function useWalletDetection(): Map<string, Eip1193Provider> {
       setDetected(new Map(seen));
     }
 
+    function requestAnnouncements() {
+      window.dispatchEvent(new Event("eip6963:requestProvider"));
+    }
+
     window.addEventListener("eip6963:announceProvider", onAnnounce);
-    window.dispatchEvent(new Event("eip6963:requestProvider"));
+    requestAnnouncements();
+
+    // Re-check on refocus, not just at mount — the modal can be left open
+    // while someone switches tabs to install/enable a wallet (Phantom's
+    // Ethereum support, an extension permission prompt, ...) and switches
+    // straight back rather than closing and reopening it. Both a fresh
+    // legacy scan and a re-dispatched EIP-6963 request are needed here:
+    // legacy covers wallets that only expose a fixed `window.*` property
+    // (Phantom), 6963 covers everything else, including a wallet that
+    // finished installing/enabling only after this component's first
+    // request went out.
+    function onFocus() {
+      const rescanned = legacyDetect();
+      for (const [rdns, provider] of rescanned) seen.set(rdns, provider);
+      setDetected(new Map(seen));
+      requestAnnouncements();
+    }
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
 
     return () => {
       window.removeEventListener("eip6963:announceProvider", onAnnounce);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
     };
   }, []);
 

@@ -524,11 +524,74 @@ backend/app/services/genlayer_indexer.py
   - track_finality(tx_hash)   # Accepted -> Finalized -> update a `chain_status` column read by the UI
 ```
 
-- [ ] `ConsensusJob`/`Escrow`/`Dispute` rows gain a `chain_status: accepted | finalized | appealed` column and (once Part 2 ships) an `on_chain_tx_hash`, so the frontend can show "optimistically approved, finalizing…" — an honest UX for GenLayer's actual consensus timing, instead of implying instant finality.
+- [ ] `ConsensusJob`/`Escrow`/`Dispute` rows gain a `chain_status` column and (once Part 2 ships) an `on_chain_tx_hash`, so the frontend can show "optimistically approved, finalizing…" — an honest UX for GenLayer's actual consensus timing, instead of implying instant finality. See 4.6 for the verified status values this column should track.
 - [ ] Writes: evaluate whether the frontend signs and sends transactions directly via `genlayer-js` (most decentralized, but means gas/GEN costs land on end users) vs. a backend relayer service account (smoother UX, reintroduces a centralization point) — **default recommendation: direct frontend signing**, consistent with how wallet connection already works, with the backend indexer purely a read cache.
 - [ ] Migration path: escrows/disputes created *before* the cutover stay served by the existing off-chain `services/consensus.py` path (mark them `chain_status: legacy_offchain`); only new escrows target the deployed contract. No forced migration of historical data onto GenVM.
 
 **Definition of done for Part 2:** a new escrow's milestone-approval consensus is computed by validator nodes executing `NuanceEscrow.submit_deliverable` on Bradbury testnet, not by the FastAPI backend calling an LLM directly; the frontend reflects Accepted vs. Finalized state truthfully.
+
+### 4.6 genlayer-js — verified frontend signing pattern (Emma's lane)
+
+The first pass at this section (2026-09-04, early) was built from `docs.genlayer.com`'s own page content and got the shape of `writeContract`/status tracking wrong — the docs page described a `fees`-based write call, a `lifecycle` field, and `waitForFinalization`/`waitForDecision` helpers that don't exist in the SDK actually published. **Everything below instead comes from the installed package's own type definitions** (`node_modules/genlayer-js@1.1.8/dist/{index.d.ts,index-C3Ul1Rte.d.ts,chains/index.d.ts}`, read directly, verified by a clean `tsc --noEmit`), which is the only source that can't be stale relative to what actually compiles. genlayer-js is still pre-mainnet and evolving — re-verify against whatever version is installed before trusting this again next time it's touched.
+
+**Install:**
+```bash
+npm install genlayer-js
+```
+
+**Client — wallet-connected (what Nuance's frontend needs, mirrors the existing `Eip1193Provider` wallet flow in `use-wallet-connection.ts`):**
+```typescript
+import { createClient } from "genlayer-js";
+import { testnetBradbury } from "genlayer-js/chains"; // preset — also studionet, testnetAsimov, localnet
+
+const client = createClient({
+  chain: testnetBradbury,
+  account: walletAddress as `0x${string}`,
+  provider: window.ethereum, // the same EIP-1193 provider use-wallet-connection.ts already holds
+});
+await client.connect("testnetBradbury");
+```
+
+**Write (submitting a deliverable/evidence — this is the `submitDeliverable`/`submitEvidence` call site in `lib/api.ts` once it moves on-chain). No fee-estimation step exists — `writeContract` takes a `value: bigint` (`0n` for a non-payable method) directly:**
+```typescript
+const txId = await client.writeContract({
+  address: contractAddress,       // NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS
+  functionName: "submit_deliverable",
+  args: [milestoneId, criteria, deliverableText],
+  value: 0n,
+});
+```
+
+**Read (no wallet/signing needed — for the indexer, or any UI display that doesn't submit a write):**
+```typescript
+const result = await client.readContract({
+  address: contractAddress,
+  functionName: "get_milestone",
+  args: [milestoneId],
+  transactionHashVariant: TransactionHashVariant.LATEST_FINAL, // or LATEST_NONFINAL for a faster, reversible read
+});
+```
+
+**Status — the real enum.** A transaction's `statusName` (on `GenLayerTransaction`, from `client.getTransaction({hash})` or `client.waitForTransactionReceipt({hash})`) is one of 14 `TransactionStatus` values: `UNINITIALIZED, PENDING, PROPOSING, COMMITTING, REVEALING, ACCEPTED, UNDETERMINED, FINALIZED, CANCELED, APPEAL_REVEALING, APPEAL_COMMITTING, READY_TO_FINALIZE, VALIDATORS_TIMEOUT, LEADER_TIMEOUT` — corrects 4.5's simplified "Proposed → Accepted → Finalized". There's no `lifecycle` convenience field; `lib/chain-status.ts`'s `bucketFromStatusName()` collapses these into the four UI-facing buckets (`processing`/`decided`/`finalized`/`canceled`) itself, using the SDK's own `isDecidedState()`/`DECIDED_STATES` export for the "has a decision been reached" check rather than re-deriving it. **Reaching `FINALIZED` doesn't by itself mean the call succeeded** — check `resultName === TransactionResult.SUCCESS` on the same transaction object; that's the "accepted, finalizing…" honesty gap the UI needs to close:
+
+```typescript
+const transaction = await client.getTransaction({ hash: txId }); // one-shot check
+const receipt = await client.waitForTransactionReceipt({ hash: txId, status: TransactionStatus.FINALIZED });
+// GenLayerTransaction.resultName: TransactionResult.SUCCESS | FAILURE — check this, not just the status
+```
+
+Appeals are explicit client actions, not just a passive waiting window: `client.canAppeal({txId})`, `client.appealTransaction({txId, value})`, `client.getMinAppealBond({txId})`, `client.finalizeTransaction({txId})`.
+
+**What's buildable now, before the SYNC POINT (no live contract address needed) — done 2026-09-04:**
+- [x] `npm install genlayer-js` (`^1.1.8`).
+- [x] `lib/chain-status.ts` — `bucketFromStatusName()`/`chainStatusMeta()`, built and type-checked against the real installed SDK, not the docs summary.
+- [x] `lib/chain-config.ts` — `contractAddress(kind)` / `isOnChainConfigured()`, reading `NEXT_PUBLIC_{ESCROW,DISPUTE_COURT,PREDICTION_MARKET}_CONTRACT_ADDRESS`, `null` (not an error) until Chibuikem's deploy script sets them. Vars documented in `.env.local.example`, currently blank.
+- [ ] The `chain_status: legacy_offchain` default on every existing/new escrow — deliberately **not** done yet: it means a backend model/migration change, and this repo has twice this week hit real bugs from a schema addition landing without the running sqlite db being migrated alongside it (`resolution_source_url`, this file's own history). Add it together with the actual GenVM cutover, not speculatively ahead of it.
+
+**What's blocked on the SYNC POINT (needs Chibuikem's deployed address + real ABI):**
+- [ ] The actual `client.writeContract(...)` call in `submitDeliverable`/`submitEvidence` — the `functionName`/`args` above are illustrative until the real contract (4.3) is deployed and its actual public method signatures are known.
+- [ ] Pointing `NEXT_PUBLIC_*_CONTRACT_ADDRESS` at a real value.
+- [ ] Any live `waitForTransactionReceipt`/status-polling integration test.
 
 ---
 
