@@ -294,6 +294,7 @@ export interface ApiValidatorStat {
   accuracy_pct: number;
   is_active: boolean;
   last_active_at: string | null;
+  last_provider: string | null;
 }
 
 export interface ApiAgentStat {

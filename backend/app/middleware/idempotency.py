@@ -7,7 +7,8 @@ but only by raising, which means every protected route would need to
 duplicate the "raise the cached response back out" plumbing; doing it once
 here keeps escrows.py/disputes.py/predictions.py/governance.py untouched.
 
-Protected routes: POST /escrows, POST /disputes/{id}/evidence,
+Protected routes: POST /escrows, POST /escrows/{id}/release,
+POST /disputes/{id}/evidence, POST /disputes/{id}/enforce,
 POST /predictions/{id}/bet, POST /proposals/{id}/vote — see
 app.middleware.write_routes.is_protected_write_route.
 

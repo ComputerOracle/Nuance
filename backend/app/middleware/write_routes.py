@@ -12,12 +12,16 @@ from fastapi import Request
 
 from app.security import TokenError, decode_access_token
 
-# (method, path pattern) for every write route both middlewares protect.
-# Matched against `request.url.path` (no query string) — path params are
-# left as \d+ since none of these routes take anything but an integer id.
+# (method, path pattern) for every write route both middlewares protect —
+# every write that either spends LLM-provider tokens (triggers a consensus
+# job) or moves/locks escrowed funds. Matched against `request.url.path`
+# (no query string) — path params are left as \d+ since none of these
+# routes take anything but an integer id.
 _WRITE_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("POST", re.compile(r"^/escrows/?$")),
+    ("POST", re.compile(r"^/escrows/\d+/release/?$")),
     ("POST", re.compile(r"^/disputes/\d+/evidence/?$")),
+    ("POST", re.compile(r"^/disputes/\d+/enforce/?$")),
     ("POST", re.compile(r"^/predictions/\d+/bet/?$")),
     ("POST", re.compile(r"^/proposals/\d+/vote/?$")),
 )

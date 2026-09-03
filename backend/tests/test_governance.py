@@ -243,6 +243,44 @@ async def test_finalize_is_idempotent(client):
     assert first.json()["status"] == second.json()["status"] == "passed"
 
 
+# --- execute ---------------------------------------------------------------
+
+
+def test_execute_requires_auth(client):
+    resp = client.post("/proposals/1/execute")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_execute_rejects_non_passed_proposal(client, wallet):
+    proposal_id = await _seed_proposal(status=ProposalStatus.ACTIVE)
+    resp = client.post(f"/proposals/{proposal_id}/execute", headers=_auth_headers(client, wallet))
+    assert resp.status_code == 400
+    assert "passed" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_execute_success_on_passed_proposal(client, wallet):
+    proposal_id = await _seed_proposal(status=ProposalStatus.PASSED)
+    resp = client.post(f"/proposals/{proposal_id}/execute", headers=_auth_headers(client, wallet))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "executed"
+    assert body["executed_by"] == wallet.address.lower()
+    assert body["executed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_execute_twice_is_rejected_not_idempotent(client, wallet):
+    proposal_id = await _seed_proposal(status=ProposalStatus.PASSED)
+    headers = _auth_headers(client, wallet)
+    first = client.post(f"/proposals/{proposal_id}/execute", headers=headers)
+    second = client.post(f"/proposals/{proposal_id}/execute", headers=headers)
+    assert first.status_code == 200
+    assert second.status_code == 400
+    assert "already executed" in second.json()["detail"].lower()
+
+
 # --- validators / agents directories ---------------------------------------
 
 

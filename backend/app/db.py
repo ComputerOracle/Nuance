@@ -37,8 +37,30 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+# Columns added to an *existing* table after that table was already
+# created elsewhere (a dev's local nuance.db, predating the column) —
+# `create_all` below only creates missing tables, never missing columns on
+# ones that already exist. {table: [(column, sqlite type), ...]}. A no-op
+# per column once it's actually present. Sqlite-only (see init_db) —
+# Postgres gets a real Alembic migration once the schema stabilizes.
+_SQLITE_COLUMN_PATCHES: dict[str, list[tuple[str, str]]] = {
+    "predictions": [("resolution_source_url", "TEXT")],
+    "proposals": [("executed_by", "TEXT"), ("executed_at", "TIMESTAMP")],
+}
+
+
+async def _patch_missing_sqlite_columns(conn) -> None:
+    for table, columns in _SQLITE_COLUMN_PATCHES.items():
+        result = await conn.exec_driver_sql(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in result.fetchall()}
+        for name, sql_type in columns:
+            if name not in existing:
+                await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+
+
 async def init_db() -> None:
-    """Create tables that don't exist yet.
+    """Create tables that don't exist yet, then patch columns that a
+    pre-existing local DB is missing (see _SQLITE_COLUMN_PATCHES).
 
     A stand-in for Alembic while the schema is still moving prompt-to-prompt
     — once it stabilizes, this should be replaced by an initial Alembic
@@ -47,6 +69,8 @@ async def init_db() -> None:
     """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if engine.dialect.name == "sqlite":
+            await _patch_missing_sqlite_columns(conn)
 
 
 async def dispose_engine() -> None:
