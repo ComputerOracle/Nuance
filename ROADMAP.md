@@ -490,27 +490,77 @@ class NuanceEscrow(gl.Contract):
         return gl.eq_principle.majority_vote(check, rounds=3)
 ```
 
-### 4.4 Deployment
+### 4.4 Deployment — ✅ SYNC POINT cleared, 2026-09-06
 
-```python
-# contracts/deploy.py
-from genlayer_py import create_client, create_account
-from pathlib import Path
+> [!IMPORTANT]
+> All four contracts are live on **GenLayer Bradbury testnet** (chain id 4221). This is the "share the deployed addresses immediately" moment this section's original SYNC POINT called for — Emma's chain UX (ROADMAP §4.6) can now point `NEXT_PUBLIC_*_CONTRACT_ADDRESS` at real, working contracts instead of `null`.
 
-client = create_client(chain="genlayer-bradbury")   # rpc-bradbury.genlayer.com, chainId 4221
-account = create_account(private_key=DEPLOYER_PRIVATE_KEY)
+| Contract | Address | Deployer |
+|---|---|---|
+| `NuanceDisputeCourt` | `0xf7b4C186fF9d69701F41AA3Aa1aCF8cED0c9b057` | `0xCAFc5f0a599475C61f700fF02A11B5647c188fcd` |
+| `NuanceEscrow` (bootstrap instance — see §4.4.1) | `0xDB6939bD12775e5F77e48138F0DE103D804268f7` | same |
+| `NuancePredictionMarket` (bootstrap instance) | `0xF34c75330bEd61B7e559e554a5628b4fa50CDd24` | same |
+| `NuanceGovernance` — not in the original Part 2 plan, added 2026-09-06 on direct request (see §4.4.2) | `0xE819D14F8e862c1b6A644939D4Ddc8F3c8764276` | same |
+| `NuanceValidators` — not in the original plan either (see §4.4.3) | `0x4E2B213a80c5e20CEB45Ce444cC59dB593D704FE` | same |
+| `NuanceAgentDirectory` — same | `0x3EF04900e7c535dDEfb771664FE04541d8b6D463` | same |
 
-tx = client.deploy_contract(
-    account=account,
-    code=Path("contracts/nuance_escrow.py").read_text(),
-    args=[],
-)
-receipt = client.wait_for_transaction_receipt(tx)
-print("NuanceEscrow deployed at", receipt.contract_address)
+Block explorer: `https://explorer-bradbury.genlayer.com/address/<address>`.
+
+All six verified live via `client.getContractCode(address)` returning real bytecode (8920 / 12314 / 10377 / 11272 / 4394 / 2953 bytes respectively) — not just "the deploy tx didn't error." `NuanceGovernance`, `NuanceValidators`, and `NuanceAgentDirectory` were additionally verified functionally, not just structurally — see each one's own account (§4.4.2, §4.4.3) of the real write/read sequences run against the live deployed contracts.
+
+The actual deploy tooling is `scripts/deploy.ts` (TypeScript + `genlayer-js`), not the illustrative Python `genlayer_py` sketch this section originally had — `genlayer-js` was already the verified, installed SDK from §4.6, and reusing it here meant one less package/toolchain for this repo to depend on. Real, current pattern:
+
+```typescript
+// scripts/deploy.ts (abbreviated — see the file for rate-limit retry,
+// receipt-status-field fallbacks, and address-extraction fallbacks, all
+// earned the hard way against live Bradbury — see the file's own header)
+import { createAccount, createClient, chains } from "genlayer-js";
+
+const account = createAccount(process.env.GENLAYER_PRIVATE_KEY as `0x${string}`);
+const client = createClient({ chain: chains.testnetBradbury, account });
+
+const txHash = await client.deployContract({
+  code: new Uint8Array(readFileSync("contracts/nuance_escrow.py")), // raw bytes, not a string
+  args: [counterpartyAddress, "Bootstrap milestone", BigInt(1), "..."],
+});
+const receipt = await client.waitForTransactionReceipt({
+  hash: txHash, status: TransactionStatus.ACCEPTED, retries: 60, interval: 3000,
+});
+const address = (receipt.txDataDecoded as DecodedDeployData)?.contractAddress;
 ```
 
-- [ ] `deploy.py` writes deployed addresses to `backend/.env` (`ESCROW_CONTRACT_ADDRESS`, `DISPUTE_COURT_CONTRACT_ADDRESS`, `PREDICTION_MARKET_CONTRACT_ADDRESS`) and `.env.local` (`NEXT_PUBLIC_*` equivalents) so both layers point at the same deployment without hand-editing.
-- [ ] A `contracts/CHANGELOG.md` tracking address history per redeploy — GenVM contracts are immutable once deployed, so upgrades mean a new address, and every consumer (indexer, frontend) needs a coordinated cutover.
+Run with `npm run deploy:contracts`. Three real bugs had to be found and fixed against live Bradbury before this worked at all — full account in `scripts/deploy.ts`'s header and each contract's own header comment:
+1. A long comment block directly under a contract's `# { "Depends": ... }` line (no blank line separating them) breaks GenVM's runner-comment parser, on every contract, regardless of the hash or body.
+2. `TreeMap[K, V]()` (the subscripted form) as an actual instantiation is a runtime `TypeError` in GenVM — only valid as a class-level type annotation; the real instantiation is bare `TreeMap()`.
+3. A bare `TreeMap()` assigned to a field declared `TreeMap[Address, bool]` throws `AssertionError: Is right the same storage type?` — worked around by storing `u256` (0/1) instead. Found via `client.debugTraceTransaction({hash})`, which surfaces the real Python stderr/traceback — `getTransaction`/`waitForTransactionReceipt`'s receipt alone does not. Turned out to be a symptom of a broader rule — see #4.
+4. **The actual rule (found deploying `NuanceGovernance`, §4.4.2): a contract may only have ONE distinct `TreeMap[K, V]` shape, period** — not just "avoid `bool`." Every `TreeMap` field in a contract must share the exact same key+value type parameterization; a second, differently-shaped `TreeMap` field throws the identical assertion the moment its bare `TreeMap()` is assigned, regardless of whether that shape works fine in some other contract.
+
+- [x] `deploy.ts` writes deployed addresses to `backend/.env` (`ESCROW_CONTRACT_ADDRESS`, `DISPUTE_COURT_CONTRACT_ADDRESS`, `PREDICTION_MARKET_CONTRACT_ADDRESS`, `GOVERNANCE_CONTRACT_ADDRESS`) and `.env.local` (`NEXT_PUBLIC_*` equivalents) so both layers point at the same deployment without hand-editing.
+- [ ] A `contracts/CHANGELOG.md` tracking address history per redeploy — GenVM contracts are immutable once deployed, so upgrades mean a new address, and every consumer (indexer, frontend) needs a coordinated cutover. Not yet created — the table above is this deployment's only current record.
+
+#### 4.4.1 What's actually live vs. what it means
+
+Per this file's own header note (also in `nuance_prediction_market.py`'s): deploying `NuanceEscrow`/`NuancePredictionMarket` here creates **one concrete bootstrap instance each** with placeholder constructor args (a fake counterparty address, "Bootstrap milestone" text) — proof the contracts deploy and execute on Bradbury, and one real address each for Emma's frontend to build the cutover wiring against. It is **not** the real per-agreement flow: a genuine new escrow between two real users still needs the backend to call `deployContract` with their real data at escrow-creation time — that's Step 4 (backend integration), not done by this script. `NuanceDisputeCourt`/`NuanceGovernance` are different: both are genuine shared registries (one instance for the whole app), so their deployed addresses here **are** the real, permanent ones — not bootstrap placeholders.
+
+#### 4.4.2 NuanceGovernance — the "one TreeMap shape per contract" constraint
+
+Not part of this section's original plan — Governance/Validators/Agent Directory were never in Part 2's target contract layout (§4.2). Added 2026-09-06 on direct request, after the other three contracts were already live. Governance (proposals + votes) is a plausible standalone contract, the same shape as the other three; Validators/Agents were **not** built as contracts — both are pure read-only aggregations the backend computes by scanning existing Escrow/Dispute consensus history (`backend/app/routers/{validators,agents}.py`), with no independent state of their own to deploy until the data they aggregate is itself on-chain.
+
+`nuance_governance.py` needed three real deploy attempts (beyond the Depends-hash/TreeMap-instantiation bugs already known from the other three contracts) to find a genuinely new constraint: **a single contract can only have one distinct `TreeMap[K, V]` type shape.** Every `TreeMap` field must share the exact same key+value parameterization — a second, differently-shaped one throws `AssertionError: Is right the same storage type?` the instant its bare `TreeMap()` runs in `__init__`, confirmed via `debugTraceTransaction`'s stderr each time:
+- Attempt 1: `TreeMap[u256, Proposal]` (fine — establishes the shape) + `TreeMap[u256, u256]` (a second shape, still broke — this is what generalized the earlier "avoid bool" finding: it's not about bool, it's about introducing any second shape at all).
+- Attempt 2: `TreeMap[u256, Proposal]` + `TreeMap[u256, VoteRecord]` — a second *dataclass*, the structurally closest possible shape to the first — still broke.
+- Attempt 3 (fixed): collapsed to a single `TreeMap[u256, Record]`, one polymorphic dataclass used for both proposals and vote records (a `kind` field distinguishes them; a vote record repurposes the proposal's `status` field to hold its own choice and `proposer` to hold the voter). Proposals are keyed by their small sequential id; vote records by a bit-packed `(proposal_id << 160) | int(voter_address.as_hex, 16)` composite that's always larger than any real proposal id, so the two families of keys share the one TreeMap without collision. Deployed successfully, then verified with a real on-chain `create_proposal → cast_vote → re-vote → finalize_proposal` sequence (§4.4's table note) — not just a clean deploy.
+
+This constraint applies to any future GenVM contract in this repo, not just governance — worth checking before adding a second `TreeMap` field to anything.
+
+#### 4.4.3 NuanceValidators / NuanceAgentDirectory
+
+Also not in the original Part 2 plan. Unlike Governance, these two have no natural off-chain equivalent to port directly: `backend/app/routers/{validators,agents}.py` are pure read-only aggregations computed by scanning existing `ConsensusJob`/`Escrow`/`Dispute` history after the fact — no state of their own, nothing to "deploy." A GenVM contract has to be written into by something to have anything to read back, so each contract adds the one write action that was actually missing: `record_result(...)`, the on-chain equivalent of "a judgment just happened, log the outcome." Deployed on the first attempt each — the `TreeMap` lessons from `nuance_prediction_market.py` and `nuance_governance.py` (correct `Depends` hash, bare `TreeMap()`, exactly one `TreeMap` shape per contract, no `bool` as a `TreeMap` value) applied cleanly the first time, no further live-Bradbury surprises.
+
+- `NuanceValidators`: seeds the three known validator personas from `services/consensus.py`'s `VALIDATOR_NAMES` as fixed ids 0/1/2 in `__init__` (no dynamic registration — would risk a second `TreeMap` shape for a name→id lookup) in a single `TreeMap[u256, ValidatorStats]`. Verified live: two `record_result` calls (one matching the verdict, one not) against validator 0 moved `cases_judged` 0→2 and `accuracy_pct` correctly to 50.
+- `NuanceAgentDirectory`: `TreeMap[Address, AgentStats]`, the same shape family as `nuance_prediction_market.py`'s stake maps. Verified live: a win then a loss recorded against the same address moved `trust_score` 100→50 with `cases_judged` 1→2, matching `routers/agents.py`'s own win-rate math.
+
+Same bootstrap-instance caveat as `NuanceEscrow`/`NuancePredictionMarket` (§4.4.1): these are real, live, working registries, but nothing calls `record_result` automatically yet — wiring `NuanceEscrow`/`NuanceDisputeCourt` to report into them via a cross-contract call after each real judgment is separate, not-yet-done integration work.
 
 ### 4.5 Hybrid state — the indexer
 

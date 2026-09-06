@@ -31,11 +31,17 @@
 #     "Prediction Market Contract" example pages (both examples agreed on
 #     one Depends hash, which was assumed to be the current runner build —
 #     it wasn't: the first real Bradbury deployment came back "ACCEPTED
-#     (ERROR)" against it. The header now pins the hash that a live
-#     deployment actually confirmed works
-#     (py-genlayer:1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh,
-#     2026-09-06) — docs snapshots of this value can go stale; a live
-#     deploy result overrides them, which is exactly what happened here.
+#     (ERROR)" against it). Corrected here (updated 2026-09-06, after a
+#     second contract's deploy attempt failed with "runner ... not found"
+#     against py-genlayer:1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh
+#     — a hash this comment used to pin as "confirmed working," but that
+#     was itself the round-1 red herring nuance_dispute_court.py's header
+#     describes: switching the hash correlated with a real deploy attempt
+#     but wasn't what fixed it. The Depends line actually at the top of
+#     this file, py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6,
+#     is what a live deployment actually confirmed works — this paragraph
+#     previously claimed otherwise and was wrong; copy the header line
+#     itself into a new contract, not a hash mentioned in prose.
 #   - docs.genlayer.com's Equivalence Principle page, for
 #     gl.vm.run_nondet_unsafe(leader_fn, validator_fn) and the "partial
 #     field matching" pattern used below (validators only have to agree on

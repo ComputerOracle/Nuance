@@ -70,6 +70,43 @@
 // GenericAlias-not-callable TypeError inside __init__ produced. Both are
 // now checked.
 //
+// Fourth round (same day, NuancePredictionMarket only — the other two
+// contracts were already live by this point): ACCEPTED with
+// FINISHED_WITH_ERROR again, but a genuinely new cause this time, found
+// via `client.debugTraceTransaction({hash})` (its stderr carries the real
+// Python traceback; the transaction receipt alone does not) —
+// `self.claimed = TreeMap()` failed
+// `AssertionError: Is right the same storage type? TreeMap <- TreeMap`
+// in genlayer/py/storage/_internal/desc_record.py, while the two
+// TreeMap[Address, u256] fields assigned immediately before it in the
+// same __init__ succeeded. Isolated to `bool` as a TreeMap's value type
+// specifically — worked around in nuance_prediction_market.py by storing
+// 0/1 (u256) instead of True/False; see that file's own header comment on
+// the `claimed` field for the full account. All three contracts deployed
+// successfully after this fix — see ROADMAP.md Part 2 / 4.4 for the live
+// addresses.
+//
+// Fifth round (2026-09-06, NuanceGovernance — added after the other three
+// were already live, on direct request; not part of the original Part 2
+// plan): the bool-TreeMap finding above turned out to be one instance of
+// a broader rule, not the whole story. Two more failed deploy attempts
+// (both ACCEPTED/FINISHED_WITH_ERROR, both re-diagnosed via
+// debugTraceTransaction) hit the identical assertion on a SECOND TreeMap
+// field with a different (K, V) shape than the contract's first — first a
+// bare TreeMap[u256, u256], then even TreeMap[u256, VoteRecord] (a second
+// *dataclass* value type, structurally as close to the first TreeMap as
+// possible). The actual rule: a contract may only have ONE distinct
+// TreeMap[K, V] shape, full stop — every TreeMap field must share the
+// exact same type parameterization, not just avoid bool. Fixed in
+// nuance_governance.py by collapsing to a single TreeMap[u256, Record],
+// with one polymorphic dataclass covering both proposals and vote
+// records (see that file's header for the full account and the field-
+// reuse scheme). Verified live afterward with a real create_proposal ->
+// cast_vote -> re-vote -> finalize_proposal sequence against the
+// deployed contract, not just a clean deploy — confirmed the re-vote
+// flip-not-stack logic and the quorum/pass-threshold math both work
+// against actual chain state.
+//
 // --- What this script is, and isn't ---
 // Deploying NuanceEscrow / NuancePredictionMarket here creates ONE
 // concrete instance with real constructor args baked in immediately (that
@@ -199,6 +236,20 @@ async function main() {
   console.log(`Chain: ${chains.testnetBradbury.name} (id ${chains.testnetBradbury.id})`);
   console.log(`RPC:   ${chains.testnetBradbury.rpcUrls.default.http[0]}\n`);
 
+  // All four are live on Bradbury as of 2026-09-06 (this run's own
+  // output — see ROADMAP.md 4.4 for the addresses). Re-running this script
+  // from here deploys six BRAND NEW instances and overwrites the env
+  // vars to point at them — correct for a from-scratch environment, but
+  // it orphans the current live addresses if anything still depends on
+  // them. Comment out entries you want to keep as-is before re-running
+  // against an environment that already has some of these deployed.
+  // All six are live on Bradbury as of 2026-09-06 (this run's own
+  // output — see ROADMAP.md 4.4 for the addresses). Re-running this
+  // script from here deploys six BRAND NEW instances and overwrites the
+  // env vars to point at them — correct for a from-scratch environment,
+  // but it orphans the current live addresses if anything still depends
+  // on them. Comment out entries you want to keep as-is before
+  // re-running against an environment that already has some deployed.
   const specs: ContractSpec[] = [
     {
       name: "NuanceDisputeCourt",
@@ -231,6 +282,27 @@ async function main() {
       ],
       backendEnvKey: "PREDICTION_MARKET_CONTRACT_ADDRESS",
       frontendEnvKey: "NEXT_PUBLIC_PREDICTION_MARKET_CONTRACT_ADDRESS",
+    },
+    {
+      name: "NuanceGovernance",
+      file: "nuance_governance.py",
+      args: [], // no constructor args — a shared registry, like NuanceDisputeCourt
+      backendEnvKey: "GOVERNANCE_CONTRACT_ADDRESS",
+      frontendEnvKey: "NEXT_PUBLIC_GOVERNANCE_CONTRACT_ADDRESS",
+    },
+    {
+      name: "NuanceValidators",
+      file: "nuance_validators.py",
+      args: [], // no constructor args — seeds its own 3 known validator ids internally
+      backendEnvKey: "VALIDATORS_CONTRACT_ADDRESS",
+      frontendEnvKey: "NEXT_PUBLIC_VALIDATORS_CONTRACT_ADDRESS",
+    },
+    {
+      name: "NuanceAgentDirectory",
+      file: "nuance_agent_directory.py",
+      args: [], // no constructor args — a shared registry, like NuanceDisputeCourt
+      backendEnvKey: "AGENT_DIRECTORY_CONTRACT_ADDRESS",
+      frontendEnvKey: "NEXT_PUBLIC_AGENT_DIRECTORY_CONTRACT_ADDRESS",
     },
   ];
 

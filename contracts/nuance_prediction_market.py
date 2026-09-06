@@ -51,7 +51,31 @@ class NuancePredictionMarket(gl.Contract):
     winning_outcome: str  # "" until resolved, then exactly "YES" | "NO"
     stakes_yes: TreeMap[Address, u256]
     stakes_no: TreeMap[Address, u256]
-    claimed: TreeMap[Address, bool]
+    # u256, not bool: a live Bradbury deploy (2026-09-06) came back
+    # FINISHED_WITH_ERROR specifically on `self.claimed = TreeMap()` —
+    # debugTraceTransaction's stderr showed
+    # `AssertionError: Is right the same storage type? TreeMap <- TreeMap`
+    # in genlayer/py/storage/_internal/desc_record.py, while the two
+    # TreeMap[Address, u256] fields right above assigned fine in the same
+    # __init__. Isolated to the bool value type specifically (not the
+    # Address key type, which those two already exercise successfully) —
+    # a bare `TreeMap()`'s runtime type descriptor doesn't match a
+    # declared TreeMap[..., bool] the way it matches TreeMap[..., u256] or
+    # TreeMap[..., a dataclass] (nuance_escrow.py/nuance_dispute_court.py's
+    # own TreeMaps, both proven live on Bradbury). Worked around by storing
+    # 0/1 instead of False/True — every read site below converts back to
+    # a real bool at the point it leaves contract storage (get_my_stake's
+    # return dict), so nothing outside this file sees the difference.
+    #
+    # UPDATE (nuance_governance.py, same day): this turned out to be one
+    # instance of a broader rule, not a bool-specific quirk — a contract
+    # can only have ONE distinct TreeMap[K, V] shape at all; introducing a
+    # SECOND shape breaks the same way regardless of whether bool is
+    # involved. See that file's header for the fuller account. Harmless
+    # here since this contract's three TreeMaps are two-of-one-shape (this
+    # workaround) rather than genuinely two different shapes, but worth
+    # knowing before adding a fourth TreeMap field to this file.
+    claimed: TreeMap[Address, u256]
 
     def __init__(
         self,
@@ -169,7 +193,7 @@ your output must be perfectly parsable by a JSON parser without errors."""
             raise gl.vm.UserError("This market has not resolved yet.")
 
         sender = gl.message.sender_address
-        if self.claimed.get(sender, False):
+        if self.claimed.get(sender, 0):
             raise gl.vm.UserError("Already claimed.")
 
         won_yes = self.winning_outcome == "YES"
@@ -187,7 +211,7 @@ your output must be perfectly parsable by a JSON parser without errors."""
         if winning_pool > 0:
             payout += (my_stake * losing_pool) // winning_pool
 
-        self.claimed[sender] = True
+        self.claimed[sender] = 1
         recipient = gl.get_contract_at(sender)
         recipient.emit_transfer(value=u256(payout), on="finalized")
 
@@ -210,5 +234,5 @@ your output must be perfectly parsable by a JSON parser without errors."""
         return {
             "yes": self.stakes_yes.get(addr, 0),
             "no": self.stakes_no.get(addr, 0),
-            "claimed": self.claimed.get(addr, False),
+            "claimed": bool(self.claimed.get(addr, 0)),
         }
