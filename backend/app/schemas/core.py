@@ -16,9 +16,16 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.enums import ConsensusSubjectType, StatusKey
+from app.enums import ChainStatus, ConsensusSubjectType, StatusKey
 
 _WALLET_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+# GenLayer/EVM transaction hashes are 32 bytes, same shape as an Ethereum
+# tx hash — 0x + 64 hex chars. Deliberately looser than _WALLET_RE's exact
+# use (this only guards against obviously-wrong input like an address or
+# empty string; the indexer is what actually verifies a hash means
+# anything, by reading real chain state back — see genlayer_indexer.py's
+# own header on that trust boundary).
+_TX_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 
 
 def _normalize_wallet(v: str) -> str:
@@ -100,6 +107,13 @@ class MilestoneRead(BaseModel):
     status_key: StatusKey
     criteria: str
     order_index: int
+    # Null until this specific milestone is linked to an index inside its
+    # escrow's deployed NuanceEscrow contract — see Milestone.on_chain_index's
+    # own docstring. The frontend's cutover check is per-milestone: submit
+    # on-chain only once this (and EscrowRead.contract_address) are both set.
+    on_chain_index: int | None = None
+    chain_status: ChainStatus = ChainStatus.LEGACY_OFFCHAIN
+    on_chain_tx_hash: str | None = None
 
 
 # --- Escrow -------------------------------------------------------------
@@ -132,6 +146,13 @@ class EscrowRead(BaseModel):
     status_key: StatusKey
     created_at: datetime
     milestones: list[MilestoneRead] = []
+    # Which deployed NuanceEscrow instance backs this escrow, if any — see
+    # Escrow.contract_address's own docstring. Null is the normal/expected
+    # state for almost every escrow right now (no per-escrow deploy-at-
+    # creation flow exists yet); the frontend treats null as "route this
+    # through the legacy off-chain path," same convention lib/chain-config.ts
+    # already documents.
+    contract_address: str | None = None
 
 
 # --- Deliverable submission -----------------------------------------------
@@ -159,6 +180,29 @@ class DeliverableSubmissionRead(BaseModel):
     text: str
     submitted_at: datetime
     consensus_job_id: int | None = None
+
+
+class OnChainSubmissionAck(BaseModel):
+    """Body for POST /escrows/{id}/deliverable/on-chain — the frontend
+    reporting a tx hash it already got back from signing and sending
+    `NuanceEscrow.submit_deliverable` itself (see components/app/
+    genlayer-write-client.ts). This endpoint only remembers the hash for
+    services/genlayer_indexer.py to poll; it is NOT a trust boundary for
+    the verdict — status_key/deliverable text only ever change once the
+    indexer reads the real result back from the contract's own get_milestone
+    view. A caller reporting a bogus hash can make the indexer log a failed
+    lookup; it can never fake an approval this way."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    tx_hash: str
+
+    @field_validator("tx_hash")
+    @classmethod
+    def _validate_tx_hash(cls, v: str) -> str:
+        if not _TX_HASH_RE.match(v):
+            raise ValueError("tx_hash must be a 0x-prefixed 64-hex-character transaction hash.")
+        return v.lower()
 
 
 # --- Consensus job --------------------------------------------------------
@@ -209,6 +253,49 @@ class ConsensusStatus(BaseModel):
 
 
 # --- Dispute --------------------------------------------------------------
+
+
+class DisputeCreate(BaseModel):
+    """Body for POST /escrows/{id}/dispute — escalating a milestone's AI
+    verdict to a formal Dispute Court review. `issue` is optional: the
+    "Escalate to Internet Court" button (components/app/views/
+    escrow-detail-view.tsx) fires this with no form of its own, so the
+    endpoint fills in a reasonable default from the milestone's most
+    recent ConsensusJob reasoning when omitted — see routers/escrows.py's
+    raise_dispute for that logic. Free-text override kept for any future
+    caller that does want to state its own claim."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    issue: str | None = Field(default=None, max_length=5000)
+
+
+class OnChainDisputeAck(BaseModel):
+    """Body for POST /escrows/{id}/dispute/on-chain — the frontend
+    reporting a tx hash it already got back from signing and sending
+    `NuanceDisputeCourt.file_dispute` itself (see components/app/
+    genlayer-write-client.ts). Unlike OnChainSubmissionAck (which updates
+    an existing Milestone), this one CREATES the local Dispute row
+    immediately — file_dispute assigns the dispute's id on-chain, which
+    isn't known yet at ack time. See services/genlayer_indexer.py's
+    resolve_pending_dispute_ids for how on_chain_dispute_id gets filled in
+    once the transaction actually lands. `issue` mirrors DisputeCreate's
+    own optional-with-a-server-side-default behavior, and MUST match the
+    `claim_statement` argument the frontend actually passed to
+    file_dispute — the indexer matches on exact text equality, not fuzzy
+    matching."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    tx_hash: str
+    issue: str | None = Field(default=None, max_length=5000)
+
+    @field_validator("tx_hash")
+    @classmethod
+    def _validate_tx_hash(cls, v: str) -> str:
+        if not _TX_HASH_RE.match(v):
+            raise ValueError("tx_hash must be a 0x-prefixed 64-hex-character transaction hash.")
+        return v.lower()
 
 
 class DisputeMessageCreate(BaseModel):
@@ -275,6 +362,25 @@ class DisputeRead(BaseModel):
     resolved_at: datetime | None = None
     messages: list[DisputeMessageRead] = []
     evidence: list[DisputeEvidenceRead] = []
+    # Added alongside raise_dispute_on_chain — missed when the other three
+    # chain-linkage fields (Escrow/Milestone/Prediction) were added earlier,
+    # since disputes weren't wired to the chain yet at that point. See
+    # Dispute.on_chain_dispute_id's own model docstring: null until
+    # services/genlayer_indexer.py's resolve_pending_dispute_ids matches it.
+    on_chain_dispute_id: int | None = None
+    chain_status: ChainStatus = ChainStatus.LEGACY_OFFCHAIN
+    on_chain_tx_hash: str | None = None
+
+
+class DisputeCreateRead(DisputeRead):
+    """DisputeRead plus the id of the ConsensusJob raise_dispute queues —
+    same reasoning DeliverableSubmissionRead/DisputeEvidenceRead already
+    carry one: the frontend needs a real job id back from the 201 to start
+    polling GET /consensus/{id} immediately, not a second round-trip to
+    find it. Not on DisputeRead itself — GET /disputes/{id} has no single
+    "the" job id to report once a dispute may have been through several."""
+
+    consensus_job_id: int | None = None
 
 
 class DisputeEnforceRequest(BaseModel):

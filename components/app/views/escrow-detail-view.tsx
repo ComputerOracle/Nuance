@@ -12,6 +12,9 @@ export function EscrowDetailView({
   onDeliverableChange,
   onSubmitDeliverable,
   onReleasePayment,
+  onEscalate,
+  submitDisabled = false,
+  escalateDisabled = false,
 }: {
   escrow: Escrow;
   stage: number;
@@ -21,6 +24,13 @@ export function EscrowDetailView({
   onDeliverableChange: (text: string) => void;
   onSubmitDeliverable: () => void;
   onReleasePayment: () => void;
+  onEscalate: () => void;
+  // True while an on-chain submit is mid-flight (waiting on the wallet's
+  // own signing prompt / RPC round-trip) — a separate condition from
+  // "text is empty," which the button already gates on its own.
+  submitDisabled?: boolean;
+  // True while POST /escrows/{id}/dispute is in flight.
+  escalateDisabled?: boolean;
 }) {
   const activeIdx = activeMilestoneIndex(escrow.milestones);
 
@@ -42,8 +52,12 @@ export function EscrowDetailView({
             Release Payment
           </button>
         ) : (
-          <button className="cursor-pointer rounded-lg border-none bg-negative px-4 py-2.5 text-[13px] font-semibold text-white transition-[filter] hover:brightness-110">
-            Escalate to Internet Court
+          <button
+            onClick={onEscalate}
+            disabled={escalateDisabled}
+            className="cursor-pointer rounded-lg border-none bg-negative px-4 py-2.5 text-[13px] font-semibold text-white transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-60"
+          >
+            {escalateDisabled ? "Filing dispute…" : "Escalate to Internet Court"}
           </button>
         ),
       }
@@ -133,11 +147,11 @@ export function EscrowDetailView({
                       />
                       <button
                         onClick={onSubmitDeliverable}
-                        disabled={!deliverableText.trim()}
+                        disabled={!deliverableText.trim() || submitDisabled}
                         className="mt-2.5 cursor-pointer rounded-lg border border-border-6 bg-chip-hover px-4.5 py-2.5 text-[13px] font-semibold transition-colors hover:bg-chip-hover-2 disabled:cursor-default"
-                        style={{ opacity: deliverableText.trim() ? 1 : 0.5 }}
+                        style={{ opacity: deliverableText.trim() && !submitDisabled ? 1 : 0.5 }}
                       >
-                        Submit for AI Review
+                        {submitDisabled ? "Waiting for wallet…" : "Submit for AI Review"}
                       </button>
                     </div>
                   )}

@@ -1,35 +1,65 @@
-// Contract-address env wiring — deliberately separate from lib/api.ts's
+// Contract-address wiring — deliberately separate from lib/api.ts's
 // NEXT_PUBLIC_API_URL (that one always has a working localhost fallback;
-// these three don't, because there is nothing to fall back to before
-// Chibuikem's deploy script runs — see ROADMAP.md 4.6's SYNC POINT).
+// these don't, because there is nothing to fall back to before a real
+// contract is deployed and linked — see ROADMAP.md 4.6's SYNC POINT).
+//
+// Corrected 2026-09-07 (writeContract wiring): the original version of
+// this file treated all three contracts as one global NEXT_PUBLIC_*
+// address each, "configured" or not for the whole app at once. That's
+// only true for NuanceDisputeCourt — a single SHARED REGISTRY (see that
+// contract's own header). NuanceEscrow and NuancePredictionMarket are the
+// opposite: ONE deployed instance PER escrow / PER market (see
+// contracts/nuance_escrow.py and nuance_prediction_market.py, and
+// scripts/deploy.ts's own bootstrap-instance caveat) — there is no
+// single "the" escrow contract address for the whole app to check
+// against. Real per-escrow/per-market addresses come back from the API
+// on the row itself (ApiEscrow.contract_address / ApiPrediction.
+// contract_address), populated once that row is actually linked to a
+// deployed instance — nothing does that yet except services/
+// genlayer_indexer.py's --link-demo, which is exactly why every real
+// escrow/prediction still routes through the legacy off-chain path today.
 //
 // Every call site MUST handle `null` — that's the real, current state of
-// this app (nothing deployed yet), not a hypothetical edge case. Treat a
-// null contract address as "route this through the legacy off-chain path",
-// exactly like an escrow/dispute created before the cutover.
+// almost every row in this app, not a hypothetical edge case. Treat a
+// null contract address as "route this through the legacy off-chain
+// path," exactly like an escrow/dispute created before any cutover.
 
-export type ContractKind = "escrow" | "disputeCourt" | "predictionMarket";
-
-const ENV_VAR: Record<ContractKind, string | undefined> = {
-  escrow: process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS,
-  disputeCourt: process.env.NEXT_PUBLIC_DISPUTE_COURT_CONTRACT_ADDRESS,
-  predictionMarket: process.env.NEXT_PUBLIC_PREDICTION_MARKET_CONTRACT_ADDRESS,
-};
-
-/** The deployed address for `kind`, or null if it isn't configured yet —
- * null means "no live contract to point at," not an error. */
-export function contractAddress(kind: ContractKind): `0x${string}` | null {
-  const raw = ENV_VAR[kind]?.trim();
+/** NuanceDisputeCourt's one deployed address, or null if it isn't
+ * configured yet. Global on purpose — every dispute shares this one
+ * registry. */
+export function disputeCourtContractAddress(): `0x${string}` | null {
+  const raw = process.env.NEXT_PUBLIC_DISPUTE_COURT_CONTRACT_ADDRESS?.trim();
   return raw ? (raw as `0x${string}`) : null;
 }
 
-/** True once every contract this app needs is actually deployed and
- * wired up. Until then, submit flows stay on the legacy off-chain path
- * for everything, not just escrows that predate a partial cutover. */
-export function isOnChainConfigured(): boolean {
-  return (
-    contractAddress("escrow") !== null &&
-    contractAddress("disputeCourt") !== null &&
-    contractAddress("predictionMarket") !== null
-  );
+/** The deployed NuanceEscrow instance backing a specific escrow, or null
+ * if that escrow hasn't been linked to one — the normal state today. Takes
+ * the row itself (not an id) so a call site that already has the fetched
+ * ApiEscrow doesn't need a second lookup just to check this. */
+export function escrowContractAddress(
+  escrow: { contract_address?: string | null } | null | undefined
+): `0x${string}` | null {
+  const raw = escrow?.contract_address?.trim();
+  return raw ? (raw as `0x${string}`) : null;
+}
+
+/** Same idea as escrowContractAddress, for NuancePredictionMarket. */
+export function predictionContractAddress(
+  prediction: { contract_address?: string | null } | null | undefined
+): `0x${string}` | null {
+  const raw = prediction?.contract_address?.trim();
+  return raw ? (raw as `0x${string}`) : null;
+}
+
+/** True once this specific milestone is both (a) inside an escrow linked
+ * to a deployed NuanceEscrow instance and (b) itself linked to an index
+ * inside it (Milestone.on_chain_index — a contract instance holds every
+ * milestone for its escrow, addressed by a per-contract index distinct
+ * from this app's own milestone id/order_index). Both have to be true —
+ * an escrow can be linked before every one of its milestones is. */
+export function milestoneIsOnChain(
+  escrow: { contract_address?: string | null } | null | undefined,
+  milestone: { on_chain_index?: number | null } | null | undefined
+): boolean {
+  return escrowContractAddress(escrow) !== null && milestone?.on_chain_index != null;
 }

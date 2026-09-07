@@ -61,6 +61,14 @@ export function useWalletConnection() {
   const [balance, setBalance] = useState("");
   const [chainIdDecimal, setChainIdDecimal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Mirrors providerRef.current, as actual state — a ref alone can't be
+  // read during render (react-hooks/refs correctly flags that as
+  // possibly-stale under concurrent rendering); this is what the hook's
+  // returned `provider` value below is built from. providerRef itself
+  // stays, unchanged, for every *non-render* callback in this file
+  // (disconnect/switchNetwork/the accountsChanged listener) that needs
+  // synchronous access without waiting a render cycle.
+  const [connectedProvider, setConnectedProvider] = useState<Eip1193Provider | null>(null);
 
   const providerRef = useRef<Eip1193Provider | null>(null);
   const listenersRef = useRef<{
@@ -106,6 +114,7 @@ export function useWalletConnection() {
         .catch(() => {});
     }
     providerRef.current = null;
+    setConnectedProvider(null);
     clearAuthToken();
     setStatus("idle");
     setWalletName("");
@@ -143,6 +152,7 @@ export function useWalletConnection() {
         const chainIdHex = (await provider.request({ method: "eth_chainId" })) as string;
 
         providerRef.current = provider;
+        setConnectedProvider(provider);
         setWalletName(name);
         setAddress(addr);
         setChainIdDecimal(parseInt(chainIdHex, 16));
@@ -169,6 +179,7 @@ export function useWalletConnection() {
         return true;
       } catch (err) {
         providerRef.current = null;
+        setConnectedProvider(null);
         clearAuthToken();
         setStatus("idle");
         setError(describeError(err));
@@ -236,5 +247,14 @@ export function useWalletConnection() {
     connect,
     disconnect,
     switchNetwork,
+    // The raw EIP-1193 provider backing the current connection, or null
+    // when idle/connecting — components/app/genlayer-write-client.ts needs
+    // this exact provider instance (not a fresh `window.ethereum` lookup,
+    // which would silently target the wrong wallet if the user connected
+    // via a non-window.ethereum EIP-6963 provider) to sign an on-chain
+    // write with the same wallet the rest of the app already treats as
+    // connected. Real state (connectedProvider), not providerRef directly
+    // — a ref can't be read during render.
+    provider: connectedProvider,
   };
 }

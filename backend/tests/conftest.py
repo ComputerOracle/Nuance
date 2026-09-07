@@ -27,3 +27,20 @@ def _no_real_provider_keys_by_default(monkeypatch):
     monkeypatch.setattr(consensus.settings, "gemini_api_key", None)
     monkeypatch.setattr(consensus.settings, "anthropic_api_key", None)
     monkeypatch.setattr(consensus.settings, "openai_api_key", None)
+
+
+@pytest.fixture(autouse=True)
+def _disable_chain_indexer_by_default(monkeypatch):
+    """app.main's lifespan launches services/genlayer_indexer.run_forever
+    as a background task whenever settings.enable_chain_indexer is true
+    (the .env default) — every test in this suite triggers that lifespan
+    via `with TestClient(app)`, and a real poll loop that shells out to
+    `npx tsx` every cycle has no business running during unit tests.
+    Forced off here regardless of what's in .env — same pattern as
+    _no_real_provider_keys_by_default above: get_settings() is
+    lru_cached, so every module that calls it (app.main,
+    genlayer_indexer, ...) shares this exact instance, and monkeypatch
+    reverts it automatically after each test."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "enable_chain_indexer", False)
