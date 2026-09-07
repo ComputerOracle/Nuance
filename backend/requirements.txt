@@ -1,11 +1,24 @@
 # --- Foundation (this prompt) ---
-fastapi==0.121.2
+# fastapi/starlette/pydantic-settings/python-dotenv versions below were
+# bumped 2026-09-07 specifically to clear real CVEs pip-audit found once
+# it was added to CI (security.yml) — not a routine bump. fastapi's own
+# pin moved from 0.121.2 -> 0.134.0 (the minimum version whose own
+# Requires-Dist drops its starlette ceiling below 1.0.0 entirely,
+# confirmed against every intermediate release's wheel METADATA rather
+# than guessed) specifically so starlette could move to a fixed version
+# at all — 0.121.2 pinned `starlette<0.50.0`, which no CVE-fixed starlette
+# release satisfies. All 97 backend tests still pass unchanged after this.
+fastapi==0.134.0
+starlette==1.6.0      # transitive via fastapi — pinned explicitly since
+                      # fastapi's own floor (>=0.46.0, no ceiling as of
+                      # 0.134.0) would otherwise resolve to whatever's
+                      # newest at install time, not a reproducible build
 uvicorn[standard]==0.38.0
 sqlalchemy==2.0.44
 aiosqlite==0.21.0
 pydantic==2.12.5
-pydantic-settings==2.12.0
-python-dotenv==1.1.1
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
 
 # --- Auth prompt ---
 eth-account==0.13.7
@@ -24,10 +37,16 @@ tweepy==4.17.0        # Twitter/X API v2 client — optional, only used if TWITT
 feedparser==6.0.14    # RSS/Atom fallback for GenLayer announcements
 beautifulsoup4==4.15.0  # generic webpage-scrape fallback, one tier below RSS
 
-# --- Wired in a later prompt ---
-# alembic       # schema migrations, once the schema stabilizes
+# --- Part 3 hardening prompt (Postgres/Alembic + Redis) ---
+alembic==1.19.2
+asyncpg==0.31.0       # async Postgres driver — env.py runs migrations via
+                      # AsyncEngine.run_sync, so no separate sync driver
+                      # (psycopg2) is needed alongside it
+redis==8.1.0          # redis.asyncio pub/sub behind the consensus WS channel
 
 # --- Dev/test ---
 httpx==0.28.1
 pytest==9.1.1
 pytest-asyncio==1.4.0
+pip-audit==2.10.1     # CI dependency-vulnerability gate — not imported by
+                      # app code, run as `pip-audit` in CI only

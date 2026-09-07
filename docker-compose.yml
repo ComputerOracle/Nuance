@@ -1,0 +1,66 @@
+# Local Postgres + Redis for backend dev, matching ROADMAP.md Part 3
+# (5.1 Postgres/Alembic migration, "Redis pub/sub behind the WebSocket
+# channel"). Doesn't replace running the backend/frontend directly with
+# uvicorn/npm — those still talk to whatever DATABASE_URL/REDIS_URL your
+# .env points at; this just gives you a real Postgres + Redis to point
+# them at instead of the sqlite default, without installing either
+# natively.
+#
+# Usage:
+#   docker compose up -d db redis     # start Postgres + Redis only
+#   docker compose run --rm migrate   # apply migrations against `db`
+#   # then point backend/.env at:
+#   #   DATABASE_URL=postgresql+asyncpg://nuance:nuance@localhost:5432/nuance
+#   #   REDIS_URL=redis://localhost:6379/0
+#
+# `migrate` is also what CI runs (see .github/workflows/ci.yml) against
+# this same `db` service to prove a fresh Postgres actually reaches head
+# from nothing but the checked-in migrations — not just that they render
+# as SQL offline.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nuance
+      POSTGRES_PASSWORD: nuance
+      POSTGRES_DB: nuance
+    ports:
+      - "5432:5432"
+    volumes:
+      - nuance_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nuance -d nuance"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: `docker compose run --rm migrate` applies every migration up
+  # to head against `db`, then exits. Not a long-running service — build
+  # context is backend/ itself since alembic.ini/alembic/ live there, not
+  # a separate Dockerfile this repo doesn't otherwise need yet.
+  migrate:
+    image: python:3.13-slim
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+    environment:
+      DATABASE_URL: postgresql+asyncpg://nuance:nuance@db:5432/nuance
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "pip install --quiet -r requirements.txt && alembic upgrade head"
+
+volumes:
+  nuance_postgres_data:

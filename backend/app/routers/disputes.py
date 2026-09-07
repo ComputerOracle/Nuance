@@ -39,6 +39,30 @@ async def _get_dispute_or_404(dispute_id: int, db: AsyncSession) -> Dispute:
     return dispute
 
 
+async def _get_dispute_for_update_or_404(dispute_id: int, db: AsyncSession) -> Dispute:
+    """Same as _get_dispute_or_404, but holds a row lock on the Dispute
+    for the rest of this transaction (ROADMAP.md Part 3 5.4's double-
+    release race, same reasoning as routers/escrows.py's
+    _get_escrow_for_update_or_404/routers/governance.py's
+    _get_proposal_for_update_or_404) — use for enforce_ruling
+    specifically, which reads `dispute.resolved_at` then writes it in the
+    same request: without a lock, two concurrent enforce_ruling calls can
+    both pass the "not yet resolved" check before either commits, and
+    both write a (possibly conflicting) ruling. A no-op on SQLite, a real
+    lock on Postgres.
+    """
+    result = await db.execute(
+        select(Dispute)
+        .where(Dispute.id == dispute_id)
+        .options(selectinload(Dispute.evidence), selectinload(Dispute.messages))
+        .with_for_update()
+    )
+    dispute = result.scalar_one_or_none()
+    if dispute is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dispute not found.")
+    return dispute
+
+
 @router.get("", response_model=list[DisputeRead])
 async def list_disputes(db: AsyncSession = Depends(get_db)) -> list[Dispute]:
     result = await db.execute(
@@ -170,7 +194,7 @@ async def enforce_ruling(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Dispute:
-    dispute = await _get_dispute_or_404(dispute_id, db)
+    dispute = await _get_dispute_for_update_or_404(dispute_id, db)
     if dispute.resolved_at is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Dispute already enforced.")
 

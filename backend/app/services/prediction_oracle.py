@@ -23,6 +23,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from app.config import get_settings
 from app.models import Prediction
 from app.services.payout import calculate_prediction_payouts
+from app.services.prompt_safety import PROMPT_INJECTION_DEFENSE, fence_user_content, scan_for_injection
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -55,16 +56,27 @@ def _oracle_system_prompt(name: str) -> str:
     return (
         f"You are {name}, an independent validator node of the GenLayer Intelligent Oracle consensus network. "
         "You analyze prediction market questions and factual resolution criteria against public records and metrics. "
-        "Provide your independent judgment as structured JSON with outcome ('YES' or 'NO'), confidence (0-100), and reasoning."
+        "Provide your independent judgment as structured JSON with outcome ('YES' or 'NO'), confidence (0-100), and reasoning. "
+        f"{PROMPT_INJECTION_DEFENSE}"
     )
 
 
 def _oracle_user_prompt(prediction: Prediction) -> str:
-    return (
+    # Fenced (app/services/prompt_safety.py) — a market's title/description
+    # is not wallet-submitted the way a deliverable/dispute evidence is,
+    # but it can originate from scraped, adversarial internet content via
+    # services/market_generator.py (a tweet, an RSS item, a scraped page),
+    # which makes it at least as untrusted as user input. This decides a
+    # real payout, so it gets the same treatment as consensus.py's prompts,
+    # not less.
+    market_details = (
         f"Prediction Market Title: {prediction.title}\n"
         f"Category: {prediction.category}\n"
         f"Resolution Criteria / Details:\n{prediction.description}\n"
-        f"Target Resolution Date: {prediction.resolution_date.isoformat()}\n\n"
+        f"Target Resolution Date: {prediction.resolution_date.isoformat()}"
+    )
+    return (
+        f"{fence_user_content('market details', market_details)}\n\n"
         "Evaluate the resolution criteria against verifiable ground truth. "
         "Decide whether the market resolves to YES or NO with supporting reasoning and confidence."
     )
@@ -144,10 +156,19 @@ async def resolve_prediction_market(
     prediction_id: int,
     db: AsyncSession,
 ) -> Prediction:
+    # Row-locked (ROADMAP.md Part 3 5.4) — without this, two concurrent
+    # resolve calls (or a resolve racing a bet in routers/predictions.py::
+    # place_bet, which takes the same lock) can both pass the "not yet
+    # resolved" check below before either commits, both burn a real
+    # Gemini call, and both attempt to write a (possibly conflicting)
+    # outcome/payout. A no-op on SQLite, a real lock on Postgres — see
+    # routers/predictions.py's _get_prediction_for_update_or_404 for the
+    # matching half of this on the betting side.
     result = await db.execute(
         select(Prediction)
         .where(Prediction.id == prediction_id)
         .options(selectinload(Prediction.positions))
+        .with_for_update()
     )
     prediction = result.scalar_one_or_none()
     if prediction is None:
@@ -155,6 +176,20 @@ async def resolve_prediction_market(
 
     if prediction.status_key.upper() == "RESOLVED":
         return prediction
+
+    flags = scan_for_injection(f"{prediction.title}\n{prediction.description}")
+    if flags:
+        # Not a rejection (see prompt_safety.py's own docstring) — a
+        # grep-able signal for review; the fencing in _oracle_user_prompt
+        # is what actually defends the prompt regardless of whether this
+        # fired. Extra-worth logging here specifically since, unlike a
+        # wallet's own deliverable/evidence submission, this text may
+        # have come from an ingested tweet/webpage nobody at Nuance wrote
+        # or reviewed (services/market_generator.py).
+        logger.warning(
+            "Possible prompt injection in prediction market %s title/description: %s",
+            prediction_id, flags,
+        )
 
     now = datetime.now(timezone.utc)
     res_date = (

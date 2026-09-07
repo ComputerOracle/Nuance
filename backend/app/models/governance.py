@@ -8,11 +8,13 @@ casting a second vote is always an *update* of that one row — the router
 old tally and into its new one in the same transaction; this module only
 declares the shapes and the constraint that makes re-voting well-defined.
 
-Known gap, matching this codebase's current maturity level elsewhere
-(e.g. milestone release has no row-locking either): concurrent votes on
-the same proposal read-modify-write `Proposal`'s tally columns with no
-row lock. Fine for SQLite's effectively-serialized writes today; worth a
-`SELECT ... FOR UPDATE` once this runs on Postgres (ROADMAP.md Part 3).
+Row locking (ROADMAP.md Part 3 5.4): concurrent votes on the same
+proposal read-modify-write `Proposal`'s tally columns — routers/
+governance.py's write endpoints (cast_vote, finalize_proposal,
+execute_proposal) fetch via `_get_proposal_for_update_or_404`, a
+`SELECT ... FOR UPDATE`, specifically to close this race. A no-op on
+SQLite (no error, no actual locking — fine given SQLite's own
+effectively-serialized writes), a real row lock on Postgres.
 """
 
 from __future__ import annotations

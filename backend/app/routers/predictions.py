@@ -1,4 +1,17 @@
 """Prediction markets router — GET /predictions, GET /predictions/{id}, POST /predictions/{id}/bet.
+
+Row locking (ROADMAP.md Part 3 5.4): `place_bet` reads `status_key`/
+`resolution_date` then writes a new position + `volume` — without a lock,
+a bet can land concurrently with `resolve_prediction_market` (services/
+prediction_oracle.py) acting on stale "still open" state, landing a bet
+the resolution decision never accounted for. `_get_prediction_for_update_
+or_404`'s `SELECT ... FOR UPDATE` closes this the same way routers/
+escrows.py/disputes.py/governance.py's equivalents do — prediction_oracle.
+py's own fetch inside resolve_prediction_market takes the same lock on
+its side, so the two paths actually serialize against each other despite
+living in different modules/sessions (a Postgres row lock doesn't care
+which code acquired it, only that it's the same row). A no-op on SQLite,
+a real lock on Postgres.
 """
 
 from __future__ import annotations
@@ -23,6 +36,27 @@ async def _get_prediction_or_404(prediction_id: int, db: AsyncSession) -> Predic
         select(Prediction)
         .where(Prediction.id == prediction_id)
         .options(selectinload(Prediction.positions))
+    )
+    prediction = result.scalar_one_or_none()
+    if prediction is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Prediction market not found."
+        )
+    return prediction
+
+
+async def _get_prediction_for_update_or_404(prediction_id: int, db: AsyncSession) -> Prediction:
+    """Same as _get_prediction_or_404, but holds a row lock for the rest
+    of this transaction — use for place_bet specifically (see module
+    docstring). Never use for a plain read (list_predictions/
+    get_prediction) — locking rows a GET request has no intention of
+    writing to would only add contention.
+    """
+    result = await db.execute(
+        select(Prediction)
+        .where(Prediction.id == prediction_id)
+        .options(selectinload(Prediction.positions))
+        .with_for_update()
     )
     prediction = result.scalar_one_or_none()
     if prediction is None:
@@ -73,7 +107,7 @@ async def place_bet(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Prediction:
-    prediction = await _get_prediction_or_404(prediction_id, db)
+    prediction = await _get_prediction_for_update_or_404(prediction_id, db)
 
     if prediction.status_key.lower() != "open":
         raise HTTPException(

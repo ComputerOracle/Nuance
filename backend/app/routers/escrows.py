@@ -55,6 +55,30 @@ async def _get_escrow_or_404(escrow_id: int, db: AsyncSession) -> Escrow:
     return escrow
 
 
+async def _get_escrow_for_update_or_404(escrow_id: int, db: AsyncSession) -> Escrow:
+    """Same as _get_escrow_or_404, but holds a row lock on the Escrow for
+    the rest of this transaction (ROADMAP.md Part 3 5.4's double-release
+    race) — use for release_milestone specifically. Locking the parent
+    Escrow row is enough to serialize concurrent release_milestone calls
+    for the same escrow, even though the actual mutation is on one of its
+    Milestone rows: a second concurrent call blocks on this same SELECT
+    until the first transaction commits, and only then reads (already
+    updated) milestone state — the milestone itself doesn't need its own
+    separate lock. A no-op on SQLite, a real lock on Postgres, same as
+    routers/governance.py's _get_proposal_for_update_or_404.
+    """
+    result = await db.execute(
+        select(Escrow)
+        .where(Escrow.id == escrow_id)
+        .options(selectinload(Escrow.milestones))
+        .with_for_update()
+    )
+    escrow = result.scalar_one_or_none()
+    if escrow is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Escrow not found.")
+    return escrow
+
+
 def _active_milestone(escrow: Escrow) -> Milestone | None:
     """First not-yet-APPROVED milestone by order_index — a stand-in for the
     frontend's `activeMilestoneIndex` (status.ts) until that logic is
@@ -438,7 +462,7 @@ async def release_milestone(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Escrow:
-    escrow = await _get_escrow_or_404(escrow_id, db)
+    escrow = await _get_escrow_for_update_or_404(escrow_id, db)
     if current_user.wallet_address != escrow.creator_address:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
