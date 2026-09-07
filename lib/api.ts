@@ -127,6 +127,11 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 // --- Backend DTOs (snake_case — mirrors backend/app/schemas.py) -----------
 
+// Mirrors backend/app/enums.py's ChainStatus — see that enum's own
+// docstring for why this vocabulary has to match lib/chain-status.ts's
+// ChainStatus exactly rather than be re-derived here.
+export type ApiChainStatus = "legacy_offchain" | "processing" | "decided" | "finalized" | "canceled";
+
 export interface ApiMilestone {
   id: number;
   name: string;
@@ -134,6 +139,12 @@ export interface ApiMilestone {
   status_key: StatusKey;
   criteria: string;
   order_index: number;
+  // Null until this milestone is linked to an index inside its escrow's
+  // deployed NuanceEscrow contract — see lib/chain-config.ts's
+  // milestoneIsOnChain(). Not the same number as `id`/`order_index`.
+  on_chain_index: number | null;
+  chain_status: ApiChainStatus;
+  on_chain_tx_hash: string | null;
 }
 
 export interface ApiEscrow {
@@ -145,6 +156,10 @@ export interface ApiEscrow {
   status_key: StatusKey;
   created_at: string;
   milestones: ApiMilestone[];
+  // Which deployed NuanceEscrow instance backs this escrow — null for
+  // almost every escrow today (see lib/chain-config.ts's own header on
+  // why there's no single global escrow address to fall back to).
+  contract_address: string | null;
 }
 
 export interface ApiDeliverableSubmission {
@@ -187,6 +202,22 @@ export interface ApiDispute {
   resolved_at: string | null;
   messages: ApiDisputeMessage[];
   evidence: ApiDisputeEvidence[];
+  // Which entry in NuanceDisputeCourt's shared registry this dispute maps
+  // to — null until services/genlayer_indexer.py's resolve_pending_
+  // dispute_ids matches it (see lib/chain-config.ts's own header on why
+  // there's no single global "the" dispute id to fall back to).
+  on_chain_dispute_id: number | null;
+  chain_status: ApiChainStatus;
+  on_chain_tx_hash: string | null;
+}
+
+// The response shape POST /escrows/{id}/dispute specifically returns —
+// ApiDispute plus the queued ConsensusJob's id, same reasoning
+// ApiDeliverableSubmission/ApiDisputeEvidence already carry one: the
+// frontend needs it back synchronously to start polling GET /consensus/{id}
+// right away, not GET /disputes/{id} first to go find it.
+export interface ApiDisputeCreateResponse extends ApiDispute {
+  consensus_job_id: number | null;
 }
 
 export interface ApiValidatorResult {
@@ -410,8 +441,57 @@ export async function submitDeliverable(
   });
 }
 
+// The on-chain counterpart: called after components/app/
+// genlayer-write-client.ts has already signed and sent a real
+// NuanceEscrow.submit_deliverable transaction directly to the chain —
+// this just hands the resulting tx hash to the backend so services/
+// genlayer_indexer.py has something to poll. No `text` here; the
+// deliverable text already lives on-chain (the contract's own storage),
+// not in this request.
+export async function submitDeliverableOnChainAck(
+  escrowId: number,
+  txHash: string
+): Promise<ApiMilestone> {
+  return apiFetch<ApiMilestone>(`/escrows/${escrowId}/deliverable/on-chain`, {
+    method: "POST",
+    body: JSON.stringify({ tx_hash: txHash }),
+  });
+}
+
 export async function releaseMilestone(escrowId: number): Promise<ApiEscrow> {
   return apiFetch<ApiEscrow>(`/escrows/${escrowId}/release`, { method: "POST" });
+}
+
+// Escalates the escrow's active milestone to a formal Dispute Court
+// review — the "Escalate to Internet Court" button (escrow-detail-view.tsx)
+// fires this with no `issue` of its own; the backend fills in a default
+// from the milestone's AI verdict reasoning when omitted.
+export async function raiseDispute(
+  escrowId: number,
+  issue?: string
+): Promise<ApiDisputeCreateResponse> {
+  return apiFetch<ApiDisputeCreateResponse>(`/escrows/${escrowId}/dispute`, {
+    method: "POST",
+    body: JSON.stringify(issue ? { issue } : {}),
+  });
+}
+
+// The on-chain counterpart: called after components/app/
+// genlayer-write-client.ts's fileDisputeOnChain has already signed and
+// sent a real NuanceDisputeCourt.file_dispute transaction. `issue` here
+// MUST be the exact same text passed as that call's claimStatement — the
+// backend stores it verbatim, and services/genlayer_indexer.py's
+// resolve_pending_dispute_ids matches on exact string equality, not
+// fuzzy matching.
+export async function raiseDisputeOnChainAck(
+  escrowId: number,
+  txHash: string,
+  issue: string
+): Promise<ApiDispute> {
+  return apiFetch<ApiDispute>(`/escrows/${escrowId}/dispute/on-chain`, {
+    method: "POST",
+    body: JSON.stringify({ tx_hash: txHash, issue }),
+  });
 }
 
 // --- Disputes ---------------------------------------------------------

@@ -6,6 +6,8 @@ settings`, see routers/auth.py) rather than their own module.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -18,8 +20,10 @@ from app.db import dispose_engine, init_db
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.routers import agents, auth, consensus, disputes, escrows, governance, predictions, validators
+from app.services.genlayer_indexer import run_forever as run_chain_indexer
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -27,8 +31,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup: create tables that don't exist yet (see db.init_db's
     # docstring re: this being a placeholder for Alembic).
     await init_db()
+
+    # The chain indexer (services/genlayer_indexer.py) as a background
+    # task sharing this process/event loop, rather than a separate
+    # `python -m app.services.genlayer_indexer` terminal to babysit — one
+    # fewer moving part in local dev and in a future container. Gated by
+    # settings.enable_chain_indexer (default True) so
+    # tests/conftest.py's autouse fixture can force it off for the whole
+    # suite: every test instantiates the app via `with TestClient(app)`,
+    # which runs this lifespan, and a real poll loop shelling out to
+    # `npx tsx` per cycle has no business running during unit tests.
+    indexer_task: asyncio.Task[None] | None = None
+    if settings.enable_chain_indexer:
+        indexer_task = asyncio.create_task(run_chain_indexer(), name="genlayer-chain-indexer")
+
     yield
-    # Shutdown: release the connection pool cleanly.
+
+    # Shutdown: cancel the indexer cleanly before tearing down the engine
+    # it depends on — cancelling second (or not at all) would let it try a
+    # DB write against an already-disposed pool. run_forever's own
+    # try/except Exception around each cycle doesn't swallow this:
+    # asyncio.CancelledError is a BaseException, not an Exception, so it
+    # still propagates and stops the loop. genlayer_rpc.read_and_check
+    # separately makes sure a cycle cancelled mid-subprocess kills that
+    # child process too, rather than orphaning it.
+    if indexer_task is not None:
+        indexer_task.cancel()
+        try:
+            await indexer_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 — shutdown must not crash on this
+            logger.exception("genlayer-chain-indexer task raised during shutdown")
+
     await dispose_engine()
 
 

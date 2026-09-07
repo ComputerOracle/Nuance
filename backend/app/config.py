@@ -74,6 +74,50 @@ class Settings(BaseSettings):
     # to remote IP for unauthenticated attempts). See app/middleware/rate_limit.py.
     write_rate_limit_per_minute: int = 10
 
+    # --- used starting the chain-indexer prompt ---
+    # NuanceDisputeCourt is a single shared registry, not one-per-row (see
+    # that contract's own header) — one global address for every dispute's
+    # on_chain_dispute_id lookup. Same env var scripts/deploy.ts already
+    # writes to this file; unlike escrow/prediction contract addresses
+    # (which are per-row — Escrow.contract_address / Prediction.
+    # contract_address — since a real deploy-per-agreement flow doesn't
+    # exist yet), this one genuinely is global config.
+    dispute_court_contract_address: str | None = None
+    # The bootstrap NuanceEscrow/NuancePredictionMarket instances
+    # scripts/deploy.ts creates (placeholder data, not a real agreement —
+    # see that script's header) — not read by the indexer's normal poll
+    # loop, only by `python -m app.services.genlayer_indexer --link-demo`,
+    # an opt-in way to point one real DB row at a real live contract for
+    # an end-to-end smoke test without guessing at fake addresses. Same
+    # env vars deploy.ts already writes.
+    escrow_contract_address: str | None = None
+    prediction_market_contract_address: str | None = None
+    # How often services/genlayer_indexer.py's poll loop runs a full cycle.
+    genlayer_indexer_poll_seconds: int = 15
+    # Whether main.py's lifespan launches the indexer as a background task
+    # alongside the API server. True by default (dev/prod both want the
+    # read-cache kept warm without a second terminal to babysit) —
+    # tests/conftest.py's autouse fixture forces this False for every test
+    # regardless of what's in .env, so the whole suite never spins up a
+    # real polling loop (which itself would try to shell out to `npx tsx`
+    # per cycle) just because a test happened to instantiate the app.
+    enable_chain_indexer: bool = True
+    # NuanceDisputeCourt.file_dispute assigns its dispute's id on-chain and
+    # returns it — but genlayer-js's writeContract only surfaces a decoded
+    # return value for a *deploy* (DecodedDeployData.contractAddress); a
+    # regular call's DecodedCallData has no equivalent field for what the
+    # function actually returned (confirmed against the installed
+    # genlayer-js@1.1.8 .d.ts directly). Rather than reverse-engineer the
+    # raw undocumented receipt shape against the live, non-disposable
+    # shared DisputeCourt registry (deploy.ts had to do exactly that,
+    # repeatedly, against its own bootstrap instances — not something to
+    # redo against shared infra without being asked), services/
+    # genlayer_indexer.py's resolve_pending_dispute_ids resolves the id
+    # asynchronously instead: scan the last N on-chain disputes and match
+    # by (claimant, escrow_address, claim_statement). This bounds how far
+    # back that scan looks.
+    dispute_id_scan_window: int = 50
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

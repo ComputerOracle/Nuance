@@ -18,6 +18,16 @@ import { useWalletConnection } from "@/components/app/use-wallet-connection";
 import { useConsensusPolling } from "@/components/app/use-consensus-polling";
 import { formatAddress } from "@/components/app/status";
 import type { Eip1193Provider } from "@/components/app/eip1193";
+import {
+  escrowContractAddress,
+  milestoneIsOnChain,
+  disputeCourtContractAddress,
+} from "@/lib/chain-config";
+import {
+  submitDeliverableOnChain,
+  fileDisputeOnChain,
+  describeWriteError,
+} from "@/components/app/genlayer-write-client";
 import * as api from "@/lib/api";
 import type { ApiDispute, ApiEscrow, ApiMilestone } from "@/lib/api";
 import type {
@@ -217,6 +227,17 @@ function ErrorBanner({ message }: { message: string }) {
   );
 }
 
+// Same shape as ErrorBanner, "info" tone (status.ts's in_progress badge
+// already uses this exact pairing) — for a successful, non-final notice
+// like an on-chain submission, not a failure.
+function InfoBanner({ message }: { message: string }) {
+  return (
+    <div className="mb-4 rounded-lg border border-info/35 bg-info/12 px-3 py-2 text-xs text-info-text">
+      {message}
+    </div>
+  );
+}
+
 function ErrorCard({
   message,
   onRetry,
@@ -298,6 +319,13 @@ export function NuanceApp() {
   const [escrowJobIds, setEscrowJobIds] = useState<Record<number, string>>({});
   const [activeEscrowJobId, setActiveEscrowJobId] = useState<string | null>(null);
   const [escrowActionError, setEscrowActionError] = useState<string | null>(null);
+  // Set once a deliverable has actually been signed and sent on-chain
+  // (see submitDeliverable below) — distinct from escrowActionError:
+  // this is a successful, informational notice, not a failure. Cleared
+  // whenever a different escrow is opened.
+  const [onChainSubmitNotice, setOnChainSubmitNotice] = useState<string | null>(null);
+  const [onChainSubmitPending, setOnChainSubmitPending] = useState(false);
+  const [escalatePending, setEscalatePending] = useState(false);
 
   const [formTitle, setFormTitle] = useState("");
   const [formCounterparty, setFormCounterparty] = useState("");
@@ -510,12 +538,70 @@ export function NuanceApp() {
     setSelectedId(id);
     setDeliverableText("");
     setEscrowActionError(null);
+    setOnChainSubmitNotice(null);
     setActiveEscrowJobId(escrowJobIds[id] ?? null);
   }
   async function submitDeliverable() {
     if (!deliverableText.trim() || selectedId == null) return;
     const escrowId = selectedId;
     setEscrowActionError(null);
+    setOnChainSubmitNotice(null);
+
+    // A fresh, authoritative read rather than trusting the already-mapped
+    // `escrows` state — that UI-shape mapping (mapEscrow/mapMilestone,
+    // above) deliberately drops contract_address/on_chain_index, and this
+    // decision (on-chain vs. legacy path) has to be made against real,
+    // current linkage, not a stale/simplified copy of it.
+    let escrowData: api.ApiEscrow;
+    try {
+      escrowData = await api.getEscrow(escrowId);
+    } catch (err) {
+      setEscrowActionError(errorText(err, "Failed to submit deliverable."));
+      return;
+    }
+    const activeMilestone = escrowData.milestones.find((m) => m.status_key !== "approved");
+    const contractAddress = escrowContractAddress(escrowData);
+
+    if (
+      contractAddress &&
+      activeMilestone &&
+      milestoneIsOnChain(escrowData, activeMilestone) &&
+      wallet.status === "connected" &&
+      wallet.provider
+    ) {
+      // On-chain path: sign and send NuanceEscrow.submit_deliverable
+      // directly from this browser via the connected wallet — no LLM call
+      // from our own backend, GenVM's validator committee does that
+      // judgment on the deployed contract instead (ROADMAP.md 4's whole
+      // point). This app never waits for that verdict itself; services/
+      // genlayer_indexer.py polls it server-side once the tx hash below
+      // is handed to the backend.
+      setOnChainSubmitPending(true);
+      try {
+        const txHash = await submitDeliverableOnChain({
+          walletAddress: wallet.address,
+          provider: wallet.provider,
+          contractAddress,
+          milestoneIndex: activeMilestone.on_chain_index as number,
+          deliverableText,
+          deliverableUrl: "",
+        });
+        await api.submitDeliverableOnChainAck(escrowId, txHash);
+        setDeliverableText("");
+        setOnChainSubmitNotice(
+          `Submitted on-chain — tx ${txHash.slice(0, 10)}…${txHash.slice(-6)}. ` +
+            "GenLayer validators are reviewing it now; this can take a few minutes."
+        );
+      } catch (err) {
+        setEscrowActionError(describeWriteError(err));
+      } finally {
+        setOnChainSubmitPending(false);
+      }
+      return;
+    }
+
+    // Legacy off-chain path — unchanged: the backend's own LLM-validator
+    // consensus (services/consensus.py) judges the submission.
     try {
       const submission = await api.submitDeliverable(escrowId, deliverableText);
       setDeliverableText("");
@@ -526,6 +612,87 @@ export function NuanceApp() {
       }
     } catch (err) {
       setEscrowActionError(errorText(err, "Failed to submit deliverable."));
+    }
+  }
+  // The "Escalate to Internet Court" button (escrow-detail-view.tsx) —
+  // was rendered with no handler at all until POST /escrows/{id}/dispute
+  // existed to call. Fires with no form of its own; a default claim gets
+  // built from the milestone's AI verdict reasoning (server-side for the
+  // off-chain path below; here, client-side, since the on-chain call
+  // needs real claim text before any backend round-trip happens at all).
+  async function escalateToDisputeCourt() {
+    if (selectedId == null) return;
+    const escrowId = selectedId;
+    setEscrowActionError(null);
+    setEscalatePending(true);
+
+    let escrowData: api.ApiEscrow;
+    try {
+      escrowData = await api.getEscrow(escrowId);
+    } catch (err) {
+      setEscrowActionError(errorText(err, "Failed to raise a dispute."));
+      setEscalatePending(false);
+      return;
+    }
+
+    // NuanceDisputeCourt is the one global shared registry (lib/
+    // chain-config.ts's own header) — its address alone doesn't make a
+    // dispute "on-chain capable"; the specific escrow being disputed also
+    // needs its own NuanceEscrow instance, since that address is what
+    // file_dispute records as escrow_address and what services/
+    // genlayer_indexer.py later matches against.
+    const disputeCourtAddress = disputeCourtContractAddress();
+    const escrowAddress = escrowContractAddress(escrowData);
+
+    if (disputeCourtAddress && escrowAddress && wallet.status === "connected" && wallet.provider) {
+      // On-chain path: sign and send NuanceDisputeCourt.file_dispute
+      // directly from this browser. No ConsensusJob, no run_consensus —
+      // GenVM's own validator committee is the jury once adjudicate_dispute
+      // is called against the contract (separate action, not wired here).
+      const respondent =
+        wallet.address.toLowerCase() === escrowData.creator_address.toLowerCase()
+          ? escrowData.counterparty_address
+          : escrowData.creator_address;
+      const claimStatement = escrowConsensus.verdict?.reasoning
+        ? `Escalating AI Consensus verdict: ${escrowConsensus.verdict.reasoning}`
+        : `Escalating escrow #${escrowId} to Dispute Court review.`;
+
+      try {
+        const txHash = await fileDisputeOnChain({
+          walletAddress: wallet.address,
+          provider: wallet.provider,
+          disputeCourtAddress,
+          escrowAddress,
+          respondentAddress: respondent,
+          claimStatement,
+          evidenceUrl: "",
+        });
+        const created = await api.raiseDisputeOnChainAck(escrowId, txHash, claimStatement);
+        const mapped = mapDispute(created, escrows);
+        setDisputes((prev) => [mapped, ...prev]);
+        openDispute(created.id);
+      } catch (err) {
+        setEscrowActionError(describeWriteError(err));
+      } finally {
+        setEscalatePending(false);
+      }
+      return;
+    }
+
+    // Legacy off-chain path — unchanged: the backend judges via its own
+    // AI-validator consensus, same as an escalated dispute always has.
+    try {
+      const created = await api.raiseDispute(escrowId);
+      const mapped = mapDispute(created, escrows);
+      setDisputes((prev) => [mapped, ...prev]);
+      if (created.consensus_job_id != null) {
+        setDisputeJobIds((prev) => ({ ...prev, [created.id]: String(created.consensus_job_id) }));
+      }
+      openDispute(created.id);
+    } catch (err) {
+      setEscrowActionError(errorText(err, "Failed to raise a dispute."));
+    } finally {
+      setEscalatePending(false);
     }
   }
   async function releasePayment() {
@@ -806,6 +973,7 @@ export function NuanceApp() {
           ) : selectedEscrow ? (
             <>
               {escrowActionError && <ErrorBanner message={escrowActionError} />}
+              {onChainSubmitNotice && <InfoBanner message={onChainSubmitNotice} />}
               <EscrowDetailView
                 escrow={selectedEscrow}
                 stage={escrowConsensus.stage}
@@ -815,6 +983,9 @@ export function NuanceApp() {
                 onDeliverableChange={setDeliverableText}
                 onSubmitDeliverable={submitDeliverable}
                 onReleasePayment={releasePayment}
+                onEscalate={escalateToDisputeCourt}
+                submitDisabled={onChainSubmitPending}
+                escalateDisabled={escalatePending}
               />
             </>
           ) : null)}

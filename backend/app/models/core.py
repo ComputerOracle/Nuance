@@ -16,7 +16,7 @@ from sqlalchemy import JSON, Boolean, ForeignKey, Numeric, Text, UniqueConstrain
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.enums import ConsensusStage, ConsensusSubjectType, StatusKey
+from app.enums import ChainStatus, ConsensusStage, ConsensusSubjectType, StatusKey
 
 # Dollar amounts: 2 decimal places is plenty and keeps serialized values
 # clean ("500.00" rather than the generic Numeric default's "500.0000000000").
@@ -69,6 +69,14 @@ class Escrow(Base):
     total: Mapped[Decimal] = mapped_column(Money)
     status_key: Mapped[StatusKey] = mapped_column(default=StatusKey.IN_PROGRESS)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Which deployed NuanceEscrow instance (contracts/nuance_escrow.py)
+    # backs this escrow — null means this escrow predates/isn't part of
+    # the on-chain cutover and stays on the legacy services/consensus.py
+    # path (see ROADMAP.md 4.5's migration-path note). One contract
+    # instance per escrow, holding all of that escrow's milestones — set
+    # once Step 4 (a real per-escrow deployContract call at creation time)
+    # exists; nothing writes this column yet.
+    contract_address: Mapped[str | None] = mapped_column(default=None)
 
     creator: Mapped["User"] = relationship(
         foreign_keys=[creator_address], back_populates="created_escrows"
@@ -97,6 +105,23 @@ class Milestone(Base):
     status_key: Mapped[StatusKey] = mapped_column(default=StatusKey.PENDING)
     criteria: Mapped[str] = mapped_column(Text)
     order_index: Mapped[int] = mapped_column(default=0)
+    # This milestone's index inside its escrow's NuanceEscrow contract
+    # (the u256 key submit_deliverable/get_milestone take) — distinct from
+    # `id`/`order_index`, which are this DB's own. Null until explicitly
+    # linked; see Escrow.contract_address's docstring.
+    on_chain_index: Mapped[int | None] = mapped_column(default=None)
+    # services/genlayer_indexer.py's read-cache columns — see enums.py's
+    # ChainStatus docstring for the shared vocabulary with
+    # lib/chain-status.ts. chain_status is the UI-facing bucket;
+    # on_chain_raw_status is GenVM's actual 14-value TransactionStatus
+    # (e.g. "APPEAL_REVEALING"), kept alongside it so an appeal can be
+    # detected specifically rather than only as "still decided, not final"
+    # (ROADMAP.md 4.5, requirement: flag an appeal, don't just fold it in).
+    chain_status: Mapped[ChainStatus] = mapped_column(default=ChainStatus.LEGACY_OFFCHAIN)
+    on_chain_raw_status: Mapped[str | None] = mapped_column(default=None)
+    # The most recent submit_deliverable/release_milestone tx hash the
+    # indexer is (or was) tracking for this milestone.
+    on_chain_tx_hash: Mapped[str | None] = mapped_column(default=None)
 
     escrow: Mapped["Escrow"] = relationship(back_populates="milestones")
     submissions: Mapped[list["DeliverableSubmission"]] = relationship(
@@ -165,6 +190,18 @@ class Dispute(Base):
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
+    # This dispute's id inside NuanceDisputeCourt (contracts/
+    # nuance_dispute_court.py) — a single SHARED REGISTRY for the whole
+    # app (one deployed address, DISPUTE_COURT_CONTRACT_ADDRESS), unlike
+    # Escrow/Prediction's per-row contract_address. Null means this
+    # dispute predates/isn't part of the on-chain cutover. See
+    # Escrow.contract_address's docstring for chain_status/
+    # on_chain_raw_status/on_chain_tx_hash below.
+    on_chain_dispute_id: Mapped[int | None] = mapped_column(default=None)
+    chain_status: Mapped[ChainStatus] = mapped_column(default=ChainStatus.LEGACY_OFFCHAIN)
+    on_chain_raw_status: Mapped[str | None] = mapped_column(default=None)
+    on_chain_tx_hash: Mapped[str | None] = mapped_column(default=None)
+
     escrow: Mapped["Escrow"] = relationship(back_populates="disputes")
     opener: Mapped["User"] = relationship(foreign_keys=[opened_by_address])
     messages: Mapped[list["DisputeMessage"]] = relationship(
@@ -223,6 +260,15 @@ class Prediction(Base):
     resolution_source_url: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    # Which deployed NuancePredictionMarket instance (contracts/
+    # nuance_prediction_market.py) backs this market — one instance per
+    # market, same reasoning as Escrow.contract_address's docstring; null
+    # means this market stays on the legacy off-chain resolution path.
+    contract_address: Mapped[str | None] = mapped_column(default=None)
+    chain_status: Mapped[ChainStatus] = mapped_column(default=ChainStatus.LEGACY_OFFCHAIN)
+    on_chain_raw_status: Mapped[str | None] = mapped_column(default=None)
+    on_chain_tx_hash: Mapped[str | None] = mapped_column(default=None)
 
     positions: Mapped[list["PredictionPosition"]] = relationship(
         back_populates="prediction",

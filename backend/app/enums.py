@@ -63,3 +63,29 @@ class VoteChoice(StrEnum):
     FOR = "for"
     AGAINST = "against"
     ABSTAIN = "abstain"
+
+
+class ChainStatus(StrEnum):
+    """Mirrors lib/chain-status.ts's ChainStatus (LEGACY_OFFCHAIN +
+    ChainStatusBucket) value-for-value — same reason StatusKey above
+    mirrors types.ts: that file already collapses GenLayer's real 14-value
+    TransactionStatus into this 4-bucket + legacy shape (via the SDK's own
+    isDecidedState(), not a hand-copied list — see that file's header),
+    and duplicating a *different* vocabulary here would let the two
+    drift. scripts/genlayer-read.ts computes the bucket (it has
+    genlayer-js loaded); services/genlayer_indexer.py only ever writes
+    one of these five strings into a row's chain_status column.
+
+    Every Milestone/Dispute/Prediction row defaults to LEGACY_OFFCHAIN and
+    stays there until it's actually linked on-chain (Escrow.contract_address
+    / Prediction.contract_address / Dispute.on_chain_dispute_id set) — see
+    ROADMAP.md 4.5's deferred "add this together with the actual cutover"
+    note; this is that column, added once there's a real indexer to drive
+    it rather than speculatively ahead of one.
+    """
+
+    LEGACY_OFFCHAIN = "legacy_offchain"
+    PROCESSING = "processing"
+    DECIDED = "decided"
+    FINALIZED = "finalized"
+    CANCELED = "canceled"

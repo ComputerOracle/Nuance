@@ -15,13 +15,28 @@ from sqlalchemy.orm import selectinload
 
 from app.db import get_db
 from app.dependencies import get_current_user, get_optional_current_user
-from app.enums import ConsensusStage, ConsensusSubjectType, StatusKey
-from app.models import ConsensusJob, DeliverableSubmission, Escrow, Milestone, User, UserSettings
+from app.enums import ChainStatus, ConsensusStage, ConsensusSubjectType, StatusKey
+from app.models import (
+    ConsensusJob,
+    DeliverableSubmission,
+    Dispute,
+    DisputeEvidence,
+    Escrow,
+    Milestone,
+    User,
+    UserSettings,
+)
 from app.schemas import (
     DeliverableSubmissionCreate,
     DeliverableSubmissionRead,
+    DisputeCreate,
+    DisputeCreateRead,
+    DisputeRead,
     EscrowCreate,
     EscrowRead,
+    MilestoneRead,
+    OnChainDisputeAck,
+    OnChainSubmissionAck,
 )
 from app.services.consensus import run_consensus
 
@@ -163,6 +178,258 @@ async def submit_deliverable(
         submitted_at=submission.submitted_at,
         consensus_job_id=job.id,
     )
+
+
+@router.post(
+    "/{escrow_id}/deliverable/on-chain",
+    response_model=MilestoneRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def submit_deliverable_on_chain(
+    escrow_id: int,
+    payload: OnChainSubmissionAck,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Milestone:
+    """The on-chain counterpart to submit_deliverable above — reached once
+    components/app/genlayer-write-client.ts has already signed and sent a
+    real `NuanceEscrow.submit_deliverable` transaction directly to the
+    chain (see ROADMAP.md 4.6's verified writeContract pattern). This
+    endpoint does NOT run consensus, queue a ConsensusJob, or touch
+    deliverable text/reasoning — GenVM's own validator committee is
+    already doing that job on the deployed contract. All this does is
+    remember the tx hash so services/genlayer_indexer.py has something to
+    poll; see OnChainSubmissionAck's own docstring on why that's safe even
+    though nothing here verifies the hash is real.
+    """
+    escrow = await _get_escrow_or_404(escrow_id, db)
+    if current_user.wallet_address != escrow.counterparty_address:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the escrow counterparty can submit a deliverable.",
+        )
+    if escrow.contract_address is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This escrow isn't linked to a deployed contract — use the "
+            "off-chain POST /escrows/{id}/deliverable instead.",
+        )
+
+    milestone = _active_milestone(escrow)
+    if milestone is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This escrow has no active milestone to submit against.",
+        )
+    if milestone.on_chain_index is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This milestone isn't linked to an index inside the deployed contract.",
+        )
+
+    milestone.on_chain_tx_hash = payload.tx_hash
+    milestone.chain_status = ChainStatus.PROCESSING
+    milestone.status_key = StatusKey.IN_REVIEW
+
+    await db.commit()
+    await db.refresh(milestone)
+    return milestone
+
+
+async def _default_dispute_issue(db: AsyncSession, milestone: Milestone) -> str:
+    """Fallback claim text for raise_dispute when the caller doesn't
+    supply one — the "Escalate to Internet Court" button (escrow-detail-
+    view.tsx) fires with no form of its own, so this pulls the milestone's
+    most recent AI verdict reasoning to explain what's actually being
+    escalated, rather than leaving `issue` blank."""
+    result = await db.execute(
+        select(ConsensusJob)
+        .where(
+            ConsensusJob.subject_type == ConsensusSubjectType.MILESTONE,
+            ConsensusJob.subject_id == milestone.id,
+        )
+        .order_by(ConsensusJob.created_at.desc())
+        .limit(1)
+    )
+    job = result.scalars().first()
+    if job is not None and job.verdict_reasoning:
+        return f"Escalating AI Consensus verdict on '{milestone.name}': {job.verdict_reasoning}"
+    return f"Escalating milestone '{milestone.name}' to Dispute Court review."
+
+
+@router.post(
+    "/{escrow_id}/dispute",
+    response_model=DisputeCreateRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def raise_dispute(
+    escrow_id: int,
+    payload: DisputeCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DisputeCreateRead:
+    """Escalates the escrow's active milestone to a formal Dispute Court
+    review. Not previously implemented anywhere in this backend — ROADMAP.md
+    3.1's Part 1 checklist marks "GET/POST /disputes (implicit via escrow)"
+    done, but no such endpoint, implicit or otherwise, actually existed;
+    escrow-detail-view.tsx's "Escalate to Internet Court" button has been
+    unwired since it was written. This is that missing endpoint, escrow-
+    scoped to match the "implicit via escrow" framing rather than a bare
+    POST /disputes.
+
+    Either party to the escrow may open one — mirrors contracts/
+    nuance_dispute_court.py's file_dispute (claimant is whoever calls it;
+    the other party is derivable from the escrow, same as this repo's
+    existing mapDispute on the frontend already does — no separate
+    `respondent` field needed). Creates the Dispute row and an initial
+    DisputeEvidence entry together, then queues the same AI-jury review
+    submit_evidence already runs below — a claim with no supporting text
+    isn't reviewable.
+    """
+    escrow = await _get_escrow_or_404(escrow_id, db)
+    if current_user.wallet_address not in (escrow.creator_address, escrow.counterparty_address):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a party to this escrow can raise a dispute.",
+        )
+
+    milestone = _active_milestone(escrow)
+    if milestone is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This escrow has no active milestone to dispute.",
+        )
+
+    existing = await db.execute(
+        select(Dispute).where(
+            Dispute.milestone_id == milestone.id, Dispute.status_key == StatusKey.DISPUTED
+        )
+    )
+    if existing.scalars().first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This milestone already has an open dispute.",
+        )
+
+    issue = payload.issue or await _default_dispute_issue(db, milestone)
+
+    dispute = Dispute(
+        escrow_id=escrow.id,
+        milestone_id=milestone.id,
+        opened_by_address=current_user.wallet_address,
+        issue=issue,
+        status_key=StatusKey.DISPUTED,
+    )
+    db.add(dispute)
+    await db.flush()  # populates dispute.id before the evidence row below references it
+
+    db.add(
+        DisputeEvidence(
+            dispute_id=dispute.id,
+            submitter_address=current_user.wallet_address,
+            description=issue,
+        )
+    )
+
+    # Queued synchronously, same pattern as submit_deliverable/submit_evidence
+    # above, so the 201 response can hand back a real job id.
+    job = ConsensusJob(
+        subject_type=ConsensusSubjectType.DISPUTE,
+        subject_id=dispute.id,
+        stage=int(ConsensusStage.IDLE),
+    )
+    db.add(job)
+
+    await db.commit()
+    await db.refresh(dispute, attribute_names=["evidence", "messages"])
+    await db.refresh(job)
+
+    background_tasks.add_task(run_consensus, ConsensusSubjectType.DISPUTE, dispute.id, issue)
+
+    return DisputeCreateRead.model_validate(dispute, from_attributes=True).model_copy(
+        update={"consensus_job_id": job.id}
+    )
+
+
+@router.post(
+    "/{escrow_id}/dispute/on-chain",
+    response_model=DisputeRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def raise_dispute_on_chain(
+    escrow_id: int,
+    payload: OnChainDisputeAck,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dispute:
+    """The on-chain counterpart to raise_dispute above — reached once
+    genlayer-write-client.ts has already signed and sent a real
+    NuanceDisputeCourt.file_dispute transaction directly to the chain.
+
+    Unlike submit_deliverable_on_chain (which updates an existing row),
+    this CREATES the Dispute immediately, with on_chain_dispute_id left
+    null — file_dispute assigns that id on-chain, and there's no cheap way
+    to read a regular write call's return value back out of genlayer-js's
+    receipt (see Settings.dispute_id_scan_window's own comment for why).
+    services/genlayer_indexer.py's resolve_pending_dispute_ids fills it in
+    asynchronously once the transaction lands, by matching (claimant,
+    escrow_address, claim_statement) against the contract's own history —
+    same "not a trust boundary" reasoning as OnChainSubmissionAck: nothing
+    here verifies the hash is real, only the indexer reading actual chain
+    state ever changes status_key/ruling.
+
+    No ConsensusJob queued, no run_consensus — GenVM's own validator
+    committee is the jury once adjudicate_dispute is actually called
+    against this contract (a separate action from filing, not wired by
+    this endpoint).
+    """
+    escrow = await _get_escrow_or_404(escrow_id, db)
+    if current_user.wallet_address not in (escrow.creator_address, escrow.counterparty_address):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a party to this escrow can raise a dispute.",
+        )
+    if escrow.contract_address is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This escrow isn't linked to a deployed contract — use the "
+            "off-chain POST /escrows/{id}/dispute instead.",
+        )
+
+    milestone = _active_milestone(escrow)
+    if milestone is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This escrow has no active milestone to dispute.",
+        )
+
+    existing = await db.execute(
+        select(Dispute).where(
+            Dispute.milestone_id == milestone.id, Dispute.status_key == StatusKey.DISPUTED
+        )
+    )
+    if existing.scalars().first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This milestone already has an open dispute.",
+        )
+
+    issue = payload.issue or await _default_dispute_issue(db, milestone)
+
+    dispute = Dispute(
+        escrow_id=escrow.id,
+        milestone_id=milestone.id,
+        opened_by_address=current_user.wallet_address,
+        issue=issue,
+        status_key=StatusKey.DISPUTED,
+        on_chain_tx_hash=payload.tx_hash,
+        chain_status=ChainStatus.PROCESSING,
+    )
+    db.add(dispute)
+    await db.commit()
+    await db.refresh(dispute, attribute_names=["evidence", "messages"])
+    return dispute
 
 
 @router.post("/{escrow_id}/release", response_model=EscrowRead)
