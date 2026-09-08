@@ -166,6 +166,9 @@ export interface ApiEscrow {
   // for why this is only a UI convenience, not the source of truth for
   // whether the contract itself is actually funded.
   funded_tx_hash: string | null;
+  // Set once a real cancel_escrow() transaction has been sent and
+  // acknowledged — see models/core.py's Escrow.cancelled_tx_hash.
+  cancelled_tx_hash: string | null;
 }
 
 export interface ApiDeliverableSubmission {
@@ -483,6 +486,25 @@ export async function fundEscrowOnChainAck(
   txHash: string
 ): Promise<ApiEscrow> {
   return apiFetch<ApiEscrow>(`/escrows/${escrowId}/fund/on-chain`, {
+    method: "POST",
+    body: JSON.stringify({ tx_hash: txHash }),
+  });
+}
+
+// The on-chain counterpart: called after components/app/
+// genlayer-write-client.ts's cancelEscrowOnChain has already signed and
+// sent a real NuanceEscrow.cancel_escrow transaction — the contract has
+// already refunded whatever was locked back to the creator's wallet by
+// the time this fires. This call flips status_key to "cancelled" locally
+// (see OnChainCancelAck's own docstring on why that's safe to trust
+// immediately, unlike fund/deliverable acks). Only the escrow's own
+// creator may call this (enforced server-side, matching cancel_escrow's
+// own contract-side restriction).
+export async function cancelEscrowOnChainAck(
+  escrowId: number,
+  txHash: string
+): Promise<ApiEscrow> {
+  return apiFetch<ApiEscrow>(`/escrows/${escrowId}/cancel/on-chain`, {
     method: "POST",
     body: JSON.stringify({ tx_hash: txHash }),
   });

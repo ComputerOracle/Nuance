@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from eth_account import Account
@@ -13,6 +14,40 @@ from fastapi.testclient import TestClient
 from app.db import AsyncSessionLocal
 from app.main import app
 from app.models import Prediction, PredictionPosition, User
+from app.services import prediction_oracle
+
+
+# --- Fakes for prediction_oracle's genai.Client — same shape/pattern as
+# test_consensus.py's own _FakeGenaiClient (see that file for why: no real
+# network call, deterministic, matches the SDK's actual response shape
+# closely enough for `response.parsed`/`response.text` to both work).
+class _FakeOracleResponse:
+    def __init__(self, data: dict):
+        self.text = json.dumps(data)
+        self.parsed = prediction_oracle.OracleValidatorVerdict(**data)
+
+
+class _FakeOracleAsyncModels:
+    def __init__(self, verdict: dict):
+        self._verdict = verdict
+
+    async def generate_content(self, *, model: str, contents: str, config=None):
+        return _FakeOracleResponse(self._verdict)
+
+
+class _FakeOracleAio:
+    def __init__(self, verdict: dict):
+        self.models = _FakeOracleAsyncModels(verdict)
+
+
+class _FakeOracleGenaiClient:
+    """Every persona returns the same fixed verdict — enough to test the
+    majority-vote/payout math deterministically without needing three
+    different canned responses the way test_consensus.py's fake does."""
+
+    def __init__(self, api_key: str | None = None, *_args, **_kwargs):
+        self.api_key = api_key
+        self.aio = _FakeOracleAio(_FakeOracleGenaiClient.verdict)
 
 
 @pytest.fixture
@@ -150,7 +185,17 @@ def test_place_bet_invalid_payload(client, wallet):
 
 
 @pytest.mark.asyncio
-async def test_resolve_prediction_market_oracle_and_payouts(client, wallet):
+async def test_resolve_prediction_market_oracle_and_payouts(client, wallet, monkeypatch):
+    # A configured key + a fixed-YES fake client — see prediction_oracle.py's
+    # 2026-09-08 fix: with no key configured at all, resolution now raises
+    # OracleUnavailableError (503) rather than ever fabricating an outcome
+    # (see test_resolve_prediction_market_without_oracle_key below for
+    # that path) — so exercising the actual payout math here needs a real,
+    # if fake, oracle response.
+    _FakeOracleGenaiClient.verdict = {"outcome": "YES", "confidence": 90, "reasoning": "Fake oracle: YES."}
+    monkeypatch.setattr(prediction_oracle.genai, "Client", _FakeOracleGenaiClient)
+    monkeypatch.setattr(prediction_oracle.settings, "gemini_api_key", "test-key")
+
     # Seed a prediction with 3 distinct user positions:
     # Alice (100 YES), Bob (100 NO), Charlie (300 YES) -> Total volume = 500
     user1_addr = "0x1111111111111111111111111111111111111111"
@@ -242,5 +287,30 @@ async def test_resolve_future_market_rejected_with_400(client):
     resp = client.post(f"/predictions/{pred_id}/resolve")
     assert resp.status_code == 400
     assert "cannot be resolved before its resolution date" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_prediction_market_without_oracle_key_returns_503(client, monkeypatch):
+    """FIXED 2026-09-08 — resolving with no GEMINI_API_KEY configured used
+    to silently fabricate a "YES" outcome (see prediction_oracle.py's own
+    docstring on why that was a real landmine, not a graceful degrade).
+    It must now refuse instead: a clean 503, and the market left exactly
+    as it was (still "open", not resolved, not any new terminal-looking
+    status) so it can just be retried once the oracle is configured."""
+    monkeypatch.setattr(prediction_oracle.settings, "gemini_api_key", None)
+
+    pred_id = await _seed_prediction(
+        title="Unconfigured Oracle Market", status_key="open", resolution_delta_days=-2
+    )
+    resp = client.post(f"/predictions/{pred_id}/resolve")
+    assert resp.status_code == 503
+    assert "oracle" in resp.json()["detail"].lower()
+
+    # Confirm nothing was mutated — still open, no outcome, no reasoning.
+    async with AsyncSessionLocal() as db:
+        pred = await db.get(Prediction, pred_id)
+        assert pred.status_key == "open"
+        assert pred.outcome is None
+        assert pred.resolution_reasoning is None
 
 

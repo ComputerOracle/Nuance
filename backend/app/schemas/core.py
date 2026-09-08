@@ -157,6 +157,9 @@ class EscrowRead(BaseModel):
     # Escrow.funded_tx_hash's own docstring on why this isn't the same
     # thing as the contract's own funded_amount.
     funded_tx_hash: str | None = None
+    # Set once a real cancel_escrow() transaction has been sent and
+    # acknowledged — see Escrow.cancelled_tx_hash's own docstring.
+    cancelled_tx_hash: str | None = None
 
 
 # --- Deliverable submission -----------------------------------------------
@@ -220,6 +223,36 @@ class OnChainFundAck(BaseModel):
     (hide the "Fund Escrow" action once it has); the contract's own
     funded_amount (checked by release_milestone before any payout) is the
     real source of truth regardless of what this endpoint is told."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    tx_hash: str
+
+    @field_validator("tx_hash")
+    @classmethod
+    def _validate_tx_hash(cls, v: str) -> str:
+        if not _TX_HASH_RE.match(v):
+            raise ValueError("tx_hash must be a 0x-prefixed 64-hex-character transaction hash.")
+        return v.lower()
+
+
+class OnChainCancelAck(BaseModel):
+    """Body for POST /escrows/{id}/cancel/on-chain — the frontend
+    reporting a tx hash it already got back from signing and sending a
+    real NuanceEscrow.cancel_escrow transaction (components/app/
+    genlayer-write-client.ts's cancelEscrowOnChain).
+
+    Unlike OnChainFundAck/OnChainSubmissionAck, this DOES immediately
+    flip status_key to StatusKey.CANCELLED — same trust level as
+    raise_dispute_on_chain's own ack already uses (create the local
+    record from what the caller reports, rather than waiting on an
+    indexer read). Safe here for the same reason: cancel_escrow's real
+    enforcement lives entirely on the contract itself — submit_
+    deliverable/fund_escrow/release_milestone all check the contract's
+    own `status` field directly, never this app's DB. A caller falsely
+    claiming a cancellation that never actually happened on-chain can
+    only produce a stale/wrong *local* status badge, never let anyone
+    bypass what the contract actually enforces."""
 
     model_config = ConfigDict(str_strip_whitespace=True)
 

@@ -6,7 +6,12 @@ export type StatusKey =
   | "disputed"
   // A dispute whose claim was rejected by consensus — only ever set on a
   // Dispute, never a Milestone/Escrow. Distinct from "disputed" (still open).
-  | "rejected";
+  | "rejected"
+  // The creator cancelled and reclaimed their funded GEN before any
+  // milestone was approved — only ever set on an Escrow, never a
+  // Milestone/Dispute. See components/app/genlayer-write-client.ts's
+  // cancelEscrowOnChain.
+  | "cancelled";
 
 export type View =
   | "dashboard"
@@ -26,6 +31,13 @@ export interface Milestone {
   amount: number;
   statusKey: StatusKey;
   criteria: string;
+  // "legacy_offchain" unless this milestone is both inside a
+  // contract-linked escrow AND has actually had a real on-chain
+  // submit_deliverable transaction sent against it — see
+  // components/app/chain-status-badge.tsx, the one place this
+  // distinction is actually shown rather than conflated.
+  chainStatus?: import("@/lib/chain-status").ChainStatus;
+  onChainTxHash?: string | null;
 }
 
 export interface Escrow {
@@ -45,6 +57,9 @@ export interface Escrow {
   // ApiEscrow.funded_tx_hash for the full caveat on what this does and
   // doesn't guarantee.
   fundedTxHash?: string | null;
+  // Set once a real cancel_escrow transaction has been sent and
+  // acknowledged. See lib/api.ts's ApiEscrow.cancelled_tx_hash.
+  cancelledTxHash?: string | null;
 }
 
 export interface Prediction {
@@ -66,6 +81,8 @@ export interface Prediction {
   // have a real claim_winnings() to call (an off-chain "Won $X" figure is
   // notional bookkeeping, not a real stake to pull out).
   contractAddress?: string | null;
+  chainStatus?: import("@/lib/chain-status").ChainStatus;
+  resolutionTriggerTxHash?: string | null;
 }
 
 export interface Position {
@@ -101,6 +118,8 @@ export interface Dispute {
   issue: string;
   amount: number;
   statusKey: StatusKey;
+  chainStatus?: import("@/lib/chain-status").ChainStatus;
+  onChainTxHash?: string | null;
   messages?: DisputeMessage[];
   evidence?: DisputeEvidence[];
 }

@@ -182,6 +182,12 @@ export interface FundEscrowOnChainArgs {
   amountGen: number | string;
 }
 
+export interface CancelEscrowOnChainArgs {
+  walletAddress: string;
+  provider: Eip1193Provider;
+  contractAddress: `0x${string}`;
+}
+
 /** Signs and sends a real NuancePredictionMarket.bet transaction through
  * the connected wallet. The one *payable* call in this file — bet()
  * requires gl.message.value > 0 on the contract side, unlike every other
@@ -258,6 +264,26 @@ export async function fundEscrowOnChain(args: FundEscrowOnChainArgs): Promise<st
     functionName: "fund_escrow",
     args: [] as never,
     value: parseGenToWei(args.amountGen),
+  });
+
+  return String(txHash);
+}
+
+/** Signs and sends a real NuanceEscrow.cancel_escrow transaction — the
+ * refund path this contract had no way to offer before 2026-09-08 (see
+ * that method's own contract-side docstring). The contract itself
+ * refunds whatever's locked back to the creator's wallet as part of this
+ * same transaction; nothing further is needed client-side to receive it.
+ * Only the escrow creator may call this, and only before any milestone
+ * has been approved — both enforced contract-side, not duplicated here. */
+export async function cancelEscrowOnChain(args: CancelEscrowOnChainArgs): Promise<string> {
+  const client = createWriteClient(args.walletAddress, args.provider);
+
+  const txHash = await client.writeContract({
+    address: args.contractAddress,
+    functionName: "cancel_escrow",
+    args: [] as never,
+    value: ZERO_VALUE,
   });
 
   return String(txHash);

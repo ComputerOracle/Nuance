@@ -216,10 +216,19 @@ async def resolve_prediction(
             detail=f"Market cannot be resolved before its resolution date: {prediction.resolution_date.isoformat()}",
         )
 
-    from app.services.prediction_oracle import resolve_prediction_market
+    from app.services.prediction_oracle import OracleUnavailableError, resolve_prediction_market
 
     try:
         return await resolve_prediction_market(prediction_id, db)
+    except OracleUnavailableError as exc:
+        # Distinct from the ValueError->404 mapping below: the market
+        # itself is fine (found, past its resolution date) — the oracle
+        # just isn't reachable right now (e.g. no GEMINI_API_KEY
+        # configured). See that exception's own docstring for why this
+        # must never fall back to fabricating a resolution instead.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)

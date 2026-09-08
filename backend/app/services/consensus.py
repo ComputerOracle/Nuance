@@ -115,11 +115,21 @@ class ValidatorVerdict(BaseModel):
 
 
 def _persona_system_prompt(name: str, subject_type: ConsensusSubjectType) -> str:
+    # Deliberately says "for Nuance," not "on GenLayer's Internet Court" —
+    # this is our own backend calling three commercial LLM APIs directly
+    # and majority-voting the result in this file's own Python, not
+    # GenLayer's real on-chain NuanceDisputeCourt/GenVM validator
+    # consensus (that only happens once a dispute is linked to that
+    # deployed contract — see services/genlayer_indexer.py's
+    # trigger_pending_adjudications instead). "Internet Court" is that
+    # real contract's actual name; claiming this off-chain path runs "on"
+    # it would be the exact fiction fixed elsewhere in this pass (see
+    # services/prediction_oracle.py's own module docstring).
     title = PERSONA_TITLES.get(name, name)
     if subject_type == ConsensusSubjectType.DISPUTE:
         return (
-            f"You are {name} ('{title}'), one of three independent AI validators on GenLayer's "
-            "Internet Court for Nuance. Your role is to adjudicate disputes between counterparties "
+            f"You are {name} ('{title}'), one of three independent AI validators for Nuance's "
+            "off-chain dispute review. Your role is to adjudicate disputes between counterparties "
             "based on the agreement terms, the chat transcript/arguments exchanged, and all "
             "submitted evidence. Evaluate the claims objectively. Vote 'approve' if the claimant's "
             "dispute/evidence is justified and supported; vote 'dispute' (reject claimant's claim) "

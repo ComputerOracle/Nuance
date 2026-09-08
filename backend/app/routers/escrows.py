@@ -36,6 +36,7 @@ from app.schemas import (
     EscrowCreate,
     EscrowRead,
     MilestoneRead,
+    OnChainCancelAck,
     OnChainDisputeAck,
     OnChainFundAck,
     OnChainSubmissionAck,
@@ -260,6 +261,55 @@ async def fund_escrow_on_chain(
         )
 
     escrow.funded_tx_hash = payload.tx_hash
+    await db.commit()
+    await db.refresh(escrow, attribute_names=["milestones"])
+    return escrow
+
+
+@router.post(
+    "/{escrow_id}/cancel/on-chain",
+    response_model=EscrowRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def cancel_escrow_on_chain(
+    escrow_id: int,
+    payload: OnChainCancelAck,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Escrow:
+    """Reached once components/app/genlayer-write-client.ts's
+    cancelEscrowOnChain has already signed and sent a real
+    NuanceEscrow.cancel_escrow transaction — the contract itself has
+    already refunded whatever was locked back to the creator's wallet by
+    the time this endpoint runs (see that contract method's own
+    docstring). Only the escrow creator may call cancel_escrow on the
+    contract itself, so this endpoint enforces the same restriction.
+
+    Unlike fund/deliverable acks, this DOES immediately flip status_key —
+    see OnChainCancelAck's own docstring on why that's safe here
+    specifically (real enforcement lives entirely on the contract; this
+    is local bookkeeping only, same trust level raise_dispute_on_chain's
+    ack already uses elsewhere in this file).
+    """
+    escrow = await _get_escrow_or_404(escrow_id, db)
+    if current_user.wallet_address != escrow.creator_address:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the escrow creator can cancel this escrow.",
+        )
+    if escrow.contract_address is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This escrow isn't linked to a deployed contract — nothing on-chain to cancel.",
+        )
+    if escrow.status_key == StatusKey.CANCELLED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This escrow has already been cancelled.",
+        )
+
+    escrow.status_key = StatusKey.CANCELLED
+    escrow.cancelled_tx_hash = payload.tx_hash
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
     return escrow

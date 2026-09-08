@@ -48,6 +48,12 @@ const STATUS_META: Record<StatusKey, StatusMeta> = {
     badgeText: "text-pending-text",
     cardBorder: "border-border-4",
   },
+  cancelled: {
+    label: "Cancelled",
+    badgeBg: "bg-neutral",
+    badgeText: "text-pending-text",
+    cardBorder: "border-border-4",
+  },
 };
 
 export function statusMeta(key: StatusKey): StatusMeta {

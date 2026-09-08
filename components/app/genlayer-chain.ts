@@ -12,6 +12,16 @@ export const GENLAYER_BRADBURY = {
   blockExplorerUrl: "https://explorer-bradbury.genlayer.com/",
 } as const;
 
+// Not independently verified against a real explorer page fetch (this
+// environment has no browser to click through) — follows the same
+// `/tx/<hash>` convention every EVM-style block explorer this project's
+// own docs research has touched uses (Etherscan-family UIs, which
+// GenLayer's own explorer is styled after). Re-check against a real
+// Bradbury explorer URL before trusting this further if it's ever wrong.
+export function blockExplorerTxUrl(txHash: string): string {
+  return `${GENLAYER_BRADBURY.blockExplorerUrl}tx/${txHash}`;
+}
+
 // The exact shape EIP-3085 `wallet_addEthereumChain` expects.
 export const GENLAYER_BRADBURY_ADD_CHAIN_PARAMS = {
   chainId: GENLAYER_BRADBURY.chainIdHex,

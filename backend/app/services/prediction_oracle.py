@@ -1,7 +1,21 @@
-"""GenLayer Intelligent Oracle Prediction Resolution Service.
+"""Nuance's own off-chain prediction-market resolution service.
 
-Resolves prediction markets by querying the 3-validator Gemini consensus engine
-and calculates deterministic pari-mutuel payouts.
+Resolves prediction markets by querying our own backend's 3-persona Gemini
+ensemble directly (asking the same model three times with three different
+personas, then majority-voting the results in this file's own Python) and
+calculates deterministic pari-mutuel payouts. Despite the persona wording
+used to exist here, this is NOT GenLayer's real on-chain Intelligent
+Oracle / GenVM validator consensus — no blockchain, no independent
+validator nodes, nothing decentralized about it. A market only gets that
+real thing once it's linked to a deployed NuancePredictionMarket contract
+(contract_address set) — see services/genlayer_indexer.py's
+trigger_pending_market_resolutions, the actual on-chain equivalent this
+file's off-chain path exists as a fallback/legacy alternative to. Fixed
+2026-09-08 after this distinction was found to be dangerously blurred:
+the system prompt below used to instruct the model to literally roleplay
+as "an independent validator node of the GenLayer Intelligent Oracle
+consensus network," and the reasoning text shown to users echoed that
+fiction back verbatim — indistinguishable from a real on-chain result.
 """
 
 from __future__ import annotations
@@ -31,6 +45,15 @@ settings = get_settings()
 VALIDATOR_NAMES = ("Validator-Alpha", "Validator-Beta", "Validator-Gamma")
 MODEL = "gemini-2.5-flash"
 
+
+class OracleUnavailableError(RuntimeError):
+    """Raised instead of ever fabricating a resolution — see
+    resolve_prediction_market's api_key check. routers/predictions.py
+    maps this to a 503, distinct from the existing ValueError->404
+    mapping (not found / too early to resolve), since this is neither:
+    the market is real and resolvable, the oracle just isn't reachable
+    right now."""
+
 _RETRYABLE_ERRORS = (
     errors.APIError,
     errors.ServerError,
@@ -53,9 +76,19 @@ class OracleValidatorVerdict(BaseModel):
 
 
 def _oracle_system_prompt(name: str) -> str:
+    # Factual about what this actually is — see this module's own
+    # docstring for why: {name} is one of three roles this app's own
+    # backend asks the same underlying model to play, majority-voted in
+    # Python right here, not a real GenLayer/GenVM validator node. Telling
+    # the model to roleplay as literal on-chain infrastructure it isn't
+    # is exactly the fiction that made a fallback-mode failure (see
+    # resolve_prediction_market's api_key check) look like a real result.
     return (
-        f"You are {name}, an independent validator node of the GenLayer Intelligent Oracle consensus network. "
-        "You analyze prediction market questions and factual resolution criteria against public records and metrics. "
+        f"You are {name}, one of three independent AI reviewers Nuance's own backend "
+        "consults directly to help resolve a prediction market. You are not part of "
+        "GenLayer's on-chain validator network — this is an off-chain judgment call, not a "
+        "blockchain consensus result. Analyze the prediction market question and its "
+        "resolution criteria against public records and metrics. "
         "Provide your independent judgment as structured JSON with outcome ('YES' or 'NO'), confidence (0-100), and reasoning. "
         f"{PROMPT_INJECTION_DEFENSE}"
     )
@@ -205,27 +238,34 @@ async def resolve_prediction_market(
 
     api_key = settings.gemini_api_key
     if not api_key:
-        logger.warning(
-            "GEMINI_API_KEY not set — resolving prediction %s with default verdict.",
+        # FIXED 2026-09-08 — this used to silently resolve every market to
+        # a hardcoded YES ("Standard simulated ground-truth verification
+        # succeeded") regardless of the actual question, whenever the
+        # Gemini key was unset. That's a real-money-affecting landmine,
+        # not a graceful degrade: pari-mutuel payouts (calculate_
+        # prediction_payouts below) would pay out real bets on a made-up
+        # answer with no basis in the market's actual criteria. Raising
+        # here instead leaves the market's status untouched (still
+        # whatever it was — "open," not some new terminal-looking value)
+        # so it can simply be retried once the oracle is actually
+        # reachable; the row lock this function already holds rolls back
+        # with the transaction, same as the "too early" ValueError path
+        # above already does.
+        logger.error(
+            "GEMINI_API_KEY not set — cannot resolve prediction %s; oracle unavailable.",
             prediction_id,
         )
-        validator_results = [
-            {
-                "name": name,
-                "outcome": "YES",
-                "confidence": 85,
-                "reasoning": "Standard simulated ground-truth verification succeeded.",
-            }
+        raise OracleUnavailableError(
+            "The prediction-market oracle is not configured (missing GEMINI_API_KEY). "
+            "This market has not been resolved — try again once it's configured."
+        )
+    client = genai.Client(api_key=api_key)
+    validator_results = await asyncio.gather(
+        *[
+            _run_single_oracle_validator(client, name, prediction)
             for name in VALIDATOR_NAMES
         ]
-    else:
-        client = genai.Client(api_key=api_key)
-        validator_results = await asyncio.gather(
-            *[
-                _run_single_oracle_validator(client, name, prediction)
-                for name in VALIDATOR_NAMES
-            ]
-        )
+    )
 
     # 2-of-3 majority calculation
     yes_votes = [r for r in validator_results if r["outcome"] == "YES"]
@@ -244,8 +284,14 @@ async def resolve_prediction_market(
         else 0
     )
     reasons = [f"[{v['name']}]: {v['reasoning']}" for v in majority_votes]
+    # Factual, not "GenLayer Intelligent Oracle" — this text is shown to
+    # users verbatim as the market's resolution reasoning; claiming
+    # GenLayer/on-chain involvement here would be exactly the fiction
+    # this module's own docstring documents fixing. A market resolved via
+    # the REAL on-chain oracle never reaches this function at all — see
+    # services/genlayer_indexer.py's own resolution path instead.
     consensus_reasoning = (
-        f"GenLayer Intelligent Oracle 2-of-3 consensus reached ({final_outcome}, {avg_confidence}% confidence). "
+        f"Nuance off-chain AI review, 2-of-3 agreement ({final_outcome}, {avg_confidence}% confidence). "
         + " ".join(reasons)
     )
 

@@ -71,7 +71,11 @@ _SQLITE_COLUMN_PATCHES: dict[str, list[tuple[str, str]]] = {
         ("resolution_trigger_tx_hash", "TEXT"),
     ],
     "proposals": [("executed_by", "TEXT"), ("executed_at", "TIMESTAMP")],
-    "escrows": [("contract_address", "TEXT"), ("funded_tx_hash", "TEXT")],
+    "escrows": [
+        ("contract_address", "TEXT"),
+        ("funded_tx_hash", "TEXT"),
+        ("cancelled_tx_hash", "TEXT"),
+    ],
     "milestones": [
         ("on_chain_index", "INTEGER"),
         ("chain_status", "TEXT DEFAULT 'LEGACY_OFFCHAIN'"),

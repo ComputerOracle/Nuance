@@ -96,6 +96,14 @@ class NuanceEscrow(gl.Contract):
     funded_amount: u256
     milestones: TreeMap[u256, Milestone]
     milestone_count: u256
+    # "active" | "cancelled" — added 2026-09-08 alongside cancel_escrow().
+    # Escrow-level, distinct from any individual Milestone.status: this
+    # contract had no refund path at all before — if a milestone never got
+    # approved (counterparty vanished, a dispute went the wrong way), the
+    # creator's funded GEN sat here forever with no way out. See
+    # cancel_escrow's own docstring for exactly what it does and doesn't
+    # guard against.
+    status: str
 
     def __init__(
         self,
@@ -145,6 +153,7 @@ class NuanceEscrow(gl.Contract):
         self.funded_amount = 0
         self.milestones = TreeMap()
         self.milestone_count = 0
+        self.status = "active"
         self._add_milestone(milestone_name, milestone_amount, milestone_criteria)
 
     def _add_milestone(self, name: str, amount: u256, criteria: str) -> u256:
@@ -166,6 +175,8 @@ class NuanceEscrow(gl.Contract):
     def add_milestone(self, name: str, amount: u256, criteria: str) -> u256:
         if gl.message.sender_address != self.creator:
             raise gl.vm.UserError("Only the escrow creator can add a milestone.")
+        if self.status != "active":
+            raise gl.vm.UserError(f"Escrow is '{self.status}' — cannot add a milestone.")
         return self._add_milestone(name, amount, criteria)
 
     # --- Funding ------------------------------------------------------
@@ -190,6 +201,17 @@ class NuanceEscrow(gl.Contract):
     def fund_escrow(self) -> None:
         if gl.message.sender_address != self.creator:
             raise gl.vm.UserError("Only the escrow creator can fund this escrow.")
+        # Same GenVM quirk as the sender check above applies here too: if
+        # the creator somehow calls fund_escrow after already cancelling
+        # (an odd, deliberate sequence — the app's own UI never offers
+        # this action once status is "cancelled") the attached GEN still
+        # transfers in before this check runs and rejects it, with
+        # nowhere for it to go back to. Kept anyway — a clear rejection
+        # beats a cancelled escrow silently becoming fundable again — but
+        # this is not a substitute for the frontend never presenting the
+        # action in the first place.
+        if self.status != "active":
+            raise gl.vm.UserError(f"Escrow is '{self.status}' — cannot fund it.")
         self.funded_amount += gl.message.value
 
     # --- Deliverable submission + AI-validator consensus ----------------
@@ -200,6 +222,8 @@ class NuanceEscrow(gl.Contract):
     ) -> None:
         if gl.message.sender_address != self.counterparty:
             raise gl.vm.UserError("Only the escrow counterparty can submit a deliverable.")
+        if self.status != "active":
+            raise gl.vm.UserError(f"Escrow is '{self.status}' — cannot submit a deliverable.")
         if milestone_index not in self.milestones:
             raise gl.vm.UserError("No such milestone.")
 
@@ -272,6 +296,8 @@ perfectly parsable by a JSON parser without errors."""
     def release_milestone(self, milestone_index: u256) -> None:
         if gl.message.sender_address != self.creator:
             raise gl.vm.UserError("Only the escrow creator can release milestone funds.")
+        if self.status != "active":
+            raise gl.vm.UserError(f"Escrow is '{self.status}' — cannot release funds.")
         if milestone_index not in self.milestones:
             raise gl.vm.UserError("No such milestone.")
 
@@ -289,6 +315,59 @@ perfectly parsable by a JSON parser without errors."""
         recipient = gl.get_contract_at(self.counterparty)
         recipient.emit_transfer(value=u256(milestone.amount), on="finalized")
 
+    # --- Cancellation / refund --------------------------------------------
+
+    @gl.public.write
+    def cancel_escrow(self) -> None:
+        """The refund path this contract had no way to offer before
+        2026-09-08 — added directly in response to real fund loss during
+        the fund_escrow creator-bug incident (see __init__'s docstring):
+        without this, ANY money genuinely stuck for ANY reason (a
+        counterparty who vanishes, a milestone nobody ever approves) had
+        no way back to the creator at all. Creator-only, matching every
+        other lifecycle action here.
+
+        Allowed only while no milestone has ever been approved. Once even
+        one has, the counterparty has already delivered real,
+        validator-approved work and has a legitimate claim on at least
+        that milestone's share — cancellation past that point isn't a
+        unilateral creator decision this contract makes on its own; that
+        is exactly what NuanceDisputeCourt exists for instead.
+
+        NOT enforced here (flagged rather than faked, same spirit as this
+        codebase's other honest gaps — see nuance_prediction_market.py's
+        header on cutoff_time): a "milestone deadline has passed" gate.
+        There is no documented on-chain clock/timestamp primitive in
+        GenVM for this contract to check a deadline against. If GenVM
+        exposes a verified clock by the time this matters, add that
+        check on top of this one — don't fake it with an unenforced
+        parameter that looks like it does something it can't."""
+        if gl.message.sender_address != self.creator:
+            raise gl.vm.UserError("Only the escrow creator can cancel this escrow.")
+        if self.status != "active":
+            raise gl.vm.UserError(f"Escrow is already '{self.status}'.")
+
+        # u256 loop via while/+=, not range()/int() — this exact pattern
+        # (comparison, increment) is the only integer looping this
+        # codebase has proven works on live GenVM; range() over a u256
+        # storage value is unverified and not worth risking here.
+        i: u256 = 0
+        while i < self.milestone_count:
+            if self.milestones[i].status == "approved":
+                raise gl.vm.UserError(
+                    "Cannot cancel — at least one milestone has already been approved. "
+                    "Use release_milestone to pay it out, or file a dispute instead."
+                )
+            i += 1
+
+        self.status = "cancelled"
+        refund_amount = self.funded_amount
+        self.funded_amount = 0
+        if refund_amount > 0:
+            # MODERATE confidence — see module docstring re: emit_transfer.
+            recipient = gl.get_contract_at(self.creator)
+            recipient.emit_transfer(value=u256(refund_amount), on="finalized")
+
     # --- Views ------------------------------------------------------------
 
     @gl.public.view
@@ -298,6 +377,7 @@ perfectly parsable by a JSON parser without errors."""
             "counterparty": self.counterparty.as_hex,
             "funded_amount": self.funded_amount,
             "milestone_count": self.milestone_count,
+            "status": self.status,
         }
 
     @gl.public.view

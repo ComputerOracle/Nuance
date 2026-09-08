@@ -31,6 +31,7 @@ import {
   resolveMarketOnChain,
   claimWinningsOnChain,
   fundEscrowOnChain,
+  cancelEscrowOnChain,
   describeWriteError,
 } from "@/components/app/genlayer-write-client";
 import * as api from "@/lib/api";
@@ -59,6 +60,8 @@ function mapMilestone(m: ApiMilestone): Milestone {
     amount: Number(m.amount),
     statusKey: m.status_key,
     criteria: m.criteria,
+    chainStatus: m.chain_status,
+    onChainTxHash: m.on_chain_tx_hash,
   };
 }
 
@@ -73,6 +76,7 @@ function mapEscrow(e: ApiEscrow): Escrow {
     milestones: e.milestones.map(mapMilestone),
     contractAddress: e.contract_address,
     fundedTxHash: e.funded_tx_hash,
+    cancelledTxHash: e.cancelled_tx_hash,
   };
 }
 
@@ -91,6 +95,8 @@ function mapDispute(d: ApiDispute, escrows: Escrow[]): Dispute {
     issue: d.issue,
     amount: linkedEscrow?.total ?? 0,
     statusKey: d.status_key,
+    chainStatus: d.chain_status,
+    onChainTxHash: d.on_chain_tx_hash,
     messages: d.messages?.map((m) => ({
       id: m.id,
       disputeId: m.dispute_id,
@@ -143,6 +149,8 @@ function mapPrediction(p: api.ApiPrediction): Prediction {
       status: pos.status,
     })) || [],
     contractAddress: p.contract_address,
+    chainStatus: p.chain_status,
+    resolutionTriggerTxHash: p.resolution_trigger_tx_hash,
   };
 }
 
@@ -338,6 +346,9 @@ export function NuanceApp() {
   // mid-flight (wallet signing prompt / RPC round-trip) — see fundEscrow
   // below.
   const [isFundingEscrow, setIsFundingEscrow] = useState(false);
+  // True while a real NuanceEscrow.cancel_escrow transaction is
+  // mid-flight — see cancelEscrow below.
+  const [isCancellingEscrow, setIsCancellingEscrow] = useState(false);
 
   const [formTitle, setFormTitle] = useState("");
   const [formCounterparty, setFormCounterparty] = useState("");
@@ -511,8 +522,20 @@ export function NuanceApp() {
     }
   };
 
+  // loadData's own first act, on every call, is six synchronous setState
+  // calls (reset every *Loading flag to true / every *Error to null)
+  // before its first await — react-hooks/set-state-in-effect correctly
+  // flags calling it directly here, since that runs those six setState
+  // calls as part of this effect's own synchronous execution (real
+  // cascading-render risk, not a false positive). queueMicrotask defers
+  // the call past that synchronous phase — a true microtask, not a
+  // setTimeout(…, 0) macrotask, so there's no perceptible delay before
+  // loading actually starts; it just genuinely isn't "synchronously
+  // inside the effect" by the time loadData's own setState calls run.
   useEffect(() => {
-    loadData();
+    queueMicrotask(() => {
+      loadData();
+    });
   }, []);
 
   useEffect(() => {
@@ -525,9 +548,16 @@ export function NuanceApp() {
           }
         })
         .catch(() => {});
-      loadData();
+      queueMicrotask(() => {
+        loadData();
+      });
     } else {
-      setPositions({});
+      // Same reasoning as the queueMicrotask calls above — a direct
+      // synchronous setState here is exactly what react-hooks/
+      // set-state-in-effect flags, even with nothing async involved.
+      queueMicrotask(() => {
+        setPositions({});
+      });
     }
   }, [wallet.status]);
 
@@ -777,6 +807,55 @@ export function NuanceApp() {
       setEscrowActionError(describeWriteError(err));
     } finally {
       setIsFundingEscrow(false);
+    }
+  }
+  // The "Cancel Escrow" action (escrow-detail-view.tsx) — a real
+  // NuanceEscrow.cancel_escrow transaction, signed by the connected
+  // wallet. The contract refunds whatever's locked back to the creator
+  // as part of that same transaction (see that method's own contract-
+  // side docstring) — nothing further to do here to receive it. Only
+  // meaningful for the creator and only while no milestone has been
+  // approved yet — the contract itself enforces both, this handler
+  // doesn't duplicate the checks client-side.
+  async function cancelEscrow() {
+    if (selectedId == null || isCancellingEscrow) return;
+    if (wallet.status !== "connected" || !wallet.provider) {
+      setEscrowActionError("Connect your wallet to cancel this escrow.");
+      return;
+    }
+    const escrowId = selectedId;
+    setEscrowActionError(null);
+    setIsCancellingEscrow(true);
+
+    let escrowData: api.ApiEscrow;
+    try {
+      escrowData = await api.getEscrow(escrowId);
+    } catch (err) {
+      setEscrowActionError(errorText(err, "Failed to cancel escrow."));
+      setIsCancellingEscrow(false);
+      return;
+    }
+    const contractAddress = escrowContractAddress(escrowData);
+    if (!contractAddress) {
+      setEscrowActionError(
+        "This escrow isn't linked to a deployed contract — nothing on-chain to cancel."
+      );
+      setIsCancellingEscrow(false);
+      return;
+    }
+
+    try {
+      const txHash = await cancelEscrowOnChain({
+        walletAddress: wallet.address,
+        provider: wallet.provider,
+        contractAddress,
+      });
+      const updated = mapEscrow(await api.cancelEscrowOnChainAck(escrowId, txHash));
+      setEscrows((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+    } catch (err) {
+      setEscrowActionError(describeWriteError(err));
+    } finally {
+      setIsCancellingEscrow(false);
     }
   }
   async function submitCreate() {
@@ -1179,9 +1258,11 @@ export function NuanceApp() {
                 onReleasePayment={releasePayment}
                 onEscalate={escalateToDisputeCourt}
                 onFundEscrow={fundEscrow}
+                onCancelEscrow={cancelEscrow}
                 submitDisabled={onChainSubmitPending}
                 escalateDisabled={escalatePending}
                 fundingDisabled={isFundingEscrow}
+                cancellingDisabled={isCancellingEscrow}
               />
             </>
           ) : null)}

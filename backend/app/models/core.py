@@ -86,6 +86,11 @@ class Escrow(Base):
     # column only tracks whether this app has sent a fund_escrow call at
     # all, for UI purposes (hide the "Fund Escrow" action once it has).
     funded_tx_hash: Mapped[str | None] = mapped_column(default=None)
+    # The tx hash of the creator's NuanceEscrow.cancel_escrow call, once
+    # sent — set alongside status_key flipping to StatusKey.CANCELLED in
+    # routers/escrows.py's cancel_escrow_on_chain ack. Null means never
+    # cancelled on-chain.
+    cancelled_tx_hash: Mapped[str | None] = mapped_column(default=None)
 
     creator: Mapped["User"] = relationship(
         foreign_keys=[creator_address], back_populates="created_escrows"

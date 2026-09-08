@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Position, Prediction } from "@/components/app/types";
+import { ChainStatusBadge } from "@/components/app/chain-status-badge";
+import { LEGACY_OFFCHAIN } from "@/lib/chain-status";
 
 // Mirrors backend/app/schemas/core.py's BET_AMOUNTS_MILLI_GEN exactly —
 // the only amounts the backend will actually accept, so the UI can't
@@ -58,6 +60,14 @@ export function PredictionDetailView({
   const isResolved =
     prediction.statusKey?.toUpperCase() === "RESOLVED" ||
     Boolean(prediction.outcome);
+  // Almost every market today resolves via services/prediction_oracle.py
+  // (Nuance's own backend calling Gemini three times and majority-voting
+  // the result) — NOT GenLayer's real on-chain Intelligent Oracle/GenVM
+  // validators. Only a market with contractAddress set and an actually
+  // decided chain_status gets the real thing (services/genlayer_indexer.
+  // py's trigger_pending_market_resolutions). Everywhere below that used
+  // to say "GenLayer Intelligent Oracle" unconditionally now checks this.
+  const isOnChain = (prediction.chainStatus ?? LEGACY_OFFCHAIN) !== LEGACY_OFFCHAIN;
 
   // Date.now() can't be called directly during render — an impure read
   // (React's purity rule: two renders with the same props/state must
@@ -117,7 +127,9 @@ export function PredictionDetailView({
               </span>
               <div>
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-positive-text">
-                  Market Settled by GenLayer Intelligent Oracle
+                  {isOnChain
+                    ? "Market Settled by Real GenVM Validator Consensus"
+                    : "Market Settled by Nuance's Off-Chain AI Review"}
                 </div>
                 <div className="font-display text-xl font-bold">
                   Official Outcome:{" "}
@@ -136,6 +148,12 @@ export function PredictionDetailView({
             <span className="rounded-lg border border-positive/30 bg-positive/20 px-3 py-1 font-mono text-xs font-bold uppercase tracking-wider text-positive-text">
               Resolved
             </span>
+          </div>
+          <div className="mt-3">
+            <ChainStatusBadge
+              chainStatus={prediction.chainStatus ?? LEGACY_OFFCHAIN}
+              txHash={prediction.resolutionTriggerTxHash}
+            />
           </div>
           {prediction.resolutionReasoning && (
             <div className="mt-3.5 border-t border-positive/20 pt-3 text-xs leading-relaxed text-fg-bright">
@@ -159,10 +177,10 @@ export function PredictionDetailView({
         <div className="rounded-[14px] border border-border-1 bg-surface-1 p-5">
           <div className="mb-3 flex items-center justify-between">
             <div className="font-display text-[15px] font-bold">
-              GenLayer Intelligent Oracle Read
+              {isOnChain ? "GenLayer Intelligent Oracle Read" : "Nuance AI Read"}
             </div>
             <span className="rounded-md border border-review/30 bg-review/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-review-text">
-              Intelligent Oracle
+              {isOnChain ? "Intelligent Oracle" : "Off-Chain"}
             </span>
           </div>
           <div className="text-[13px] leading-relaxed text-fg-bright">
@@ -181,7 +199,9 @@ export function PredictionDetailView({
             <span>NO {noPrice}¢</span>
           </div>
           <div className="mt-4 border-t border-border-2 pt-3 text-[11px] text-fg-meta">
-            ⚡ Market resolution criteria evaluated and finalized by GenLayer Intelligent Oracle consensus nodes.
+            {isOnChain
+              ? "⚡ Market resolution criteria evaluated and finalized by real GenLayer Intelligent Oracle validator nodes on Bradbury."
+              : "🗄 Market resolution criteria evaluated by Nuance's own off-chain AI review — not GenLayer's on-chain oracle."}
           </div>
         </div>
 
@@ -239,7 +259,9 @@ export function PredictionDetailView({
                 )
               ) : (
                 <div className="rounded-xl border border-border-4 bg-surface-3 p-4 text-center text-xs text-fg-meta">
-                  This market has been resolved by the GenLayer Intelligent Oracle. No open positions for current wallet.
+                  This market has been resolved by{" "}
+                  {isOnChain ? "the GenLayer Intelligent Oracle" : "Nuance's off-chain AI review"}.
+                  No open positions for current wallet.
                 </div>
               )}
             </div>
@@ -320,8 +342,12 @@ export function PredictionDetailView({
                       className="w-full cursor-pointer rounded-lg border border-review/40 bg-review/15 py-2.5 text-xs font-semibold text-review-text transition-colors hover:bg-review/25 disabled:cursor-default"
                     >
                       {isResolving
-                        ? "Resolving via Oracle Consensus…"
-                        : "⚡ Trigger GenLayer Oracle Resolution"}
+                        ? isOnChain
+                          ? "Resolving via real GenVM validator consensus…"
+                          : "Resolving via off-chain AI review…"
+                        : isOnChain
+                          ? "⚡ Trigger GenLayer Oracle Resolution (on-chain)"
+                          : "Resolve Market (off-chain AI review)"}
                     </button>
                   )
                 ) : (
