@@ -117,6 +117,27 @@ class Settings(BaseSettings):
     # by (claimant, escrow_address, claim_statement). This bounds how far
     # back that scan looks.
     dispute_id_scan_window: int = 50
+    # Whether routers/escrows.py::create_escrow queues services/
+    # genlayer_deploy.py's deploy_escrow_contract as a background task for
+    # every new escrow — the actual Part 2 finish line: a real per-escrow
+    # NuanceEscrow instance, deployed automatically, no --link-demo
+    # needed. True by default; tests/conftest.py's autouse fixture forces
+    # this False for the whole suite (same reasoning as
+    # enable_chain_indexer) — an ordinary test creating an escrow has no
+    # business firing a real ~3-minute Bradbury deployment costing real
+    # testnet GEN from the deployer key.
+    auto_deploy_escrow_contracts: bool = True
+    # Same idea as auto_deploy_escrow_contracts, for NuancePredictionMarket —
+    # services/market_generator.py's _process_events deploys a fresh
+    # instance for every market it auto-publishes (auto_publish=True,
+    # status_key="open" immediately). Markets created as "pending_review"
+    # drafts are NOT deployed — see deploy_prediction_contract's own
+    # docstring on why a draft that might still be discarded shouldn't
+    # spend real testnet GEN. tests/conftest.py forces this False for the
+    # whole suite (same reasoning) — test_market_generator.py calls
+    # _process_events directly, many times, and has no business firing
+    # real deployments.
+    auto_deploy_prediction_contracts: bool = True
 
     @property
     def cors_origins_list(self) -> list[str]:

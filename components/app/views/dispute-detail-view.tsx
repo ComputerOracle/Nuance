@@ -221,7 +221,7 @@ export function DisputeDetailView({
           <div className="mt-1 text-sm text-fg-dim-2">
             Dispute Room #{dispute.id} · Stake:{" "}
             <span className="font-semibold text-fg font-brand-mono">
-              {dispute.amount.toLocaleString()} USDC
+              {dispute.amount.toLocaleString()} GEN
             </span>
           </div>
         </div>

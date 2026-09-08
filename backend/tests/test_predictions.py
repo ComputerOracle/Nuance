@@ -79,20 +79,20 @@ async def test_place_bet_authenticated_success(client, wallet):
 
     bet_resp = client.post(
         f"/predictions/{pred_id}/bet",
-        json={"side": "YES", "amount": 250},
+        json={"side": "YES", "amount": 500},
         headers=headers,
     )
     assert bet_resp.status_code == 201
     updated_pred = bet_resp.json()
     assert updated_pred["id"] == pred_id
-    assert updated_pred["volume"] == 5250
+    assert updated_pred["volume"] == 5500
     assert len(updated_pred["positions"]) >= 1
 
     user_pos = next(
         p for p in updated_pred["positions"] if p["wallet_address"] == wallet.address.lower()
     )
     assert user_pos["side"] == "YES"
-    assert user_pos["amount"] == 250
+    assert user_pos["amount"] == 500
 
 
 @pytest.mark.asyncio
@@ -103,7 +103,7 @@ async def test_place_bet_rejected_on_closed_market(client, wallet):
 
     bet_resp = client.post(
         f"/predictions/{pred_id}/bet",
-        json={"side": "NO", "amount": 100},
+        json={"side": "NO", "amount": 500},
         headers=headers,
     )
     assert bet_resp.status_code == 400
@@ -120,7 +120,7 @@ async def test_place_bet_rejected_on_expired_date(client, wallet):
 
     bet_resp = client.post(
         f"/predictions/{pred_id}/bet",
-        json={"side": "YES", "amount": 100},
+        json={"side": "YES", "amount": 500},
         headers=headers,
     )
     assert bet_resp.status_code == 400
@@ -139,10 +139,11 @@ def test_place_bet_invalid_payload(client, wallet):
     )
     assert resp1.status_code == 422
 
-    # Invalid side
+    # Invalid side (amount is a valid preset here on purpose, so this
+    # fails specifically on `side`, not incidentally on `amount` too)
     resp2 = client.post(
         "/predictions/1/bet",
-        json={"side": "MAYBE", "amount": 100},
+        json={"side": "MAYBE", "amount": 500},
         headers=headers,
     )
     assert resp2.status_code == 422
@@ -226,7 +227,7 @@ async def test_resolve_prediction_market_oracle_and_payouts(client, wallet):
     headers = {"Authorization": f"Bearer {token}"}
     bet_resp = client.post(
         f"/predictions/{pred_id}/bet",
-        json={"side": "YES", "amount": 50},
+        json={"side": "YES", "amount": 500},
         headers=headers,
     )
     assert bet_resp.status_code == 400

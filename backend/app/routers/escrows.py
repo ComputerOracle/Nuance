@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import get_settings
 from app.db import get_db
 from app.dependencies import get_current_user, get_optional_current_user
 from app.enums import ChainStatus, ConsensusStage, ConsensusSubjectType, StatusKey
@@ -36,11 +37,14 @@ from app.schemas import (
     EscrowRead,
     MilestoneRead,
     OnChainDisputeAck,
+    OnChainFundAck,
     OnChainSubmissionAck,
 )
 from app.services.consensus import run_consensus
+from app.services.genlayer_deploy import deploy_escrow_contract
 
 router = APIRouter(prefix="/escrows", tags=["escrows"])
+settings = get_settings()
 
 DEFAULT_CRITERIA = "Deliverable meets the agreed brief."
 
@@ -88,6 +92,7 @@ async def list_escrows(
 @router.post("", response_model=EscrowRead, status_code=status.HTTP_201_CREATED)
 async def create_escrow(
     payload: EscrowCreate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Escrow:
@@ -117,6 +122,18 @@ async def create_escrow(
     db.add(escrow)
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
+
+    # The actual Part 2 finish line: every new escrow gets a real deployed
+    # NuanceEscrow instance automatically, not just ones manually linked
+    # via `genlayer_indexer.py --link-demo`. Queued as a background task
+    # (same pattern as run_consensus above) since a real Bradbury deploy
+    # can take up to ~3 minutes — the 201 response returns immediately,
+    # with contract_address still null; submitDeliverable/
+    # escalateToDisputeCourt correctly stay on the legacy off-chain path
+    # until services/genlayer_deploy.py's task actually links it.
+    if settings.auto_deploy_escrow_contracts:
+        background_tasks.add_task(deploy_escrow_contract, escrow.id)
+
     return escrow
 
 
@@ -178,6 +195,50 @@ async def submit_deliverable(
         submitted_at=submission.submitted_at,
         consensus_job_id=job.id,
     )
+
+
+@router.post(
+    "/{escrow_id}/fund/on-chain",
+    response_model=EscrowRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def fund_escrow_on_chain(
+    escrow_id: int,
+    payload: OnChainFundAck,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Escrow:
+    """Reached once components/app/genlayer-write-client.ts's
+    fundEscrowOnChain has already signed and sent a real, *payable*
+    NuanceEscrow.fund_escrow transaction — real GEN has already left the
+    creator's wallet and now sits in the deployed contract's balance by
+    the time this endpoint runs. Only the escrow creator may call
+    fund_escrow on the contract itself (see that method's own source), so
+    this endpoint enforces the same restriction rather than let anyone
+    mark an escrow "funded." This does NOT verify the hash is real or
+    read back the actual funded_amount — see OnChainFundAck's own
+    docstring on why that's fine; it's UI bookkeeping (hide the "Fund
+    Escrow" action), not the source of truth for whether the milestone
+    can actually be released (release_milestone's own on-chain check
+    against funded_amount is what actually matters).
+    """
+    escrow = await _get_escrow_or_404(escrow_id, db)
+    if current_user.wallet_address != escrow.creator_address:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the escrow creator can fund this escrow.",
+        )
+    if escrow.contract_address is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This escrow isn't linked to a deployed contract yet — funding "
+            "isn't available until auto-deploy finishes.",
+        )
+
+    escrow.funded_tx_hash = payload.tx_hash
+    await db.commit()
+    await db.refresh(escrow, attribute_names=["milestones"])
+    return escrow
 
 
 @router.post(

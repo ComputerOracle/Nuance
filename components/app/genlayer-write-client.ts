@@ -33,6 +33,7 @@
 import { createClient, chains } from "genlayer-js";
 import type { Eip1193Provider } from "@/components/app/eip1193";
 import { isEip1193Error } from "@/components/app/eip1193";
+import { milliGenToWei, parseGenToWei } from "@/components/app/genlayer-chain";
 
 export interface SubmitDeliverableOnChainArgs {
   walletAddress: string;
@@ -140,6 +141,123 @@ export async function fileDisputeOnChain(args: FileDisputeOnChainArgs): Promise<
       args.evidenceUrl,
     ] as never,
     value: ZERO_VALUE,
+  });
+
+  return String(txHash);
+}
+
+export interface BetOnChainArgs {
+  walletAddress: string;
+  provider: Eip1193Provider;
+  contractAddress: `0x${string}`;
+  outcome: "YES" | "NO";
+  // Milli-GEN (1000 = 1 GEN) — one of the fixed quick-pick presets
+  // (backend/app/schemas/core.py's BET_AMOUNTS_MILLI_GEN: 500/1000/2000/
+  // 3000 = 0.5/1/2/3 GEN), never free-typed. Converted to real wei via
+  // milliGenToWei — an exact integer multiplication, not a floating-point
+  // guess — before being sent as this call's actual `value`.
+  amountMilliGen: number;
+}
+
+export interface ResolveMarketOnChainArgs {
+  walletAddress: string;
+  provider: Eip1193Provider;
+  contractAddress: `0x${string}`;
+}
+
+export interface ClaimWinningsOnChainArgs {
+  walletAddress: string;
+  provider: Eip1193Provider;
+  contractAddress: `0x${string}`;
+}
+
+export interface FundEscrowOnChainArgs {
+  walletAddress: string;
+  provider: Eip1193Provider;
+  contractAddress: `0x${string}`;
+  // The escrow's total, as the backend's own Decimal-serialized string
+  // (e.g. "2.50") or a plain number — converted to real wei via
+  // parseGenToWei (string-based fixed-point math, not floating-point)
+  // before being sent as this call's actual `value`.
+  amountGen: number | string;
+}
+
+/** Signs and sends a real NuancePredictionMarket.bet transaction through
+ * the connected wallet. The one *payable* call in this file — bet()
+ * requires gl.message.value > 0 on the contract side, unlike every other
+ * write here, which all send value: 0. See BetOnChainArgs.amount's own
+ * comment on the wei mapping. Resolves to the transaction hash; the
+ * caller hands it to POST /predictions/{id}/bet/on-chain, which mirrors
+ * the stake into a PredictionPosition row (see that endpoint's own
+ * docstring on why — the indexer's view-sync doesn't track individual
+ * bettors' on-chain stakes, only the market's own state as a whole). */
+export async function betOnChain(args: BetOnChainArgs): Promise<string> {
+  const client = createWriteClient(args.walletAddress, args.provider);
+
+  const txHash = await client.writeContract({
+    address: args.contractAddress,
+    functionName: "bet",
+    args: [args.outcome] as never,
+    value: milliGenToWei(args.amountMilliGen),
+  });
+
+  return String(txHash);
+}
+
+/** Signs and sends a real NuancePredictionMarket.resolve_market
+ * transaction. Has no sender restriction on the contract side (anyone can
+ * trigger it) — services/genlayer_indexer.py's trigger_pending_market_
+ * resolutions already does this automatically, server-side, once a
+ * market's cutoff passes, so this is a manual/optional path (e.g. the
+ * existing "Resolve Market" button, for someone who doesn't want to wait
+ * for the indexer's own poll cycle), not the primary mechanism. */
+export async function resolveMarketOnChain(args: ResolveMarketOnChainArgs): Promise<string> {
+  const client = createWriteClient(args.walletAddress, args.provider);
+
+  const txHash = await client.writeContract({
+    address: args.contractAddress,
+    functionName: "resolve_market",
+    args: [] as never,
+    value: ZERO_VALUE,
+  });
+
+  return String(txHash);
+}
+
+/** Signs and sends a real NuancePredictionMarket.claim_winnings
+ * transaction — pull-based, each bettor claims their own share
+ * individually (see that method's own contract-side docstring). This is
+ * the ONLY way a winning on-chain bet actually pays out; nothing
+ * server-side ever calls this on a bettor's behalf. */
+export async function claimWinningsOnChain(args: ClaimWinningsOnChainArgs): Promise<string> {
+  const client = createWriteClient(args.walletAddress, args.provider);
+
+  const txHash = await client.writeContract({
+    address: args.contractAddress,
+    functionName: "claim_winnings",
+    args: [] as never,
+    value: ZERO_VALUE,
+  });
+
+  return String(txHash);
+}
+
+/** Signs and sends a real, *payable* NuanceEscrow.fund_escrow
+ * transaction — real GEN leaves the creator's wallet and sits in the
+ * deployed contract's balance from here on; release_milestone checks
+ * this same on-chain funded_amount before it will pay anyone out. Only
+ * the escrow creator may call fund_escrow (see that method's own
+ * contract-side source) — this file doesn't enforce that itself, the
+ * contract does, the same way every other write here relies on the
+ * contract's own checks rather than duplicating them client-side. */
+export async function fundEscrowOnChain(args: FundEscrowOnChainArgs): Promise<string> {
+  const client = createWriteClient(args.walletAddress, args.provider);
+
+  const txHash = await client.writeContract({
+    address: args.contractAddress,
+    functionName: "fund_escrow",
+    args: [] as never,
+    value: parseGenToWei(args.amountGen),
   });
 
   return String(txHash);

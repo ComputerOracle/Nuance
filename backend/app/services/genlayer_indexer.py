@@ -80,7 +80,7 @@ from app.config import get_settings
 from app.db import AsyncSessionLocal, init_db
 from app.enums import ChainStatus, ConsensusSubjectType, StatusKey
 from app.models import DeliverableSubmission, Dispute, Escrow, Milestone, Prediction
-from app.services import genlayer_rpc
+from app.services import genlayer_rpc, genlayer_write
 
 # Reused rather than re-derived: the exact cascade a verdict applies
 # (advance the next pending milestone to in_progress, lock/unlock the
@@ -132,7 +132,13 @@ async def _load_linked_rows(
         .all()
     )
     predictions = (
-        (await db.execute(select(Prediction).where(Prediction.contract_address.is_not(None))))
+        (
+            await db.execute(
+                select(Prediction)
+                .where(Prediction.contract_address.is_not(None))
+                .options(selectinload(Prediction.positions))
+            )
+        )
         .scalars()
         .all()
     )
@@ -476,6 +482,49 @@ async def _apply_dispute_view(
         dispute.resolved_at = datetime.now(timezone.utc)
 
 
+async def trigger_pending_adjudications(disputes: list[Dispute]) -> None:
+    """Closes the gap flagged since raise_dispute_on_chain was built:
+    filing a dispute on-chain (NuanceDisputeCourt.file_dispute) never got
+    it a verdict, because nothing called adjudicate_dispute — a completely
+    separate contract action. That function has no sender restriction at
+    all (see contracts/nuance_dispute_court.py) — GenVM's validator
+    network does the actual judging regardless of which address sends the
+    call, so triggering it automatically here isn't a meaningfully
+    different trust boundary than any other address doing so.
+
+    Only ever considers disputes _load_linked_rows already resolved an
+    on_chain_dispute_id for (an unresolved one has nothing to adjudicate
+    yet) that are still DISPUTED in our own DB (a dispute _apply_dispute_view
+    already flipped to APPROVED/REJECTED this same cycle needs no
+    trigger) and haven't had one sent yet (adjudication_tx_hash null) —
+    a successfully-sent trigger is never re-sent; a failed *send*
+    (network/rate-limit, no tx hash back) leaves it null and is safe to
+    retry next cycle, since nothing was actually submitted.
+    """
+    if not settings.dispute_court_contract_address:
+        return
+
+    candidates = [
+        d
+        for d in disputes
+        if d.adjudication_tx_hash is None and d.status_key == StatusKey.DISPUTED
+    ]
+    for dispute in candidates:
+        tx_hash = await genlayer_write.write_contract(
+            settings.dispute_court_contract_address,
+            "adjudicate_dispute",
+            [dispute.on_chain_dispute_id],
+        )
+        if tx_hash is not None:
+            dispute.adjudication_tx_hash = tx_hash
+            logger.info(
+                "Triggered adjudicate_dispute for dispute id=%s (on_chain_dispute_id=%s) tx=%s",
+                dispute.id,
+                dispute.on_chain_dispute_id,
+                tx_hash,
+            )
+
+
 async def _apply_prediction_view(
     db: AsyncSession, prediction: Prediction, result: genlayer_rpc.ReadResult
 ) -> None:
@@ -495,14 +544,74 @@ async def _apply_prediction_view(
             "verdict's reasoning text, only the final state/outcome, so this field can't "
             "carry the actual on-chain reasoning the way the off-chain oracle's does."
         )
-        # Deliberately NOT calling services.payout.calculate_prediction_payouts
-        # here: that function pays out this backend's own off-chain
-        # PredictionPosition rows (from POST /predictions/{id}/bet).
-        # Payouts for a market's on-chain bets are pull-based and handled
-        # entirely by the contract's own claim_winnings() — see that
-        # method's docstring. A market with bets on *both* paths at once
-        # is a real, currently-undefined edge case this indexer doesn't
-        # attempt to reconcile.
+        # calculate_prediction_payouts is safe (in fact correct) to reuse
+        # here, unlike it first looked: contracts/nuance_prediction_market.py's
+        # own claim_winnings docstring says its pari-mutuel math is
+        # deliberately "same math as backend/app/services/payout.py's
+        # off-chain calculate_prediction_payouts" — so running it against
+        # this market's PredictionPosition rows (which routers/predictions.py's
+        # place_bet_on_chain mirrors from real on-chain bets — see that
+        # endpoint's own docstring) produces a *display* figure that
+        # genuinely matches what claim_winnings() would actually pay a
+        # bettor on-chain, not a competing/fictional number. The REAL GEN
+        # transfer still only ever happens via that pull-based on-chain
+        # call — this is what "Won $X" shows in the UI, same as the
+        # off-chain path already displays before anyone's clicked anything.
+        from app.services.payout import calculate_prediction_payouts
+
+        calculate_prediction_payouts(prediction)
+
+
+async def trigger_pending_market_resolutions(predictions: list[Prediction]) -> None:
+    """Closes the same gap trigger_pending_adjudications closes for
+    disputes, for prediction markets: NuancePredictionMarket.resolve_market
+    has no sender restriction at all (see that contract's own source) —
+    GenVM's validator network does the actual judging regardless of which
+    address sends the call, so triggering it automatically here isn't a
+    meaningfully different trust boundary than any other address (or the
+    existing off-chain "Resolve Market" button, for a market that weren't
+    on-chain) doing so.
+
+    Only considers already-linked markets (contract_address known — a
+    market with none has nothing to resolve on-chain) that are still open
+    per our own DB (status_key.lower() != "resolved" — a market
+    _apply_prediction_view already flipped to RESOLVED this same cycle
+    needs no trigger), whose off-chain resolution_date cutoff has actually
+    passed (calling resolve_market before then would just fail on-chain —
+    nuance_prediction_market.py's own header notes there's no verified
+    on-chain clock, but the cutoff is still real information this app
+    already tracks), and haven't had a trigger sent yet
+    (resolution_trigger_tx_hash null) — a successfully-sent trigger is
+    never re-sent; a failed *send* (network/rate-limit, no tx hash back)
+    leaves it null and is safe to retry next cycle, since nothing was
+    actually submitted.
+    """
+    now = datetime.now(timezone.utc)
+    candidates = []
+    for prediction in predictions:
+        if prediction.resolution_trigger_tx_hash is not None:
+            continue
+        if prediction.status_key.lower() == "resolved":
+            continue
+        res_date = prediction.resolution_date
+        if res_date.tzinfo is None:
+            res_date = res_date.replace(tzinfo=timezone.utc)
+        if now < res_date:
+            continue
+        candidates.append(prediction)
+
+    for prediction in candidates:
+        tx_hash = await genlayer_write.write_contract(
+            prediction.contract_address, "resolve_market", []
+        )
+        if tx_hash is not None:
+            prediction.resolution_trigger_tx_hash = tx_hash
+            logger.info(
+                "Triggered resolve_market for prediction id=%s (%s) tx=%s",
+                prediction.id,
+                prediction.contract_address,
+                tx_hash,
+            )
 
 
 # --- One poll cycle ----------------------------------------------------------
@@ -562,10 +671,22 @@ async def run_once(db: AsyncSession) -> None:
         result = read_results.get(f"dispute:{dispute.id}")
         if result is not None:
             await _apply_dispute_view(db, dispute, result)
+
+    # After the view-sync above, so a dispute _apply_dispute_view just
+    # resolved this same cycle (autoflushed, so status_key already
+    # reflects it) is correctly skipped rather than adjudicated a second,
+    # pointless time.
+    await trigger_pending_adjudications(disputes)
+
     for prediction in predictions:
         result = read_results.get(f"prediction:{prediction.id}")
         if result is not None:
             await _apply_prediction_view(db, prediction, result)
+
+    # Same ordering reasoning as trigger_pending_adjudications above — a
+    # market _apply_prediction_view just resolved this cycle is correctly
+    # skipped rather than resolved a second, pointless time.
+    await trigger_pending_market_resolutions(predictions)
 
     await db.commit()
 

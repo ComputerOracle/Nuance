@@ -160,6 +160,12 @@ export interface ApiEscrow {
   // almost every escrow today (see lib/chain-config.ts's own header on
   // why there's no single global escrow address to fall back to).
   contract_address: string | null;
+  // The tx hash of the creator's real, payable NuanceEscrow.fund_escrow
+  // call, once sent — null means either not linked to a contract yet, or
+  // linked but not funded yet. See models/core.py's Escrow.funded_tx_hash
+  // for why this is only a UI convenience, not the source of truth for
+  // whether the contract itself is actually funded.
+  funded_tx_hash: string | null;
 }
 
 export interface ApiDeliverableSubmission {
@@ -264,6 +270,12 @@ export interface ApiPrediction {
   created_at: string;
   resolved_at?: string | null;
   positions: ApiPredictionPosition[];
+  // Which deployed NuancePredictionMarket instance backs this market —
+  // null for almost every market today (see lib/chain-config.ts's own
+  // header). Once set, betting/resolution route on-chain.
+  contract_address: string | null;
+  chain_status: ApiChainStatus;
+  resolution_trigger_tx_hash?: string | null;
 }
 
 export type ApiVoteChoice = "for" | "against" | "abstain";
@@ -458,6 +470,24 @@ export async function submitDeliverableOnChainAck(
   });
 }
 
+// The on-chain counterpart: called after components/app/
+// genlayer-write-client.ts's fundEscrowOnChain has already signed and sent
+// a real, payable NuanceEscrow.fund_escrow transaction — real GEN has
+// already left the creator's wallet by the time this fires. This call
+// only records the tx hash for the UI (hide the "Fund Escrow" action once
+// set); it does not itself move any funds. Only the escrow's own creator
+// may call this (enforced server-side, matching fund_escrow's own
+// contract-side restriction).
+export async function fundEscrowOnChainAck(
+  escrowId: number,
+  txHash: string
+): Promise<ApiEscrow> {
+  return apiFetch<ApiEscrow>(`/escrows/${escrowId}/fund/on-chain`, {
+    method: "POST",
+    body: JSON.stringify({ tx_hash: txHash }),
+  });
+}
+
 export async function releaseMilestone(escrowId: number): Promise<ApiEscrow> {
   return apiFetch<ApiEscrow>(`/escrows/${escrowId}/release`, { method: "POST" });
 }
@@ -567,6 +597,24 @@ export async function placeBet(
   return apiFetch<ApiPrediction>(`/predictions/${predictionId}/bet`, {
     method: "POST",
     body: JSON.stringify({ side: side.toUpperCase(), amount }),
+  });
+}
+
+// The on-chain counterpart: called after components/app/
+// genlayer-write-client.ts's betOnChain has already signed and sent a
+// real NuancePredictionMarket.bet transaction. side/amount here mirror
+// the stake into a PredictionPosition row (the indexer's view-sync
+// doesn't track individual bettors' on-chain stakes, only the market's
+// own state as a whole — see that endpoint's own docstring).
+export async function placeBetOnChainAck(
+  predictionId: number,
+  txHash: string,
+  side: "YES" | "NO" | "yes" | "no",
+  amount: number
+): Promise<ApiPrediction> {
+  return apiFetch<ApiPrediction>(`/predictions/${predictionId}/bet/on-chain`, {
+    method: "POST",
+    body: JSON.stringify({ tx_hash: txHash, side: side.toUpperCase(), amount }),
   });
 }
 

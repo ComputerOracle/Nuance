@@ -36,6 +36,15 @@ export interface Escrow {
   total: number;
   statusKey: StatusKey;
   milestones: Milestone[];
+  // Which deployed NuanceEscrow instance backs this escrow, if any — only
+  // an escrow with this set has a real fund_escrow()/release_milestone()
+  // to call; most escrows today are still off-chain (null).
+  contractAddress?: string | null;
+  // Set once the creator's real fund_escrow transaction has been sent —
+  // hides the "Fund Escrow" action once present. See lib/api.ts's
+  // ApiEscrow.funded_tx_hash for the full caveat on what this does and
+  // doesn't guarantee.
+  fundedTxHash?: string | null;
 }
 
 export interface Prediction {
@@ -52,6 +61,11 @@ export interface Prediction {
   resolutionReasoning?: string | null;
   resolvedAt?: string | null;
   positions?: Position[];
+  // Which deployed NuancePredictionMarket instance backs this market, if
+  // any — null for almost every market today. Only markets with this set
+  // have a real claim_winnings() to call (an off-chain "Won $X" figure is
+  // notional bookkeeping, not a real stake to pull out).
+  contractAddress?: string | null;
 }
 
 export interface Position {

@@ -13,8 +13,10 @@ export function EscrowDetailView({
   onSubmitDeliverable,
   onReleasePayment,
   onEscalate,
+  onFundEscrow,
   submitDisabled = false,
   escalateDisabled = false,
+  fundingDisabled = false,
 }: {
   escrow: Escrow;
   stage: number;
@@ -25,12 +27,17 @@ export function EscrowDetailView({
   onSubmitDeliverable: () => void;
   onReleasePayment: () => void;
   onEscalate: () => void;
+  // Only present once this escrow is linked to a deployed contract — see
+  // the "Fund Escrow" card below.
+  onFundEscrow?: () => void;
   // True while an on-chain submit is mid-flight (waiting on the wallet's
   // own signing prompt / RPC round-trip) — a separate condition from
   // "text is empty," which the button already gates on its own.
   submitDisabled?: boolean;
   // True while POST /escrows/{id}/dispute is in flight.
   escalateDisabled?: boolean;
+  // True while the real, payable fund_escrow transaction is mid-flight.
+  fundingDisabled?: boolean;
 }) {
   const activeIdx = activeMilestoneIndex(escrow.milestones);
 
@@ -63,6 +70,25 @@ export function EscrowDetailView({
       }
     : null;
 
+  // Only a contract-linked, not-yet-funded escrow has anything to fund —
+  // most escrows today are still off-chain (contractAddress null), and
+  // once funded_tx_hash is set this app treats funding as already done
+  // (see types.ts's Escrow.fundedTxHash for the caveat on what that
+  // does/doesn't guarantee).
+  // RE-ENABLED (2026-09-08) — the underlying bug is fixed and verified
+  // against a real live Bradbury redeploy, not just code review:
+  // NuanceEscrow's constructor now takes an explicit `creator` arg
+  // (deploy_escrow_contract passes the real escrow.creator_address, not
+  // gl.message.sender_address — see the contract's own __init__ docstring
+  // for the full account of why that was wrong and cost real GEN), and a
+  // fresh test deploy read back `creator` matching the real address
+  // exactly, with milestone.amount correctly landing as real wei
+  // (1000000000000000000, no JSON-bridge precision loss — see
+  // genlayer_deploy.py's _gen_to_wei/_bigint_arg). Escrow #3 specifically
+  // was redeployed under the corrected contract as part of this fix; its
+  // original broken contract (and the 1 GEN stuck in it) stays abandoned.
+  const showFundCard = Boolean(escrow.contractAddress) && !escrow.fundedTxHash;
+
   return (
     <div style={{ animation: "fadeUp 0.3s ease" }}>
       <div
@@ -86,12 +112,37 @@ export function EscrowDetailView({
             </span>{" "}
             · Total{" "}
             <span className="font-semibold text-fg">
-              {escrow.total.toLocaleString()} USDC
+              {escrow.total.toLocaleString()} GEN
             </span>
           </div>
         </div>
         <StatusBadge status={escrow.statusKey} />
       </div>
+
+      {showFundCard && (
+        <div className="mt-5 rounded-xl border border-review/30 bg-review/10 p-4.5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-[13px] font-semibold text-review-text">
+                Escrow contract deployed — awaiting funding
+              </div>
+              <div className="mt-1 text-xs text-fg-meta">
+                Send {escrow.total.toLocaleString()} GEN from your wallet into this
+                escrow&rsquo;s contract before any milestone can be released.
+              </div>
+            </div>
+            {onFundEscrow && (
+              <button
+                onClick={onFundEscrow}
+                disabled={fundingDisabled}
+                className="cursor-pointer rounded-lg border border-review/40 bg-review/20 px-4 py-2.5 text-[13px] font-semibold text-review-text transition-colors hover:bg-review/30 disabled:cursor-default disabled:opacity-60"
+              >
+                {fundingDisabled ? "Waiting for wallet…" : `Fund Escrow (${escrow.total.toLocaleString()} GEN)`}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="mt-7 grid grid-cols-1 gap-6 lg:grid-cols-[1.1fr_1fr]">
         <div className="flex flex-col gap-3">
@@ -118,7 +169,7 @@ export function EscrowDetailView({
                   {m.criteria}
                 </div>
                 <div className="mt-2.5 font-brand-mono text-[13px] text-fg-bright">
-                  {m.amount.toLocaleString()} USDC
+                  {m.amount.toLocaleString()} GEN
                 </div>
 
                 {m.statusKey === "approved" && (

@@ -474,7 +474,7 @@ async def _build_consensus_context(
         escrow_title = milestone.escrow.title if milestone.escrow else "Escrow"
         return (
             f"Escrow: {escrow_title}\n"
-            f"Milestone: {milestone.name} ({milestone.amount} USDC)\n"
+            f"Milestone: {milestone.name} ({milestone.amount} GEN)\n"
             f"Agreed Criteria:\n{milestone.criteria}"
         )
 
@@ -500,7 +500,7 @@ async def _build_consensus_context(
 
     lines = [
         f"=== DISPUTE CASE #{dispute.id} ===",
-        f"Escrow Title: {escrow_title} (Total: {escrow_total} USDC)",
+        f"Escrow Title: {escrow_title} (Total: {escrow_total} GEN)",
         f"Escrow Creator: {creator_addr}",
         f"Escrow Counterparty: {counterparty_addr}",
         f"Claimant (Opened By): {dispute.opened_by_address}",

@@ -99,6 +99,7 @@ class NuanceEscrow(gl.Contract):
 
     def __init__(
         self,
+        creator: str,
         counterparty: str,
         milestone_name: str,
         milestone_amount: u256,
@@ -118,8 +119,28 @@ class NuanceEscrow(gl.Contract):
         form is an actual runtime TypeError in GenVM (a live deploy came
         back FINISHED_WITH_ERROR / all validators DISAGREE against it).
         The bracket form stays on the class-level annotation above — only
-        a type hint — not on this instantiation."""
-        self.creator = gl.message.sender_address
+        a type hint — not on this instantiation.
+
+        Correction (2026-09-08, real fund loss on live Bradbury): `creator`
+        used to default to `gl.message.sender_address` — wrong, because
+        every deploy of this contract is backend-signed (services/
+        genlayer_deploy.py's deploy_escrow_contract uses this app's own
+        GENLAYER_PRIVATE_KEY, never the real escrow creator's wallet). That
+        made `self.creator` permanently equal to our backend's own service
+        wallet, so fund_escrow/release_milestone/add_milestone — all
+        creator-gated — rejected literally every real user, with no way to
+        ever pass. Worse: GenVM does NOT refund the payable value attached
+        to a call that a contract then rejects with gl.vm.UserError — the
+        value transfers into the contract's balance before the business-
+        logic check runs, permanently, with no withdrawal function to get
+        it back out. A live test lost 1 real GEN into a contract deployed
+        under the old constructor this exact way. `creator` is now an
+        explicit constructor argument — deploy_escrow_contract passes the
+        escrow's real creator_address — so this can't recur for any
+        contract deployed after this fix. Already-deployed contracts from
+        before this fix keep the wrong baked-in creator permanently; there
+        is no upgrade path for a live GenVM contract."""
+        self.creator = Address(creator)
         self.counterparty = Address(counterparty)
         self.funded_amount = 0
         self.milestones = TreeMap()
@@ -152,6 +173,18 @@ class NuanceEscrow(gl.Contract):
     # MODERATE confidence — see module docstring. `@gl.public.write.payable`
     # is what makes a method able to receive value at all; gl.message.value
     # is how much GEN came in with this call.
+    #
+    # CONFIRMED the hard way (2026-09-08, real GEN lost on live Bradbury):
+    # the sender check below runs AFTER gl.message.value has already
+    # arrived — GenVM does not refund a payable call's attached value just
+    # because the method body then raises. A wrong sender's GEN transfers
+    # into this contract's balance regardless of the error, permanently
+    # (no withdrawal function exists here). This is exactly why __init__'s
+    # `creator` bug (see its own docstring) was so costly — every real
+    # user's fund_escrow call failed this check while still paying in for
+    # real. Keep any future creator-gated payable method's sender check
+    # this same order (cheapest failure first) anyway; it doesn't change
+    # this risk, but there's no reason to check late on top of it.
 
     @gl.public.write.payable
     def fund_escrow(self) -> None:

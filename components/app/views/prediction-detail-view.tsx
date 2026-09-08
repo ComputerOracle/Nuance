@@ -1,33 +1,58 @@
 import type { Position, Prediction } from "@/components/app/types";
 
+// Mirrors backend/app/schemas/core.py's BET_AMOUNTS_MILLI_GEN exactly —
+// the only amounts the backend will actually accept, so the UI can't
+// offer anything the server would reject. Milli-GEN (1000 = 1 GEN), not
+// GEN directly, so 0.5 GEN stays a whole number end to end (frontend
+// send, backend store, on-chain wei conversion) with no schema/column-
+// type migration anywhere — see that constant's own comment for the
+// full reasoning.
+const BET_AMOUNTS_MILLI_GEN = [500, 1000, 2000, 3000] as const;
+
+/** Milli-GEN -> a clean display string ("0.5", "1", "2.5", ...) — trims
+ * trailing zeros rather than always showing 3 decimal places. */
+function formatMilliGen(milliGen: number): string {
+  return (milliGen / 1000).toFixed(3).replace(/\.?0+$/, "");
+}
+
 export function PredictionDetailView({
   prediction,
-  betAmount,
+  betAmountMilliGen,
   betSide,
   position,
   isBetting,
   isResolving,
+  isClaiming,
+  hasClaimed,
   bettingError,
   onBack,
   onSelectYes,
   onSelectNo,
-  onBetAmountChange,
+  onSelectAmount,
   onPlaceBet,
   onResolveMarket,
+  onClaimWinnings,
 }: {
   prediction: Prediction;
-  betAmount: string;
+  betAmountMilliGen: number | null;
   betSide: "yes" | "no" | null;
   position: Position | null;
   isBetting?: boolean;
   isResolving?: boolean;
+  isClaiming?: boolean;
+  // Per-session only (no read call yet for the contract's own `claimed`
+  // map) — hides the button right after a successful claim in this
+  // browser session; a reload won't remember it. See nuance-app.tsx's
+  // claimedPredictionIds for the full caveat.
+  hasClaimed?: boolean;
   bettingError?: string | null;
   onBack: () => void;
   onSelectYes: () => void;
   onSelectNo: () => void;
-  onBetAmountChange: (v: string) => void;
+  onSelectAmount: (milliGen: number) => void;
   onPlaceBet: () => void;
   onResolveMarket?: () => void;
+  onClaimWinnings?: () => void;
 }) {
   const isResolved =
     prediction.statusKey?.toUpperCase() === "RESOLVED" ||
@@ -40,7 +65,7 @@ export function PredictionDetailView({
 
   const noPrice = 100 - prediction.yesPrice;
   const betDisabled =
-    !(betAmount && betSide) || isBetting || isResolved || isMatured;
+    !(betAmountMilliGen != null && betSide) || isBetting || isResolved || isMatured;
 
   const sideClasses = (side: "yes" | "no") => {
     const active = betSide === side;
@@ -115,8 +140,7 @@ export function PredictionDetailView({
         {prediction.question}
       </div>
       <div className="mt-2 text-sm text-fg-dim-2">
-        Resolves {prediction.resolveDate} · $
-        {prediction.volume.toLocaleString()} volume
+        Resolves {prediction.resolveDate} · {formatMilliGen(prediction.volume)} GEN volume
       </div>
 
       <div className="mt-7 grid grid-cols-1 gap-6 lg:grid-cols-[1.1fr_1fr]">
@@ -168,11 +192,28 @@ export function PredictionDetailView({
                   <div className="rounded-xl border border-positive/50 bg-positive/15 p-4 text-center">
                     <div className="text-2xl mb-1">🎉</div>
                     <div className="font-display text-lg font-bold text-positive-text">
-                      Won {Number(position.payout ?? 0).toFixed(2)} USDC
+                      Won {formatMilliGen(position.payout ?? 0)} GEN
                     </div>
                     <div className="mt-1 text-xs text-fg-meta">
-                      Position: {position.amount} USDC on {position.side.toUpperCase()}
+                      Position: {formatMilliGen(position.amount)} GEN on {position.side.toUpperCase()}
                     </div>
+                    {/* Only a real on-chain market has anything to actually
+                        pull out — an off-chain "Won X GEN" is a notional
+                        figure services/payout.py computed, already
+                        reflected here, nothing further to claim. */}
+                    {prediction.contractAddress && onClaimWinnings && (
+                      <button
+                        onClick={onClaimWinnings}
+                        disabled={isClaiming || hasClaimed}
+                        className="mt-3 w-full cursor-pointer rounded-lg border border-positive/40 bg-positive/20 py-2.5 text-[13px] font-semibold text-positive-text transition-colors hover:bg-positive/30 disabled:cursor-default disabled:opacity-60"
+                      >
+                        {hasClaimed
+                          ? "Claimed ✓"
+                          : isClaiming
+                            ? "Claiming…"
+                            : "Claim Winnings"}
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <div className="rounded-xl border border-border-4 bg-surface-3 p-4 text-center">
@@ -180,7 +221,7 @@ export function PredictionDetailView({
                       Outcome Resolved — Position Closed
                     </div>
                     <div className="mt-1 text-xs text-fg-faint-2">
-                      Stake: {position.amount} USDC on {position.side.toUpperCase()} · Payout: 0.00 USDC
+                      Stake: {formatMilliGen(position.amount)} GEN on {position.side.toUpperCase()} · Payout: 0 GEN
                     </div>
                   </div>
                 )
@@ -208,13 +249,31 @@ export function PredictionDetailView({
                   NO {noPrice}¢
                 </button>
               </div>
-              <input
-                value={betAmount}
-                onChange={(e) => onBetAmountChange(e.target.value)}
-                disabled={isBetting || isMatured}
-                placeholder={isMatured ? "Betting closed" : "Amount (USDC)"}
-                className="w-full rounded-lg border border-border-4 bg-surface-3 px-3 py-2.5 font-brand-mono text-sm text-fg placeholder:text-fg-faint-2 focus:outline-none focus:border-border-6 disabled:opacity-50"
-              />
+
+              {/* Quick-pick only — no free-text amount. Mirrors
+                  BET_AMOUNTS_MILLI_GEN exactly; the backend rejects
+                  anything else, so offering anything else here would
+                  just be a dead end. */}
+              <div className="mb-2 text-[11px] uppercase tracking-wide text-fg-meta">
+                Amount (GEN)
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {BET_AMOUNTS_MILLI_GEN.map((milliGen) => (
+                  <button
+                    key={milliGen}
+                    onClick={() => onSelectAmount(milliGen)}
+                    disabled={isBetting || isMatured}
+                    className={`cursor-pointer rounded-lg border px-2 py-2.5 text-[13px] font-semibold transition-colors disabled:cursor-default ${
+                      betAmountMilliGen === milliGen
+                        ? "border-positive/60 bg-positive/15 text-positive-text"
+                        : "border-border-4 bg-surface-3 text-fg-bright hover:bg-chip-hover"
+                    }`}
+                  >
+                    {formatMilliGen(milliGen)}
+                  </button>
+                ))}
+              </div>
+
               {bettingError && (
                 <div className="mt-2.5 rounded-lg border border-negative/35 bg-negative/12 p-2.5 text-xs text-negative-text">
                   {bettingError}
@@ -234,7 +293,7 @@ export function PredictionDetailView({
                   className="mt-3.5 rounded-lg border border-positive/35 bg-positive/12 p-3 text-[13px] text-positive-text"
                   style={{ animation: "fadeUp 0.3s ease" }}
                 >
-                  Active position: {position.amount} USDC on{" "}
+                  Active position: {formatMilliGen(position.amount)} GEN on{" "}
                   {position.side.toUpperCase()}
                 </div>
               )}
@@ -266,6 +325,3 @@ export function PredictionDetailView({
     </div>
   );
 }
-
-
-

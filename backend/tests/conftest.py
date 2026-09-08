@@ -14,7 +14,32 @@ it's in.
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# Set BEFORE any test module (or app.config) is imported — conftest.py is
+# always collected first, guaranteeing Settings() never sees these as True
+# in the first place. This is the actual fix for a real gap the function-
+# scoped fixtures below can't close on their own: several test files (e.g.
+# test_consensus.py, test_dispute_id_resolution.py) use a *module*-scoped
+# `_init_schema` fixture that opens `with TestClient(app)` once for the
+# whole file — and pytest sets up module-scoped fixtures BEFORE any
+# function-scoped one (the monkeypatch fixtures below), for that file's
+# first test. That ordering means app.main's lifespan can start a REAL
+# background indexer (or, without this, attempt a REAL contract auto-
+# deploy) before `_disable_chain_indexer_by_default`/
+# `_disable_auto_deploy_by_default` ever get a chance to monkeypatch it
+# off — confirmed by hitting exactly this race (an extra, unaccounted-for
+# indexer poll cycle) while adding the auto-deploy feature. Env-var
+# defaults close it at the source; the fixtures below stay too, as
+# explicit, self-documenting intent and a second layer of defense.
+os.environ.setdefault("ENABLE_CHAIN_INDEXER", "false")
+os.environ.setdefault("AUTO_DEPLOY_ESCROW_CONTRACTS", "false")
+# test_market_generator.py calls _process_events directly, many times —
+# same reasoning as the escrow one above, just for
+# services/market_generator.py's own auto-deploy hook.
+os.environ.setdefault("AUTO_DEPLOY_PREDICTION_CONTRACTS", "false")
 
 
 @pytest.fixture(autouse=True)
@@ -44,3 +69,36 @@ def _disable_chain_indexer_by_default(monkeypatch):
     from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "enable_chain_indexer", False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_auto_deploy_by_default(monkeypatch):
+    """routers/escrows.py::create_escrow queues services/genlayer_deploy.
+    deploy_escrow_contract as a background task whenever settings.
+    auto_deploy_escrow_contracts is true (the .env default) — FastAPI's
+    TestClient actually runs background tasks before a request call
+    returns, so any test hitting POST /escrows would otherwise fire a
+    real ~3-minute Bradbury deployment, spending real testnet GEN from the
+    deployer key. Forced off here regardless of what's in .env — same
+    pattern as _disable_chain_indexer_by_default above. Tests that
+    specifically want to exercise the deploy path mock
+    genlayer_deploy.deploy_contract instead (see
+    test_auto_deploy_escrow.py) — they don't need this flag on, since
+    they call deploy_escrow_contract directly rather than through the
+    live create_escrow endpoint."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "auto_deploy_escrow_contracts", False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_prediction_auto_deploy_by_default(monkeypatch):
+    """services/market_generator.py's _process_events calls
+    deploy_prediction_contract for every auto-published market whenever
+    settings.auto_deploy_prediction_contracts is true (the .env default) —
+    test_market_generator.py calls _process_events directly, many times,
+    and has no business firing real Bradbury deployments. Same reasoning
+    as _disable_auto_deploy_by_default above."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "auto_deploy_prediction_contracts", False)

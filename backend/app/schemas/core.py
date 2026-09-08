@@ -148,11 +148,15 @@ class EscrowRead(BaseModel):
     milestones: list[MilestoneRead] = []
     # Which deployed NuanceEscrow instance backs this escrow, if any — see
     # Escrow.contract_address's own docstring. Null is the normal/expected
-    # state for almost every escrow right now (no per-escrow deploy-at-
-    # creation flow exists yet); the frontend treats null as "route this
-    # through the legacy off-chain path," same convention lib/chain-config.ts
-    # already documents.
+    # state for an escrow whose auto-deploy hasn't finished yet (it runs in
+    # the background, can take a few minutes); the frontend treats null as
+    # "route this through the legacy off-chain path," same convention
+    # lib/chain-config.ts already documents.
     contract_address: str | None = None
+    # Whether a real fund_escrow() transaction has been sent — see
+    # Escrow.funded_tx_hash's own docstring on why this isn't the same
+    # thing as the contract's own funded_amount.
+    funded_tx_hash: str | None = None
 
 
 # --- Deliverable submission -----------------------------------------------
@@ -192,6 +196,30 @@ class OnChainSubmissionAck(BaseModel):
     indexer reads the real result back from the contract's own get_milestone
     view. A caller reporting a bogus hash can make the indexer log a failed
     lookup; it can never fake an approval this way."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    tx_hash: str
+
+    @field_validator("tx_hash")
+    @classmethod
+    def _validate_tx_hash(cls, v: str) -> str:
+        if not _TX_HASH_RE.match(v):
+            raise ValueError("tx_hash must be a 0x-prefixed 64-hex-character transaction hash.")
+        return v.lower()
+
+
+class OnChainFundAck(BaseModel):
+    """Body for POST /escrows/{id}/fund/on-chain — the frontend reporting
+    a tx hash it already got back from signing and sending a real,
+    *payable* NuanceEscrow.fund_escrow transaction (components/app/
+    genlayer-write-client.ts's fundEscrowOnChain) — real GEN actually left
+    the creator's wallet and now sits in the deployed contract's balance.
+    Same "not a trust boundary" reasoning as OnChainSubmissionAck: this
+    only remembers that a fund_escrow call was sent, for UI purposes
+    (hide the "Fund Escrow" action once it has); the contract's own
+    funded_amount (checked by release_milestone before any payout) is the
+    real source of truth regardless of what this endpoint is told."""
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -370,6 +398,11 @@ class DisputeRead(BaseModel):
     on_chain_dispute_id: int | None = None
     chain_status: ChainStatus = ChainStatus.LEGACY_OFFCHAIN
     on_chain_tx_hash: str | None = None
+    # The adjudicate_dispute tx services/genlayer_indexer.py's
+    # trigger_pending_adjudications sent, once on_chain_dispute_id is
+    # known — a separate transaction from on_chain_tx_hash (file_dispute).
+    # Null until a trigger has actually been sent.
+    adjudication_tx_hash: str | None = None
 
 
 class DisputeCreateRead(DisputeRead):
@@ -422,6 +455,37 @@ class PredictionRead(BaseModel):
     created_at: datetime
     resolved_at: datetime | None = None
     positions: list[PredictionPositionRead] = []
+    # Which deployed NuancePredictionMarket instance backs this market —
+    # null for almost every market today (see Prediction.contract_address's
+    # own model docstring). Once set, betting/resolution route on-chain.
+    contract_address: str | None = None
+    chain_status: ChainStatus = ChainStatus.LEGACY_OFFCHAIN
+    resolution_trigger_tx_hash: str | None = None
+
+
+def _validate_side(v: str) -> str:
+    v_norm = v.strip().upper()
+    if v_norm not in ("YES", "NO"):
+        raise ValueError("Side must be 'YES' or 'NO'.")
+    return v_norm
+
+
+# Bet amounts are milli-GEN (1 GEN = 1000 units) — an integer unit, not a
+# renamed dollar figure, chosen specifically so a fractional GEN amount
+# (0.5 GEN, the smallest preset) is still a whole number in the DB's
+# existing `amount: int` column with no schema/column-type migration
+# needed. The quick-pick buttons (components/app/views/
+# prediction-detail-view.tsx) are the ONLY way to bet — no free-text
+# amount input — so the backend validates against this exact set rather
+# than a loose range; the frontend can't be trusted to enforce this alone.
+BET_AMOUNTS_MILLI_GEN = (500, 1000, 2000, 3000)  # 0.5 / 1 / 2 / 3 GEN
+
+
+def _validate_bet_amount(v: int) -> int:
+    if v not in BET_AMOUNTS_MILLI_GEN:
+        allowed = ", ".join(f"{a / 1000:g}" for a in BET_AMOUNTS_MILLI_GEN)
+        raise ValueError(f"amount must be one of the offered bet sizes ({allowed} GEN).")
+    return v
 
 
 class PredictionBetCreate(BaseModel):
@@ -430,13 +494,37 @@ class PredictionBetCreate(BaseModel):
     side: str
     amount: int = Field(gt=0, le=1_000_000)
 
-    @field_validator("side")
+    _normalize_side = field_validator("side")(_validate_side)
+    _validate_amount = field_validator("amount")(_validate_bet_amount)
+
+
+class OnChainBetAck(BaseModel):
+    """Body for POST /predictions/{id}/bet/on-chain — the frontend
+    reporting a tx hash it already got back from signing and sending
+    NuancePredictionMarket.bet itself (see components/app/
+    genlayer-write-client.ts's betOnChain). Unlike a regular write ack,
+    this ALSO carries side/amount: the real stake already lives in the
+    contract's own storage, but this app still mirrors it into a
+    PredictionPosition row immediately (same reasoning
+    OnChainSubmissionAck's docstring gives for milestones) so the existing
+    "my positions" UI keeps working without waiting on an indexer cycle
+    that doesn't sync individual bettors' stakes at all today."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    tx_hash: str
+    side: str
+    amount: int = Field(gt=0, le=1_000_000)
+
+    _normalize_side = field_validator("side")(_validate_side)
+    _validate_amount = field_validator("amount")(_validate_bet_amount)
+
+    @field_validator("tx_hash")
     @classmethod
-    def validate_side(cls, v: str) -> str:
-        v_norm = v.strip().upper()
-        if v_norm not in ("YES", "NO"):
-            raise ValueError("Side must be 'YES' or 'NO'.")
-        return v_norm
+    def _validate_tx_hash(cls, v: str) -> str:
+        if not _TX_HASH_RE.match(v):
+            raise ValueError("tx_hash must be a 0x-prefixed 64-hex-character transaction hash.")
+        return v.lower()
 
 
 # --- Validator / Agent directories -----------------------------------------

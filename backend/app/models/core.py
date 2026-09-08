@@ -74,9 +74,18 @@ class Escrow(Base):
     # the on-chain cutover and stays on the legacy services/consensus.py
     # path (see ROADMAP.md 4.5's migration-path note). One contract
     # instance per escrow, holding all of that escrow's milestones — set
-    # once Step 4 (a real per-escrow deployContract call at creation time)
-    # exists; nothing writes this column yet.
+    # automatically by services/genlayer_deploy.py's deploy_escrow_contract
+    # right after creation.
     contract_address: Mapped[str | None] = mapped_column(default=None)
+    # The tx hash of the creator's NuanceEscrow.fund_escrow call, once
+    # sent — a real, payable transaction (components/app/
+    # genlayer-write-client.ts's fundEscrowOnChain), not just bookkeeping.
+    # Null means either not on-chain yet, or on-chain but not funded yet;
+    # the contract's own `funded_amount` (checked by release_milestone
+    # before any payout) is the actual source of truth either way — this
+    # column only tracks whether this app has sent a fund_escrow call at
+    # all, for UI purposes (hide the "Fund Escrow" action once it has).
+    funded_tx_hash: Mapped[str | None] = mapped_column(default=None)
 
     creator: Mapped["User"] = relationship(
         foreign_keys=[creator_address], back_populates="created_escrows"
@@ -201,6 +210,15 @@ class Dispute(Base):
     chain_status: Mapped[ChainStatus] = mapped_column(default=ChainStatus.LEGACY_OFFCHAIN)
     on_chain_raw_status: Mapped[str | None] = mapped_column(default=None)
     on_chain_tx_hash: Mapped[str | None] = mapped_column(default=None)
+    # The tx hash of the NuanceDisputeCourt.adjudicate_dispute call
+    # services/genlayer_indexer.py's trigger_pending_adjudications sent for
+    # this dispute, once on_chain_dispute_id is known — a SEPARATE
+    # transaction from on_chain_tx_hash above (which tracks file_dispute,
+    # not adjudicate_dispute). Set only once a send actually succeeds, so
+    # the indexer never re-sends it every poll cycle; a failed *send*
+    # (network/rate-limit, no tx hash back) leaves this null and is safe
+    # to retry next cycle, since nothing was actually submitted.
+    adjudication_tx_hash: Mapped[str | None] = mapped_column(default=None)
 
     escrow: Mapped["Escrow"] = relationship(back_populates="disputes")
     opener: Mapped["User"] = relationship(foreign_keys=[opened_by_address])
@@ -269,6 +287,17 @@ class Prediction(Base):
     chain_status: Mapped[ChainStatus] = mapped_column(default=ChainStatus.LEGACY_OFFCHAIN)
     on_chain_raw_status: Mapped[str | None] = mapped_column(default=None)
     on_chain_tx_hash: Mapped[str | None] = mapped_column(default=None)
+    # The tx hash of the NuancePredictionMarket.resolve_market call
+    # services/genlayer_indexer.py's trigger_pending_market_resolutions
+    # sent for this market, once its cutoff has passed — a separate
+    # transaction from on_chain_tx_hash above (which has no single canonical
+    # meaning for a market anyway, since many different bettors' own
+    # transactions could occupy it; resolution is the one transaction this
+    # app itself ever tracks for a market as a whole). Set only once a
+    # send actually succeeds, so it's never re-sent every poll cycle; a
+    # failed *send* (network/rate-limit, no tx hash back) leaves this null
+    # and is safe to retry next cycle.
+    resolution_trigger_tx_hash: Mapped[str | None] = mapped_column(default=None)
 
     positions: Mapped[list["PredictionPosition"]] = relationship(
         back_populates="prediction",
