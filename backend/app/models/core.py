@@ -136,6 +136,28 @@ class Milestone(Base):
     # The most recent submit_deliverable/release_milestone tx hash the
     # indexer is (or was) tracking for this milestone.
     on_chain_tx_hash: Mapped[str | None] = mapped_column(default=None)
+    # The validator committee's own stated reasoning for approving/disputing
+    # this milestone — real GenVM validator text for an on-chain milestone
+    # (read back via get_milestone's own `reasoning` field and applied by
+    # services/consensus.py's _apply_verdict_to_state), or the off-chain
+    # ensemble's text for a legacy milestone. FIXED 2026-09-08: this column
+    # didn't exist before — _apply_verdict_to_state received the real
+    # reasoning text every time but had nowhere to put it for a Milestone
+    # (unlike Dispute.ruling, which always stored it), so it was silently
+    # discarded; a user could only find it by reading the raw chain
+    # explorer directly, which is exactly what happened during a live test.
+    reasoning: Mapped[str | None] = mapped_column(Text, default=None)
+    # Set once POST /escrows/{id}/release has actually paid this milestone
+    # out — added 2026-09-08, another real gap found live: release_milestone
+    # only ever re-set status_key to APPROVED (a no-op re-assignment, since
+    # consensus already set it there the moment the verdict landed) with
+    # nothing distinguishing "approved, payout pending" from "approved,
+    # already paid" — so the "Release Payment" button had no way to know
+    # it had already been clicked and kept reappearing indefinitely.
+    # Mirrors the on-chain contract's own Milestone.released bool
+    # (contracts/nuance_escrow.py), which this off-chain path never had an
+    # equivalent for.
+    released_at: Mapped[datetime | None] = mapped_column(default=None)
 
     escrow: Mapped["Escrow"] = relationship(back_populates="milestones")
     submissions: Mapped[list["DeliverableSubmission"]] = relationship(

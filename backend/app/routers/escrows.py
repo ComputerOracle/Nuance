@@ -8,6 +8,8 @@ milestone to IN_REVIEW so that prompt has a real row to pick up.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,9 +89,30 @@ async def _get_escrow_for_update_or_404(escrow_id: int, db: AsyncSession) -> Esc
 def _active_milestone(escrow: Escrow) -> Milestone | None:
     """First not-yet-APPROVED milestone by order_index — a stand-in for the
     frontend's `activeMilestoneIndex` (status.ts) until that logic is
-    ported server-side verbatim."""
+    ported server-side verbatim. Deliberately EXCLUDES an approved
+    milestone — right for "what's still open to submit a deliverable
+    against," but NOT for release_milestone below, which needs the
+    opposite (an approved milestone specifically) — see
+    _releasable_milestone."""
     for milestone in escrow.milestones:
         if milestone.status_key != StatusKey.APPROVED:
+            return milestone
+    return None
+
+
+def _releasable_milestone(escrow: Escrow) -> Milestone | None:
+    """First milestone that's APPROVED and not yet released, by
+    order_index. FIXED 2026-09-08 — release_milestone used to reuse
+    _active_milestone for this, which explicitly EXCLUDES an approved
+    milestone (see that function's own docstring) — meaning
+    release_milestone 400'd on literally every real, consensus-approved
+    milestone; the only way it ever returned 200 was calling it on a
+    milestone that had never actually been approved by consensus at all
+    (confirmed live: a fresh PENDING milestone released "successfully"
+    with zero verdict ever having run). This is the real fix, not the
+    same lookup repurposed."""
+    for milestone in escrow.milestones:
+        if milestone.status_key == StatusKey.APPROVED and milestone.released_at is None:
             return milestone
     return None
 
@@ -580,17 +603,15 @@ async def release_milestone(
             detail="Only the escrow creator can release milestone funds.",
         )
 
-    milestone = _active_milestone(escrow)
+    milestone = _releasable_milestone(escrow)
     if milestone is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This escrow has no active milestone to release.",
+            detail="No approved, unreleased milestone to release — either nothing has "
+            "been approved by consensus yet, or it's already been released.",
         )
 
-    milestone.status_key = StatusKey.APPROVED
-    if all(m.status_key == StatusKey.APPROVED for m in escrow.milestones):
-        escrow.status_key = StatusKey.APPROVED
-
+    milestone.released_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
     return escrow

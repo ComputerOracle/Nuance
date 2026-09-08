@@ -91,7 +91,12 @@ PERSONA_PRIMARY_PROVIDER: dict[str, str] = {
 }
 
 PROVIDER_MODELS: dict[str, str] = {
-    "gemini": "gemini-2.5-flash",
+    # "gemini-2.5-flash" retired 2026-09-08 (Google's own 404: "no longer
+    # available to new users") — confirmed live that both -3.5 and -3.6
+    # flash work now; using -3.5 to match services/market_generator.py's
+    # own EXTRACTION_MODEL, already proven live elsewhere in this exact
+    # codebase, rather than introduce a third distinct model name.
+    "gemini": "gemini-3.5-flash",
     "anthropic": "claude-3-5-sonnet-latest",
     "openai": "gpt-4o-mini",
 }
@@ -253,7 +258,17 @@ async def _call_anthropic(
     response = await client.messages.create(
         model=model,
         max_tokens=512,
-        temperature=0.5,
+        # `temperature` removed 2026-09-08 — confirmed by inspecting the
+        # actually-installed anthropic==1.0.0 SDK's real
+        # AsyncMessages.create signature directly: it has no such
+        # parameter at all (a real API surface change, not a typo on our
+        # end). Passing it made every Anthropic call fail outright,
+        # silently falling every dispute/milestone judgment through to
+        # the offline heuristic fallback instead — found live, tracing a
+        # ruling that claimed to be real GenVM consensus but was actually
+        # keyword-matching. Re-check this SDK's docs for the current
+        # equivalent (if any) before assuming none exists, if
+        # determinism control is ever actually needed here.
         system=_persona_system_prompt(name, subject_type),
         messages=[{"role": "user", "content": _build_user_prompt(context, submission_text)}],
         tools=[_ANTHROPIC_VERDICT_TOOL],
@@ -688,6 +703,8 @@ async def _apply_verdict_to_state(
         milestone = result.scalar_one_or_none()
         if milestone is None:
             return
+
+        milestone.reasoning = verdict_reasoning
 
         if verdict_approved:
             milestone.status_key = StatusKey.APPROVED

@@ -21,6 +21,10 @@ export function EscrowDetailView({
   escalateDisabled = false,
   fundingDisabled = false,
   cancellingDisabled = false,
+  connectedWalletAddress = null,
+  milestoneReleased = false,
+  existingDisputeId = null,
+  onViewExistingDispute,
 }: {
   escrow: Escrow;
   stage: number;
@@ -47,10 +51,45 @@ export function EscrowDetailView({
   fundingDisabled?: boolean;
   // True while the real cancel_escrow transaction is mid-flight.
   cancellingDisabled?: boolean;
+  // The currently connected wallet, or null if none — used ONLY to hide
+  // Fund/Cancel from a wallet that obviously isn't the creator (both are
+  // creator-gated contract-side). Added 2026-09-08 after a live test
+  // showed "Fund Escrow" staying visible and signable from the
+  // counterparty's own wallet — nuance-app.tsx's fundEscrow/cancelEscrow
+  // handlers now also refuse this server-side-equivalent case
+  // client-side before ever sending a transaction (critical for funding
+  // specifically: GenVM doesn't refund a payable call's value on
+  // revert), but hiding the button too avoids the confusing prompt
+  // altogether rather than just rejecting it after the wallet popup.
+  connectedWalletAddress?: string | null;
+  // True once the active milestone's payout has actually happened — see
+  // types.ts's Milestone.releasedAt. Found live, same session as the
+  // wallet-check fix above: "Release Payment" kept showing (and kept
+  // genuinely failing — see routers/escrows.py's _releasable_milestone
+  // fix) after a real release had already gone through, since neither
+  // the verdict nor the milestone's own statusKey change once released.
+  milestoneReleased?: boolean;
+  // Set once a Dispute already exists for this escrow (any status —
+  // even a resolved one still means "already escalated once," not
+  // "escalate again"). Found the same way: clicking "Escalate to
+  // Internet Court" a second time for the same disagreement would file
+  // a genuinely duplicate on-chain/off-chain dispute.
+  existingDisputeId?: number | null;
+  // Present whenever existingDisputeId is — jumps straight to that
+  // dispute room instead of offering to file a new one.
+  onViewExistingDispute?: () => void;
 }) {
+  const isConnectedAsCreator =
+    connectedWalletAddress != null &&
+    connectedWalletAddress.toLowerCase() === escrow.creatorAddress.toLowerCase();
   const activeIdx = activeMilestoneIndex(escrow.milestones);
+  const activeMilestone = escrow.milestones[activeIdx];
+  // Same fix as ChainStatusBadge's own contractLinked prop: a submission
+  // not yet made still routes on-chain if the milestone is actually
+  // linked — chainStatus alone only reflects what's already happened.
   const activeMilestoneOnChain =
-    (escrow.milestones[activeIdx]?.chainStatus ?? LEGACY_OFFCHAIN) !== LEGACY_OFFCHAIN;
+    (activeMilestone?.chainStatus ?? LEGACY_OFFCHAIN) !== LEGACY_OFFCHAIN ||
+    (Boolean(escrow.contractAddress) && activeMilestone?.onChainIndex != null);
 
   const consensusVerdict: ConsensusVerdict | null = verdict
     ? {
@@ -63,11 +102,22 @@ export function EscrowDetailView({
         confidence: verdict.confidence,
         reasoning: verdict.reasoning,
         actions: verdict.approved ? (
+          milestoneReleased ? (
+            <div className="text-xs font-medium text-fg-meta">✓ Payment already released.</div>
+          ) : (
+            <button
+              onClick={onReleasePayment}
+              className="cursor-pointer rounded-lg border-none bg-positive px-4 py-2.5 text-[13px] font-semibold text-positive-fg transition-[filter] hover:brightness-110"
+            >
+              Release Payment
+            </button>
+          )
+        ) : existingDisputeId != null ? (
           <button
-            onClick={onReleasePayment}
-            className="cursor-pointer rounded-lg border-none bg-positive px-4 py-2.5 text-[13px] font-semibold text-positive-fg transition-[filter] hover:brightness-110"
+            onClick={onViewExistingDispute}
+            className="cursor-pointer rounded-lg border-none bg-negative px-4 py-2.5 text-[13px] font-semibold text-white transition-[filter] hover:brightness-110"
           >
-            Release Payment
+            View Dispute Room #{existingDisputeId}
           </button>
         ) : (
           <button
@@ -98,7 +148,11 @@ export function EscrowDetailView({
   // genlayer_deploy.py's _gen_to_wei/_bigint_arg). Escrow #3 specifically
   // was redeployed under the corrected contract as part of this fix; its
   // original broken contract (and the 1 GEN stuck in it) stays abandoned.
-  const showFundCard = Boolean(escrow.contractAddress) && !escrow.fundedTxHash;
+  // isConnectedAsCreator added 2026-09-08 — see that flag's own comment
+  // above for why (a live test found this staying visible/signable from
+  // the wrong wallet).
+  const showFundCard =
+    Boolean(escrow.contractAddress) && !escrow.fundedTxHash && isConnectedAsCreator;
 
   // Client-side pre-check only, matching cancel_escrow's own on-chain
   // condition (see that method's docstring on why a deadline gate isn't
@@ -108,7 +162,8 @@ export function EscrowDetailView({
   const canCancel =
     Boolean(escrow.contractAddress) &&
     escrow.statusKey !== "cancelled" &&
-    !escrow.milestones.some((m) => m.statusKey === "approved");
+    !escrow.milestones.some((m) => m.statusKey === "approved") &&
+    isConnectedAsCreator;
 
   return (
     <div style={{ animation: "fadeUp 0.3s ease" }}>
@@ -208,26 +263,46 @@ export function EscrowDetailView({
                   <ChainStatusBadge
                     chainStatus={m.chainStatus ?? LEGACY_OFFCHAIN}
                     txHash={m.onChainTxHash}
+                    contractLinked={Boolean(escrow.contractAddress) && m.onChainIndex != null}
                   />
                 </div>
 
                 {m.statusKey === "approved" && (
                   <div className="mt-3 rounded-lg border border-positive/30 bg-positive/10 px-3 py-2 text-xs font-medium text-positive-text">
-                    ✓ Milestone deliverable approved by{" "}
-                    {(m.chainStatus ?? LEGACY_OFFCHAIN) === LEGACY_OFFCHAIN
-                      ? "Nuance's off-chain AI consensus"
-                      : "real GenVM validator consensus on Bradbury"}
-                    .
+                    <div>
+                      ✓ Milestone deliverable approved by{" "}
+                      {(m.chainStatus ?? LEGACY_OFFCHAIN) === LEGACY_OFFCHAIN
+                        ? "Nuance's off-chain AI consensus"
+                        : "real GenVM validator consensus on Bradbury"}
+                      .
+                    </div>
+                    {/* Real validator reasoning — added 2026-09-08. Used
+                        to be discarded entirely for on-chain milestones
+                        (see models/core.py's Milestone.reasoning), so
+                        this text was only ever visible by reading the
+                        raw chain explorer directly. */}
+                    {m.reasoning && (
+                      <div className="mt-1.5 border-t border-positive/20 pt-1.5 font-normal text-fg-bright">
+                        {m.reasoning}
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {m.statusKey === "disputed" && (
                   <div className="mt-3 rounded-lg border border-negative/30 bg-negative/10 px-3 py-2 text-xs font-medium text-negative-text">
-                    ⚠ Milestone deliverable disputed by{" "}
-                    {(m.chainStatus ?? LEGACY_OFFCHAIN) === LEGACY_OFFCHAIN
-                      ? "Nuance's off-chain AI consensus"
-                      : "real GenVM validator consensus on Bradbury"}
-                    .
+                    <div>
+                      ⚠ Milestone deliverable disputed by{" "}
+                      {(m.chainStatus ?? LEGACY_OFFCHAIN) === LEGACY_OFFCHAIN
+                        ? "Nuance's off-chain AI consensus"
+                        : "real GenVM validator consensus on Bradbury"}
+                      .
+                    </div>
+                    {m.reasoning && (
+                      <div className="mt-1.5 border-t border-negative/20 pt-1.5 font-normal text-fg-bright">
+                        {m.reasoning}
+                      </div>
+                    )}
                   </div>
                 )}
 

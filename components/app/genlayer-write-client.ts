@@ -146,6 +146,43 @@ export async function fileDisputeOnChain(args: FileDisputeOnChainArgs): Promise<
   return String(txHash);
 }
 
+export interface AddEvidenceOnChainArgs {
+  walletAddress: string;
+  provider: Eip1193Provider;
+  // Same NuanceDisputeCourt shared-registry address as FileDisputeOnChainArgs.
+  disputeCourtAddress: `0x${string}`;
+  // The contract's own numeric dispute id — NOT this app's local Dispute.id.
+  // Only resolvable once services/genlayer_indexer.py's
+  // resolve_pending_dispute_ids has matched the filing tx (see Dispute.
+  // onChainDisputeId in types.ts) — evidence can't be added on-chain
+  // before that resolves, since there's no id to call add_evidence with.
+  onChainDisputeId: number;
+  evidenceUrl: string;
+}
+
+/** Signs and sends a real NuanceDisputeCourt.add_evidence transaction —
+ * added 2026-09-08, the actual fix for a real bug: before this existed,
+ * submitting evidence for ANY dispute (on-chain or not) always went
+ * through the off-chain submit_evidence path, silently routing an
+ * on-chain-filed dispute's ruling through Nuance's own AI review instead
+ * of real GenVM validators (see that contract method's own docstring for
+ * the full account). Either the claimant or respondent may call this,
+ * and only while the dispute is still open — enforced contract-side, not
+ * duplicated here. Not payable — a rejected call costs only gas, none of
+ * the fund-loss risk fund_escrow's own sender check carries. */
+export async function addEvidenceOnChain(args: AddEvidenceOnChainArgs): Promise<string> {
+  const client = createWriteClient(args.walletAddress, args.provider);
+
+  const txHash = await client.writeContract({
+    address: args.disputeCourtAddress,
+    functionName: "add_evidence",
+    args: [args.onChainDisputeId, args.evidenceUrl] as never,
+    value: ZERO_VALUE,
+  });
+
+  return String(txHash);
+}
+
 export interface BetOnChainArgs {
   walletAddress: string;
   provider: Eip1193Provider;

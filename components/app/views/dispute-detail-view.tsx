@@ -12,26 +12,41 @@ export function DisputeDetailView({
   verdict,
   currentWalletAddress,
   onBack,
-  onEvidenceSubmitted,
-  onEnforceRuling,
+  evidenceDesc,
+  evidenceLink,
+  onEvidenceDescChange,
+  onEvidenceLinkChange,
+  onSubmitEvidence,
+  submittingEvidence = false,
 }: {
   dispute: Dispute;
   stage: number;
   verdict: DisputeVerdict | null;
   currentWalletAddress?: string | null;
   onBack: () => void;
-  onEvidenceSubmitted?: (jobId: string) => void;
-  onEnforceRuling: () => void;
+  // Lifted up to nuance-app.tsx 2026-09-08 (matching escrows' own
+  // deliverableText pattern) — this view used to own this form's state
+  // AND call api.submitEvidence directly, which is exactly why
+  // submitting evidence could never route on-chain: only the parent has
+  // wallet/contract access to actually do that.
+  evidenceDesc: string;
+  evidenceLink: string;
+  onEvidenceDescChange: (v: string) => void;
+  onEvidenceLinkChange: (v: string) => void;
+  onSubmitEvidence: () => void;
+  submittingEvidence?: boolean;
 }) {
   const [messages, setMessages] = useState<DisputeMessage[]>([]);
   const [evidenceList, setEvidenceList] = useState<DisputeEvidence[]>([]);
   const [chatInput, setChatInput] = useState("");
-  const [evidenceDesc, setEvidenceDesc] = useState("");
-  const [evidenceLink, setEvidenceLink] = useState("");
   const [sendingMsg, setSendingMsg] = useState(false);
-  const [submittingEv, setSubmittingEv] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  // Same fix as ChainStatusBadge's own contractLinked prop elsewhere —
+  // an on-chain-filed dispute needs a real link for evidence (the
+  // contract's add_evidence only takes a URL), even before its
+  // onChainDisputeId has resolved.
+  const isOnChainFiled = (dispute.chainStatus ?? LEGACY_OFFCHAIN) !== LEGACY_OFFCHAIN;
 
   // Poll messages every 3s
   useEffect(() => {
@@ -128,40 +143,6 @@ export function DisputeDetailView({
     }
   };
 
-  const handleSubmitEvidence = async () => {
-    if (!evidenceDesc.trim() || submittingEv) return;
-    setSubmittingEv(true);
-    setErrorBanner(null);
-    try {
-      const res = await api.submitEvidence(
-        dispute.id,
-        evidenceDesc.trim(),
-        evidenceLink.trim() || null
-      );
-      setEvidenceList((prev) => [
-        ...prev,
-        {
-          id: res.id,
-          disputeId: res.dispute_id,
-          submitterAddress: res.submitter_address,
-          description: res.description,
-          link: res.link,
-          createdAt: res.created_at,
-        },
-      ]);
-      setEvidenceDesc("");
-      setEvidenceLink("");
-      if (res.consensus_job_id && onEvidenceSubmitted) {
-        onEvidenceSubmitted(String(res.consensus_job_id));
-      }
-    } catch (err) {
-      setErrorBanner(
-        err instanceof Error ? err.message : "Failed to submit evidence. Connect your wallet."
-      );
-    } finally {
-      setSubmittingEv(false);
-    }
-  };
 
   const consensusVerdict: ConsensusVerdict | null = verdict
     ? {
@@ -170,17 +151,22 @@ export function DisputeDetailView({
         panelBgClass: verdict.approved ? "bg-positive/10" : "bg-negative/10",
         panelBorderClass: verdict.approved ? "border-positive/30" : "border-negative/30",
         reasoning: verdict.reasoning,
+        // No "Enforce Ruling" button — removed 2026-09-08. It's not a
+        // simplification, it was dead: services/consensus.py's
+        // _apply_verdict_to_state already records the ruling and unlocks/
+        // locks the linked milestone the instant a real verdict lands
+        // (off-chain consensus job or on-chain adjudicate_dispute, same
+        // function either way) — by the time a verdict is even visible
+        // here, POST /disputes/{id}/enforce has nothing left to do and
+        // always 400s ("already enforced"), confirmed directly against
+        // its own test (test_idempotency.py seeds a dispute bypassing
+        // the real flow specifically so a first enforce call has
+        // anything to succeed against). This note replaces the button —
+        // nothing to click, there was never really something to do.
         actions: (
-          <button
-            onClick={onEnforceRuling}
-            className={`cursor-pointer rounded-lg border-none px-4 py-2.5 text-[13px] font-semibold transition-[filter] hover:brightness-110 ${
-              verdict.approved
-                ? "bg-positive text-positive-fg"
-                : "bg-negative text-white"
-            }`}
-          >
-            Enforce Ruling On-Chain
-          </button>
+          <div className="text-xs font-medium text-fg-meta">
+            ✓ Ruling recorded automatically — no further action needed.
+          </div>
         ),
       }
     : null;
@@ -395,26 +381,48 @@ export function DisputeDetailView({
               ) : (
                 <>
                   <div className="mb-2 text-xs font-medium text-fg-dim-2">
-                    Submit New Evidence & Request AI Adjudication
+                    {isOnChainFiled
+                      ? "Add Evidence — Real GenVM Validators Will Fetch This URL"
+                      : "Submit New Evidence & Request AI Adjudication"}
                   </div>
-                  <textarea
-                    value={evidenceDesc}
-                    onChange={(e) => setEvidenceDesc(e.target.value)}
-                    placeholder="Describe transaction logs, bug diffs, contract specs, or deliverables…"
-                    className="min-h-[80px] w-full resize-y rounded-lg border border-border-4 bg-surface-2 p-3 font-sans text-xs text-fg placeholder:text-fg-faint-2 focus:outline-none focus:border-border-6"
-                  />
+                  {/* On-chain disputes: the contract's own add_evidence only
+                      ever takes a URL (see that method's own docstring) —
+                      a free-text description has nowhere to go on-chain and
+                      would never actually reach a validator, so it's not
+                      offered here at all rather than silently discarded. */}
+                  {!isOnChainFiled && (
+                    <textarea
+                      value={evidenceDesc}
+                      onChange={(e) => onEvidenceDescChange(e.target.value)}
+                      placeholder="Describe transaction logs, bug diffs, contract specs, or deliverables…"
+                      className="min-h-[80px] w-full resize-y rounded-lg border border-border-4 bg-surface-2 p-3 font-sans text-xs text-fg placeholder:text-fg-faint-2 focus:outline-none focus:border-border-6"
+                    />
+                  )}
                   <input
                     value={evidenceLink}
-                    onChange={(e) => setEvidenceLink(e.target.value)}
-                    placeholder="Optional link (e.g. GitHub issue, PR, Figma URL, transaction hash)"
-                    className="mt-2 w-full rounded-lg border border-border-4 bg-surface-2 px-3 py-2 font-mono text-xs text-fg placeholder:text-fg-faint-2 focus:outline-none focus:border-border-6"
+                    onChange={(e) => onEvidenceLinkChange(e.target.value)}
+                    placeholder={
+                      isOnChainFiled
+                        ? "Evidence URL — required, this is what validators actually fetch"
+                        : "Optional link (e.g. GitHub issue, PR, Figma URL, transaction hash)"
+                    }
+                    className={`w-full rounded-lg border border-border-4 bg-surface-2 px-3 py-2 font-mono text-xs text-fg placeholder:text-fg-faint-2 focus:outline-none focus:border-border-6 ${isOnChainFiled ? "" : "mt-2"}`}
                   />
                   <button
-                    onClick={handleSubmitEvidence}
-                    disabled={!evidenceDesc.trim() || submittingEv}
+                    onClick={onSubmitEvidence}
+                    disabled={
+                      (isOnChainFiled ? !evidenceLink.trim() : !evidenceDesc.trim()) ||
+                      submittingEvidence
+                    }
                     className="mt-3 cursor-pointer rounded-lg border border-border-6 bg-chip-hover px-4 py-2.5 text-xs font-semibold transition-colors hover:bg-chip-hover-2 disabled:cursor-default disabled:opacity-50"
                   >
-                    {submittingEv ? "Submitting to Validators…" : "Submit Evidence & Deliberate"}
+                    {submittingEvidence
+                      ? isOnChainFiled
+                        ? "Signing & Sending On-Chain…"
+                        : "Submitting to Validators…"
+                      : isOnChainFiled
+                        ? "Add Evidence On-Chain"
+                        : "Submit Evidence & Deliberate"}
                   </button>
                 </>
               )}

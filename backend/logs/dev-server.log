@@ -1,0 +1,776 @@
+INFO:     Will watch for changes in these directories: ['/home/computeroracle/Desktop/Nuance/backend']
+INFO:     Uvicorn running on http://0.0.0.0:8010 (Press CTRL+C to quit)
+INFO:     Started reloader process [403552] using WatchFiles
+INFO:     Started server process [403554]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:49686 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49690 - "GET /predictions HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'app/models/core.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [403554]
+INFO:     Started server process [403891]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+genlayer_indexer: poll cycle failed
+Traceback (most recent call last):
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 180, in execute
+    self._adapt_connection._handle_exception(error)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 340, in _handle_exception
+    raise error
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 162, in execute
+    self.await_(_cursor.execute(operation, parameters))
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/cursor.py", line 40, in execute
+    await self._execute(self._cursor.execute, sql, parameters)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/cursor.py", line 32, in _execute
+    return await self._conn._execute(fn, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/core.py", line 122, in _execute
+    return await future
+           ^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/core.py", line 105, in run
+    result = function()
+             ^^^^^^^^^^
+sqlite3.OperationalError: no such column: milestones.released_at
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/computeroracle/Desktop/Nuance/backend/app/services/genlayer_indexer.py", line 710, in run_forever
+    await run_once(db)
+  File "/home/computeroracle/Desktop/Nuance/backend/app/services/genlayer_indexer.py", line 630, in run_once
+    escrows, disputes, predictions = await _load_linked_rows(db)
+                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/app/services/genlayer_indexer.py", line 120, in _load_linked_rows
+    await db.execute(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/ext/asyncio/session.py", line 449, in execute
+    result = await greenlet_spawn(
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 201, in greenlet_spawn
+    result = context.throw(*sys.exc_info())
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/context.py", line 309, in orm_execute_statement
+    return cls.orm_setup_cursor_result(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/context.py", line 616, in orm_setup_cursor_result
+    return loading.instances(result, querycontext)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/loading.py", line 262, in instances
+    _prebuffered = list(chunks(None))
+                   ^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/loading.py", line 247, in chunks
+    post_load.invoke(context, path)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/loading.py", line 1564, in invoke
+    loader(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/strategies.py", line 3338, in _load_for_path
+    self._load_via_parent(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/strategies.py", line 3414, in _load_via_parent
+    context.session.execute(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+             ^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+           ^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 180, in execute
+    self._adapt_connection._handle_exception(error)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 340, in _handle_exception
+    raise error
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 162, in execute
+    self.await_(_cursor.execute(operation, parameters))
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/cursor.py", line 40, in execute
+    await self._execute(self._cursor.execute, sql, parameters)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/cursor.py", line 32, in _execute
+    return await self._conn._execute(fn, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/core.py", line 122, in _execute
+    return await future
+           ^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/core.py", line 105, in run
+    result = function()
+             ^^^^^^^^^^
+sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such column: milestones.released_at
+[SQL: SELECT milestones.escrow_id AS milestones_escrow_id, milestones.id AS milestones_id, milestones.name AS milestones_name, milestones.amount AS milestones_amount, milestones.status_key AS milestones_status_key, milestones.criteria AS milestones_criteria, milestones.order_index AS milestones_order_index, milestones.on_chain_index AS milestones_on_chain_index, milestones.chain_status AS milestones_chain_status, milestones.on_chain_raw_status AS milestones_on_chain_raw_status, milestones.on_chain_tx_hash AS milestones_on_chain_tx_hash, milestones.reasoning AS milestones_reasoning, milestones.released_at AS milestones_released_at 
+FROM milestones 
+WHERE milestones.escrow_id IN (?, ?) ORDER BY milestones.order_index]
+[parameters: (3, 4)]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+genlayer_indexer: poll cycle failed
+Traceback (most recent call last):
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 180, in execute
+    self._adapt_connection._handle_exception(error)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 340, in _handle_exception
+    raise error
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 162, in execute
+    self.await_(_cursor.execute(operation, parameters))
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/cursor.py", line 40, in execute
+    await self._execute(self._cursor.execute, sql, parameters)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/cursor.py", line 32, in _execute
+    return await self._conn._execute(fn, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/core.py", line 122, in _execute
+    return await future
+           ^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/core.py", line 105, in run
+    result = function()
+             ^^^^^^^^^^
+sqlite3.OperationalError: no such column: milestones.released_at
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/computeroracle/Desktop/Nuance/backend/app/services/genlayer_indexer.py", line 710, in run_forever
+    await run_once(db)
+  File "/home/computeroracle/Desktop/Nuance/backend/app/services/genlayer_indexer.py", line 630, in run_once
+    escrows, disputes, predictions = await _load_linked_rows(db)
+                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/app/services/genlayer_indexer.py", line 120, in _load_linked_rows
+    await db.execute(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/ext/asyncio/session.py", line 449, in execute
+    result = await greenlet_spawn(
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 201, in greenlet_spawn
+    result = context.throw(*sys.exc_info())
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/context.py", line 309, in orm_execute_statement
+    return cls.orm_setup_cursor_result(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/context.py", line 616, in orm_setup_cursor_result
+    return loading.instances(result, querycontext)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/loading.py", line 262, in instances
+    _prebuffered = list(chunks(None))
+                   ^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/loading.py", line 247, in chunks
+    post_load.invoke(context, path)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/loading.py", line 1564, in invoke
+    loader(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/strategies.py", line 3338, in _load_for_path
+    self._load_via_parent(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/strategies.py", line 3414, in _load_via_parent
+    context.session.execute(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+             ^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+           ^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 180, in execute
+    self._adapt_connection._handle_exception(error)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 340, in _handle_exception
+    raise error
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/dialects/sqlite/aiosqlite.py", line 162, in execute
+    self.await_(_cursor.execute(operation, parameters))
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/cursor.py", line 40, in execute
+    await self._execute(self._cursor.execute, sql, parameters)
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/cursor.py", line 32, in _execute
+    return await self._conn._execute(fn, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/core.py", line 122, in _execute
+    return await future
+           ^^^^^^^^^^^^
+  File "/home/computeroracle/Desktop/Nuance/backend/venv/lib/python3.12/site-packages/aiosqlite/core.py", line 105, in run
+    result = function()
+             ^^^^^^^^^^
+sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such column: milestones.released_at
+[SQL: SELECT milestones.escrow_id AS milestones_escrow_id, milestones.id AS milestones_id, milestones.name AS milestones_name, milestones.amount AS milestones_amount, milestones.status_key AS milestones_status_key, milestones.criteria AS milestones_criteria, milestones.order_index AS milestones_order_index, milestones.on_chain_index AS milestones_on_chain_index, milestones.chain_status AS milestones_chain_status, milestones.on_chain_raw_status AS milestones_on_chain_raw_status, milestones.on_chain_tx_hash AS milestones_on_chain_tx_hash, milestones.reasoning AS milestones_reasoning, milestones.released_at AS milestones_released_at 
+FROM milestones 
+WHERE milestones.escrow_id IN (?, ?) ORDER BY milestones.order_index]
+[parameters: (3, 4)]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+WARNING:  WatchFiles detected changes in 'app/db.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [403891]
+INFO:     Started server process [403983]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'app/routers/escrows.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [403983]
+INFO:     Started server process [404542]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'app/routers/escrows.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [404542]
+INFO:     Started server process [404614]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'app/routers/escrows.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [404614]
+INFO:     Started server process [404785]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'app/schemas/core.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [404785]
+INFO:     Started server process [404980]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'tests/test_idempotency.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [404980]
+INFO:     Started server process [405188]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'tests/test_idempotency.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [405188]
+INFO:     Started server process [405273]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'tests/test_auth_flow.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [405273]
+INFO:     Started server process [405537]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'alembic/versions/eac90fe5a4f5_add_milestones_released_at.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [405537]
+INFO:     Started server process [405731]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'tests/test_auth_flow.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [405731]
+INFO:     Started server process [406125]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:38226 - "OPTIONS /escrows HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38232 - "OPTIONS /escrows HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38226 - "GET /escrows HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38226 - "OPTIONS /disputes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38232 - "GET /escrows HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38226 - "GET /disputes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38226 - "OPTIONS /predictions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38232 - "GET /disputes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38226 - "GET /predictions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38232 - "GET /predictions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38226 - "OPTIONS /proposals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38226 - "GET /proposals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38232 - "GET /proposals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38232 - "OPTIONS /validators HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38232 - "GET /validators HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38226 - "GET /validators HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38226 - "OPTIONS /agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38226 - "GET /agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38232 - "GET /agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38232 - "OPTIONS /auth/nonce HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38232 - "POST /auth/nonce HTTP/1.1" 200 OK
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+INFO:     127.0.0.1:47852 - "OPTIONS /auth/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47852 - "POST /auth/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47852 - "OPTIONS /auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47852 - "GET /auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47862 - "GET /escrows HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47862 - "GET /disputes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47862 - "GET /predictions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47862 - "GET /proposals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47862 - "GET /validators HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47862 - "GET /agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47862 - "OPTIONS /escrows/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47862 - "GET /escrows/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49302 - "OPTIONS /disputes/1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49304 - "OPTIONS /disputes/1/evidence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49302 - "GET /disputes/1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49304 - "GET /disputes/1/evidence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49308 - "GET /disputes/1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49302 - "GET /disputes/1/evidence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49302 - "GET /disputes/1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39830 - "OPTIONS /predictions/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39830 - "GET /predictions/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39830 - "OPTIONS /predictions/3/bet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39830 - "POST /predictions/3/bet HTTP/1.1" 201 Created
+INFO:     127.0.0.1:39422 - "GET /predictions/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39422 - "POST /predictions/3/bet HTTP/1.1" 201 Created
+INFO:     127.0.0.1:39422 - "GET /predictions/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39422 - "POST /predictions/3/bet HTTP/1.1" 201 Created
+WARNING:  WatchFiles detected changes in 'app/schemas/core.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [406125]
+INFO:     Started server process [409941]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'app/schemas/__init__.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [409941]
+INFO:     Started server process [410051]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'app/schemas/__init__.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [410051]
+INFO:     Started server process [410131]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'app/routers/disputes.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [410131]
+INFO:     Started server process [410329]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'app/routers/disputes.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [410329]
+INFO:     Started server process [410400]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'tests/test_submit_evidence_on_chain.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [410400]
+INFO:     Started server process [410584]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'tests/test_submit_evidence_on_chain.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [410584]
+INFO:     Started server process [410695]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'tests/test_submit_evidence_on_chain.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [410695]
+INFO:     Started server process [410770]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+INFO:     127.0.0.1:56426 - "OPTIONS /escrows HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "OPTIONS /escrows HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56426 - "GET /escrows HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56426 - "OPTIONS /disputes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "GET /escrows HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56426 - "GET /disputes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56426 - "GET /disputes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "OPTIONS /predictions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "GET /predictions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56426 - "GET /predictions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "OPTIONS /proposals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "GET /proposals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "OPTIONS /validators HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56426 - "GET /proposals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "GET /validators HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "GET /validators HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "OPTIONS /agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "GET /agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56426 - "GET /agents HTTP/1.1" 200 OK
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+INFO:     127.0.0.1:38190 - "POST /disputes/999/evidence/on-chain HTTP/1.1" 401 Unauthorized
+WARNING:  WatchFiles detected changes in 'app/services/realtime.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [410770]
+INFO:     Started server process [414982]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=3: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_milestone failed for milestone id=4: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3
+get_dispute failed for dispute id=1: An unknown RPC error occurred.
+
+Details: fetch failed
+Version: viem@2.56.3

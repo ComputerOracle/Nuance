@@ -42,6 +42,7 @@ from app.models import (  # noqa: E402
     Dispute,
     Escrow,
     IdempotencyRecord,
+    Milestone,
     Prediction,
     PredictionPosition,
 )
@@ -241,18 +242,34 @@ def test_release_milestone_is_idempotency_protected(client, wallet):
         headers={"Authorization": f"Bearer {token}"},
     )
     escrow_id = create.json()["id"]
+
+    # release_milestone now genuinely requires a real, already-APPROVED
+    # milestone (see routers/escrows.py's _releasable_milestone — fixed
+    # 2026-09-08, this used to be reachable on a bare PENDING milestone
+    # with zero consensus ever having run) — force it the same way a real
+    # verdict would, rather than the request itself pretending to be one.
+    async def _approve_milestone() -> None:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Milestone).where(Milestone.escrow_id == escrow_id))
+            milestone = result.scalars().one()
+            milestone.status_key = StatusKey.APPROVED
+            await db.commit()
+
+    asyncio.run(_approve_milestone())
+
     headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "release-key-1"}
 
     first = client.post(f"/escrows/{escrow_id}/release", headers=headers)
-    assert first.status_code == 200
-    assert first.json()["status_key"] == "approved"
+    assert first.status_code == 200, first.text
+    assert first.json()["milestones"][0]["status_key"] == "approved"
+    assert first.json()["milestones"][0]["released_at"] is not None
 
     second = client.post(f"/escrows/{escrow_id}/release", headers=headers)
     assert second.status_code == 200
     assert second.json() == first.json()  # cached replay, not a real re-execution
 
-    # Without the key, a genuine second release attempt 400s (no more
-    # active milestone) — confirming the cached 200 above really did skip
+    # Without the key, a genuine second release attempt 400s (already
+    # released) — confirming the cached 200 above really did skip
     # re-execution rather than coincidentally succeeding twice.
     third = client.post(f"/escrows/{escrow_id}/release", headers={"Authorization": f"Bearer {token}"})
     assert third.status_code == 400
