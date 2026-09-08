@@ -139,6 +139,31 @@ class Settings(BaseSettings):
     # real deployments.
     auto_deploy_prediction_contracts: bool = True
 
+    # --- used starting the Part 3 hardening prompt (Postgres/Redis/security) ---
+    # Redis pub/sub behind the consensus WebSocket channel (routers/
+    # consensus.py) — see app/services/realtime.py. Optional: if Redis is
+    # unreachable (connection refused, wrong URL, not running at all — the
+    # default local-dev state before `docker compose up redis`), the WS
+    # channel degrades to the same per-connection DB polling it always
+    # did, exactly like every other "no key configured" fallback already
+    # in this codebase (Gemini/Anthropic/OpenAI, market_generator's
+    # offline heuristic) — not a hard dependency.
+    redis_url: str = "redis://localhost:6379/0"
+    # Sybil-resistant governance voting weight (routers/governance.py) —
+    # a wallet's ballot counts more the older its Nuance account is, up to
+    # a cap, rather than every wallet flatly counting 1 regardless of age.
+    # A heuristic placeholder, same spirit as DEFAULT_VOTING_POWER's own
+    # docstring: real GEN-stake-weighted voting is the eventual answer
+    # (ROADMAP.md Part 4), not a wallet-age proxy — but a proxy that costs
+    # a sybil attacker real elapsed time per disposable wallet is a
+    # meaningful deterrent today, where a flat weight of 1 is free to
+    # defeat with N fresh wallets. See routers/governance.py::_voting_power.
+    sybil_vote_weight_max: int = 5
+    # A wallet must be at least this many days old to get any weight above
+    # the 1-point floor every signed-in wallet starts at; each additional
+    # full period of this length adds 1 more point, up to the cap above.
+    sybil_vote_weight_period_days: int = 7
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

@@ -60,6 +60,12 @@ from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.enums import ConsensusStage, ConsensusSubjectType, StatusKey
 from app.models import ConsensusJob, Dispute, DisputeEvidence, DisputeMessage, Escrow, Milestone
+from app.services.prompt_safety import (
+    PROMPT_INJECTION_DEFENSE,
+    fence_user_content,
+    scan_for_injection,
+)
+from app.services.realtime import publish_consensus_update
 
 logger = logging.getLogger(__name__)
 
@@ -119,20 +125,25 @@ def _persona_system_prompt(name: str, subject_type: ConsensusSubjectType) -> str
             "dispute/evidence is justified and supported; vote 'dispute' (reject claimant's claim) "
             "if the counterparty's position is valid or if the claim lacks sufficient evidence. "
             "Provide structured JSON with vote ('approve' or 'dispute'), confidence (0-100), and "
-            "concise reasoning."
+            f"concise reasoning. {PROMPT_INJECTION_DEFENSE}"
         )
     return (
         f"You are {name} ('{title}'), one of three independent AI validators adjudicating a "
         "milestone deliverable for Nuance. Read the criteria and the submitted text, then provide "
         "your independent judgment as structured JSON with vote (approve or dispute), confidence "
-        "(0-100), and reasoning. Be skeptical of vague, unsupported, or evasive submissions."
+        "(0-100), and reasoning. Be skeptical of vague, unsupported, or evasive submissions. "
+        f"{PROMPT_INJECTION_DEFENSE}"
     )
 
 
 def _build_user_prompt(context: str, submission_text: str) -> str:
+    # Both blocks are fenced independently (see prompt_safety.py) — the
+    # context block already carries earlier submissions/evidence in its
+    # own right (services/consensus.py::_build_consensus_context), so it
+    # needs the same "this is data" framing as the latest submission does.
     return (
-        f"{context}\n\n"
-        f"Latest Submission / Evidence:\n{submission_text}\n\n"
+        f"{fence_user_content('case context', context)}\n\n"
+        f"{fence_user_content('latest submission or evidence', submission_text)}\n\n"
         "Evaluate the case based on all the facts, dialogue, and evidence provided above. "
         "Provide your vote ('approve' or 'dispute'), a confidence score (0-100), and brief reasoning."
     )
@@ -545,6 +556,22 @@ async def _latest_job(
     return result.scalar_one_or_none()
 
 
+def _publishable_status(job: ConsensusJob) -> dict:
+    """Same shape as routers/consensus.py's ConsensusStatus response
+    model — the WS handler forwards this dict straight to the browser
+    as-is, so the two must stay in sync (a schema import here would be a
+    circular import: routers imports this module's run_consensus)."""
+    verdict = None
+    if job.verdict_label is not None:
+        verdict = {
+            "label": job.verdict_label,
+            "approved": job.verdict_approved,
+            "confidence": job.verdict_confidence,
+            "reasoning": job.verdict_reasoning,
+        }
+    return {"stage": job.stage, "validator_results": job.validator_results, "verdict": verdict}
+
+
 async def run_consensus(
     subject_type: ConsensusSubjectType, subject_id: int, text_payload: str
 ) -> None:
@@ -562,15 +589,30 @@ async def run_consensus(
                 )
                 return
 
+            flags = scan_for_injection(text_payload)
+            if flags:
+                # Not a rejection (see prompt_safety.py's own docstring on
+                # why a heuristic this cheap shouldn't block on its own) —
+                # a clearly grep-able signal for review, and the fencing
+                # in _build_user_prompt is what actually defends the
+                # prompt regardless of whether this fired.
+                logger.warning(
+                    "Possible prompt injection in consensus job %s (subject_type=%s "
+                    "subject_id=%s): matched %s",
+                    job.id, subject_type, subject_id, flags,
+                )
+
             # Stage 1 — Queued.
             job.stage = int(ConsensusStage.QUEUED)
             await db.commit()
+            await publish_consensus_update(job.id, _publishable_status(job))
 
             context = await _build_consensus_context(db, subject_type, subject_id)
 
             # Stage 2 — Analyzing.
             job.stage = int(ConsensusStage.ANALYZING)
             await db.commit()
+            await publish_consensus_update(job.id, _publishable_status(job))
 
             clients = _build_provider_clients(settings)
             if not clients:
@@ -611,6 +653,7 @@ async def run_consensus(
             job.verdict_reasoning = verdict["verdict_reasoning"]
             job.completed_at = datetime.now(timezone.utc)
             await db.commit()
+            await publish_consensus_update(job.id, _publishable_status(job))
     except Exception:  # noqa: BLE001
         logger.exception(
             "run_consensus crashed for subject_type=%s subject_id=%s", subject_type, subject_id

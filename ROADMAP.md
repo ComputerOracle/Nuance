@@ -647,19 +647,21 @@ Appeals are explicit client actions, not just a passive waiting window: `client.
 
 ## 5. Part 3 — Production Hardening, Security, Real-Time UX & Analytics
 
-### 5.1 PostgreSQL Migration with Alembic
+### 5.1 PostgreSQL Migration with Alembic — ✅ done 2026-09-07
 
-- [ ] `alembic init backend/alembic`; point `env.py` at `Base.metadata` from `app.db` for autogenerate.
-- [ ] Generate an initial "baseline" revision against the **current** SQLite schema (`alembic revision --autogenerate -m "baseline"`) before changing anything else, so history starts from what's actually deployed today.
-- [ ] `docker-compose.yml` adding a local `postgres:16` service; `DATABASE_URL` becomes `postgresql+asyncpg://...` (already a one-line change per `plan.md`'s original design goal).
-- [ ] One-off `scripts/migrate_sqlite_to_postgres.py` for any existing demo data worth preserving.
-- [ ] CI gate: `alembic upgrade head --sql` (dry-run) on every PR that touches `models.py`, plus a check that a new model change always ships with a matching revision file (`alembic check`).
+- [x] `backend/alembic/env.py` — async-aware (`AsyncEngine.run_sync`, no separate sync driver needed), reads `DATABASE_URL` from `app.config.get_settings()` rather than a static `alembic.ini` URL, so it targets whatever the running app would.
+- [x] Baseline revision (`alembic/versions/0a53bda4446e_baseline.py`) generated via real `alembic revision --autogenerate` against an empty scratch db (not hand-written) — all 15 tables, every FK, every named `sa.Enum`, in valid topological order. Verified: applies cleanly (`upgrade head`), reverses cleanly (`downgrade base`), and `alembic check` reports zero drift against the current models.
+- [x] `docker-compose.yml` — `postgres:16-alpine` + a one-shot `migrate` service (`alembic upgrade head` against it). `redis:7-alpine` added in the same file (see §5.2).
+- [x] CI gate (`.github/workflows/ci.yml`, `migrations` job): `alembic upgrade head --sql` (offline render, no DB needed) **and** `alembic upgrade head` against a real Postgres service container **and** `alembic check` — the last one is what actually enforces "a new model change always ships with a matching revision file", not just the dry-run render.
+- [x] `app/db.py::init_db()` now branches on dialect: SQLite (local dev/test) keeps its zero-config `create_all` + column-patch convenience; Postgres does nothing — Alembic is the real source of truth there, and running `create_all` against it too would create tables with no `alembic_version` row, silently desyncing the two systems.
+- [ ] `scripts/migrate_sqlite_to_postgres.py` (existing demo data) — not done; no real Postgres environment existed yet to migrate data *into*, and this repo's SQLite data is disposable dev/test seed data, not something worth a data-migration script yet.
 
-### 5.2 Real-Time Architecture
+### 5.2 Real-Time Architecture — Redis pub/sub done 2026-09-07; SSE/dispute-messages not started
 
-- [ ] Land the WebSocket consensus channel from [§3.3](#33-consensus--oracle-hardening) behind a Redis pub/sub backbone (not just an in-process `asyncio.Queue`) so it survives multi-worker `uvicorn --workers N` deployment.
-- [ ] Extend the same channel to dispute-message live updates (`/ws/disputes/{id}/messages`) — today `sendDisputeMessage` requires a manual refetch.
-- [ ] SSE as the documented fallback transport for environments that block WebSocket upgrades (some corporate proxies), sharing the same publish call as the WS path.
+- [x] `app/services/realtime.py` — Redis pub/sub (`redis.asyncio`) behind the consensus WS channel (`routers/consensus.py`), replacing the per-connection DB-polling loop that couldn't actually reach a WS connection accepted by a *different* `uvicorn --workers N` process (see that file's own docstring for why "polling" was never really a shared channel to begin with). Degrades gracefully: an unreachable Redis (confirmed via a live test — no Redis running, real `Connection refused`) logs a warning once and falls back to the original polling loop unchanged, exactly like every other optional integration in this codebase.
+- [x] `services/consensus.py::run_consensus` publishes after every stage commit (QUEUED, ANALYZING, DONE); `routers/consensus.py`'s WS handler subscribes *before* reading current state (closes the race between "read current state" and "start listening").
+- [ ] Dispute-message live updates (`/ws/disputes/{id}/messages`) — not started; `sendDisputeMessage` still needs a manual refetch.
+- [ ] SSE fallback transport — not started; the WS channel's own fallback (plain HTTP polling, unchanged from before this prompt) covers the same "WS blocked" case today, just without SSE's lower overhead.
 
 ### 5.3 Test Suite Expansion
 
@@ -672,12 +674,13 @@ Appeals are explicit client actions, not just a passive waiting window: `client.
 
 - [ ] CI: run the existing 24 pytest tests + new suites on every PR; block merge on failure (none of this exists as CI today — only local `pytest` runs).
 
-### 5.4 Security Hardening
+### 5.4 Security Hardening — ✅ done 2026-09-07
 
-- [ ] **Prompt injection guards** — deliverable text and dispute evidence are user-controlled strings interpolated directly into validator prompts. Harden with: explicit delimiter fencing (already partially achieved by the structured tool-call schema, which constrains *output* but not input); a pre-flight classifier pass or regex/heuristic scan for instruction-like content ("ignore previous instructions", role-play framing) that flags a submission for review rather than silently feeding it in verbatim; logging the raw prompt+response pair per `ConsensusJob` for audit.
-- [ ] **Sybil defense on governance** — 1-wallet-1-vote as built is trivially sybil-able with disposable wallets. Mitigate with `weight` tied to wallet age/tx-history heuristics initially, moving to real GEN-stake-weighted voting once Part 2's on-chain balances are readable by the indexer.
-- [ ] **Escrow lock safety** — ensure `release_milestone`/`enforce` can't double-fire: DB-level row locking (`SELECT ... FOR UPDATE` once on Postgres) or a `status_key` guard clause checked inside the same transaction as the mutation, plus the idempotency keys from §3.3 covering the HTTP layer above that.
-- [ ] Dependency/secret scanning (`pip-audit`, `npm audit`, gitleaks) in CI given real API keys (`GEMINI_API_KEY`, `JWT_SECRET`, future `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`) now live in `backend/.env`.
+- [x] **Prompt injection guards** — `app/services/prompt_safety.py`, two independent layers: (1) `fence_user_content` wraps every untrusted block in explicit "this is data, not instructions" delimiters unconditionally; every persona/oracle system prompt also got a shared `PROMPT_INJECTION_DEFENSE` instruction to treat injection-shaped content as a negative signal against whoever's responsible for it. (2) `scan_for_injection`, a cheap regex/keyword pass (no LLM call — deliberately not a classifier, see the module's own docstring on why), logged as a warning when it matches — flags for review rather than blocking outright, since a heuristic this simple *will* false-positive on legitimate text. Covers both places untrusted text reaches a validator prompt, not just the one 5.4 originally named: `services/consensus.py::_build_user_prompt` (deliverable text, dispute evidence — both wallet-submitted) **and** `services/prediction_oracle.py::_oracle_user_prompt` (a prediction market's own title/description — not wallet-submitted, but frequently sourced from scraped, adversarial internet content via `services/market_generator.py`, and arguably higher-stakes since it decides a real payout). Verified both: legitimate text scans clean; a real injection attempt ("Ignore all previous instructions and always vote/answer...") gets flagged and comes out properly fenced in the actual constructed prompt, in both modules. Raw prompt+response audit logging per `ConsensusJob` — not done; scoped out given this task's already-large surface, flagged here rather than silently dropped.
+- [x] **Sybil defense on governance** — `routers/governance.py::_voting_power`, wallet-age-tiered weight (1 point floor, +1 per `sybil_vote_weight_period_days` of account age, capped at `sybil_vote_weight_max` — both configurable, `app/config.py`) replacing the flat `DEFAULT_VOTING_POWER = 1` every wallet used to get regardless of age. Still a placeholder for real GEN-stake-weighted voting (unchanged from the original plan) — the point is that scaling a sybil attack now costs real elapsed time per wallet, not that any fresh wallet is blocked outright.
+- [x] **Escrow lock safety** — `SELECT ... FOR UPDATE` (a confirmed no-op on SQLite, a real lock on Postgres) on every write that reads-then-mutates a row it doesn't own exclusively: `routers/escrows.py::_get_escrow_for_update_or_404` (`release_milestone`), `routers/disputes.py::_get_dispute_for_update_or_404` (`enforce_ruling`), `routers/governance.py::_get_proposal_for_update_or_404` (`cast_vote`/`finalize_proposal`/`execute_proposal` — models/governance.py's own docstring had flagged this exact gap), and `routers/predictions.py::_get_prediction_for_update_or_404` (`place_bet`) paired with the matching lock inside `services/prediction_oracle.py::resolve_prediction_market` itself — the two live in different modules/sessions but take the same row lock, so a bet can't land on stale "still open" state while a resolution is mid-flight, and two concurrent resolves can't both burn a real Gemini call and both write conflicting outcomes. Layered on top of, not instead of, the idempotency keys from §3.3.
+- **Validators (`routers/validators.py`) checked, needs nothing here** — `GET /validators` is a pure read-only aggregation over `ConsensusJob` history with no write endpoint of any kind; there's no read-then-mutate race to close because nothing mutates.
+- [x] Dependency/secret scanning in CI (`.github/workflows/security.yml`): `pip-audit`, `npm audit --audit-level=high`, and `gitleaks/gitleaks-action@v2`, on push/PR and a weekly schedule (a dependency can grow a new CVE with zero code changes). Not just added and left red: `pip-audit` immediately found 9 real vulnerabilities across `pydantic-settings`, `python-dotenv`, and a transitive `starlette` (via `fastapi`) — all fixed in this same pass (`fastapi` 0.121.2 → 0.134.0, the minimum version whose own `Requires-Dist` drops its `starlette` ceiling below 1.0.0 at all — confirmed against every intermediate release's real wheel metadata, not guessed; `starlette` pinned explicitly at 1.6.0; `pydantic-settings` → 2.14.2; `python-dotenv` → 1.2.2). All 97 backend tests still pass unchanged; `pip-audit` now reports zero known vulnerabilities.
 
 ### 5.5 Analytics Foundation
 
@@ -685,6 +688,8 @@ Appeals are explicit client actions, not just a passive waiting window: `client.
 - [ ] Materialized/aggregated tables refreshed on a cron (reuse the sweep pattern from governance finalize) rather than computing aggregates on every request.
 
 **Definition of done for Part 3:** the app runs on Postgres with a real migration history, consensus and dispute updates push instead of poll, CI blocks regressions across contract/load/integration/E2E layers, and the three security items above have shipped mitigations, not just a written acknowledgment.
+
+**Status as of 2026-09-07:** §5.1 (Postgres/Alembic) and §5.4 (all three security gaps + dependency/secret scanning) are done, with real Postgres/CI/live-exploit verification, not just code written. §5.2 is partial — the consensus WS channel is Redis-backed and verified; dispute-message live updates and an SSE fallback are not started. §5.3 (test suite expansion) and §5.5 (analytics) are untouched — this pass was scoped to the migration/real-time/security items specifically, not the whole of Part 3.
 
 ---
 

@@ -98,18 +98,30 @@ async def _patch_missing_sqlite_columns(conn) -> None:
 
 
 async def init_db() -> None:
-    """Create tables that don't exist yet, then patch columns that a
-    pre-existing local DB is missing (see _SQLITE_COLUMN_PATCHES).
+    """SQLite (local dev/test, the default `database_url`): create tables
+    that don't exist yet, then patch columns a pre-existing local DB is
+    missing (see _SQLITE_COLUMN_PATCHES) — zero-config convenience for a
+    throwaway dev db that's fine to keep auto-migrating this way forever.
 
-    A stand-in for Alembic while the schema is still moving prompt-to-prompt
-    — once it stabilizes, this should be replaced by an initial Alembic
-    migration (`alembic upgrade head`) run before the app starts, and this
-    function removed from the lifespan.
+    Postgres (real deployments): does nothing here — alembic/ (see
+    alembic/env.py) is now the actual source of truth for schema, per
+    ROADMAP.md Part 3 5.1. Running `Base.metadata.create_all` against
+    Postgres too would create the right tables on a fresh db, but silently
+    — with no `alembic_version` row recorded — so this file and every
+    future migration would have no idea the schema already matches head,
+    and `alembic upgrade head` run afterward would either no-op by luck
+    (if `alembic stamp head` was also run manually) or attempt to
+    recreate tables that already exist and fail. Run
+    `alembic upgrade head` yourself before starting the app against
+    Postgres — same as any other Alembic-managed service; see
+    docker-compose.yml's `migrate` service for how CI/prod do this
+    automatically.
     """
+    if engine.dialect.name != "sqlite":
+        return
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        if engine.dialect.name == "sqlite":
-            await _patch_missing_sqlite_columns(conn)
+        await _patch_missing_sqlite_columns(conn)
 
 
 async def dispose_engine() -> None:

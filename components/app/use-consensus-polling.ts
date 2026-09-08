@@ -55,11 +55,21 @@ export function useConsensusPolling(jobId: string | null): ConsensusPollState {
   if (jobId !== trackedJobId) {
     setTrackedJobId(jobId);
     setState(IDLE_STATE);
-    stageRef.current = 0;
+    // stageRef itself resets in the effect below, not here — mutating a
+    // ref during render (as opposed to state, via setState above, which
+    // is React's own documented "adjust state during render" pattern) is
+    // not render-safe: a render that gets thrown away/re-run (React
+    // Strict Mode, concurrent rendering) would still have mutated it.
   }
 
   useEffect(() => {
     if (jobId == null) return;
+
+    // The one place stageRef actually resets — synchronous with this
+    // effect starting for the new jobId, before anything below can read
+    // it, so there's no window where it holds a stale value from a
+    // previous job.
+    stageRef.current = 0;
 
     let cancelled = false;
     let pollTimeoutId: ReturnType<typeof setTimeout> | undefined;

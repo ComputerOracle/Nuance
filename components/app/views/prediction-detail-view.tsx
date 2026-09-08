@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { Position, Prediction } from "@/components/app/types";
 
 // Mirrors backend/app/schemas/core.py's BET_AMOUNTS_MILLI_GEN exactly —
@@ -58,10 +59,21 @@ export function PredictionDetailView({
     prediction.statusKey?.toUpperCase() === "RESOLVED" ||
     Boolean(prediction.outcome);
 
+  // Date.now() can't be called directly during render — an impure read
+  // (React's purity rule: two renders with the same props/state must
+  // produce the same output). Tracked as state instead, refreshed every
+  // 30s — "matures" up to 30s late is an acceptable cutoff-precision
+  // tradeoff for disabling betting, not a value rendered to the user.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(interval);
+  }, []);
+
   const resTimestamp = prediction.resolutionDate
     ? new Date(prediction.resolutionDate).getTime()
     : 0;
-  const isMatured = resTimestamp > 0 && Date.now() >= resTimestamp;
+  const isMatured = resTimestamp > 0 && now >= resTimestamp;
 
   const noPrice = 100 - prediction.yesPrice;
   const betDisabled =
