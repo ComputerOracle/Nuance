@@ -81,6 +81,8 @@ _SQLITE_COLUMN_PATCHES: dict[str, list[tuple[str, str]]] = {
         ("chain_status", "TEXT DEFAULT 'LEGACY_OFFCHAIN'"),
         ("on_chain_raw_status", "TEXT"),
         ("on_chain_tx_hash", "TEXT"),
+        ("reasoning", "TEXT"),
+        ("released_at", "TIMESTAMP"),
     ],
     "disputes": [
         ("on_chain_dispute_id", "INTEGER"),

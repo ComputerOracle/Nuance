@@ -71,42 +71,45 @@ def _mark_unavailable(job_id: int, action: str, exc: Exception) -> None:
     )
 
 
-async def publish_consensus_update(job_id: int, payload: dict[str, Any]) -> None:
-    """Best-effort, called from services/consensus.py after every stage
-    commit. A publish failure never breaks run_consensus itself — the WS
-    handler's own db-polling fallback still reaches every subscriber
-    eventually (see routers/consensus.py), just on the polling cadence
-    instead of instantly."""
+async def publish_update(channel: str, payload: dict[str, Any]) -> None:
+    """Generic publish, extracted 2026-09-08 from what used to be
+    consensus-only (publish_consensus_update below is now a thin
+    wrapper) so subscribe_dispute_messages could reuse the exact same
+    connection-management/fallback logic instead of duplicating it —
+    same "one failed attempt disables Redis for this process's life"
+    behavior either way (see _mark_unavailable). Best-effort: a publish
+    failure never breaks the caller — every channel here has its own db-
+    polling fallback that still reaches every subscriber eventually,
+    just on a polling cadence instead of instantly."""
     client = _get_client()
     if client is None:
         return
     try:
-        await client.publish(f"consensus:{job_id}", json.dumps(payload))
+        await client.publish(channel, json.dumps(payload))
     except Exception as exc:  # noqa: BLE001 — see module docstring: Redis is optional
-        _mark_unavailable(job_id, "publish", exc)
+        _mark_unavailable(channel, "publish", exc)
 
 
-async def subscribe_consensus_updates(job_id: int) -> AsyncIterator[dict[str, Any]] | None:
-    """None if Redis isn't reachable at all — the caller (the WS handler)
-    falls back to db polling in that case, unchanged from before this
-    file existed. Otherwise an async generator yielding each published
-    payload as it arrives, already subscribed *before* this returns —
-    call this before doing anything else (including your own "what's the
-    current state" read), so no update published between your state read
-    and this call can be missed. The generator unsubscribes and closes
-    its own pubsub connection in a `finally` when the caller stops
-    iterating it (breaks, returns, or the connection drops) — no separate
-    cleanup call needed."""
+async def subscribe_updates(channel: str) -> AsyncIterator[dict[str, Any]] | None:
+    """Generic subscribe — see publish_update's own docstring for why
+    this was extracted. None if Redis isn't reachable at all — the
+    caller falls back to db polling in that case. Otherwise an async
+    generator yielding each published payload as it arrives, already
+    subscribed *before* this returns — call this before doing anything
+    else (including your own "what's the current state" read), so no
+    update published between your state read and this call can be
+    missed. The generator unsubscribes and closes its own pubsub
+    connection in a `finally` when the caller stops iterating it (breaks,
+    returns, or the connection drops) — no separate cleanup call needed."""
     client = _get_client()
     if client is None:
         return None
 
     pubsub = client.pubsub()
-    channel = f"consensus:{job_id}"
     try:
         await pubsub.subscribe(channel)
     except Exception as exc:  # noqa: BLE001
-        _mark_unavailable(job_id, "subscribe", exc)
+        _mark_unavailable(channel, "subscribe", exc)
         with suppress(Exception):
             await pubsub.close()
         return None
@@ -119,7 +122,7 @@ async def subscribe_consensus_updates(job_id: int) -> AsyncIterator[dict[str, An
                 try:
                     yield json.loads(message["data"])
                 except (TypeError, ValueError):
-                    logger.warning("Dropped malformed consensus pub/sub message on %s", channel)
+                    logger.warning("Dropped malformed pub/sub message on %s", channel)
         finally:
             with suppress(Exception):
                 await pubsub.unsubscribe(channel)
@@ -127,3 +130,26 @@ async def subscribe_consensus_updates(job_id: int) -> AsyncIterator[dict[str, An
                 await pubsub.close()
 
     return _iterate()
+
+
+async def publish_consensus_update(job_id: int, payload: dict[str, Any]) -> None:
+    """Called from services/consensus.py after every stage commit."""
+    await publish_update(f"consensus:{job_id}", payload)
+
+
+async def subscribe_consensus_updates(job_id: int) -> AsyncIterator[dict[str, Any]] | None:
+    return await subscribe_updates(f"consensus:{job_id}")
+
+
+async def publish_dispute_message(dispute_id: int, payload: dict[str, Any]) -> None:
+    """Called from routers/disputes.py's send_message, right after commit
+    — added 2026-09-08 (ROADMAP.md Part 3 5.5's "live dispute-message
+    updates over the same realtime channel"). Reuses the exact same
+    Redis connection/fallback machinery the consensus channel already
+    proved live — a distinct channel namespace (`dispute_messages:`, not
+    `consensus:`) is all that's actually different."""
+    await publish_update(f"dispute_messages:{dispute_id}", payload)
+
+
+async def subscribe_dispute_messages(dispute_id: int) -> AsyncIterator[dict[str, Any]] | None:
+    return await subscribe_updates(f"dispute_messages:{dispute_id}")

@@ -31,13 +31,25 @@ export interface Milestone {
   amount: number;
   statusKey: StatusKey;
   criteria: string;
-  // "legacy_offchain" unless this milestone is both inside a
-  // contract-linked escrow AND has actually had a real on-chain
-  // submit_deliverable transaction sent against it — see
-  // components/app/chain-status-badge.tsx, the one place this
-  // distinction is actually shown rather than conflated.
+  // "legacy_offchain" unless this milestone has actually had a real
+  // on-chain submit_deliverable transaction sent against it — that's
+  // NOT the same as whether it's *capable* of one. A milestone can be
+  // fully linked (onChainIndex set) with chainStatus still
+  // "legacy_offchain" simply because nothing's been submitted to it
+  // yet — see components/app/chain-status-badge.tsx, which needs
+  // onChainIndex too so it doesn't call a not-yet-tried milestone
+  // "off-chain" when it's actually on-chain-ready.
   chainStatus?: import("@/lib/chain-status").ChainStatus;
   onChainTxHash?: string | null;
+  // This milestone's index inside its escrow's deployed NuanceEscrow
+  // contract — null until linked. See lib/api.ts's ApiMilestone.on_chain_index.
+  onChainIndex?: number | null;
+  // The validator committee's own stated reasoning. See lib/api.ts's
+  // ApiMilestone.reasoning.
+  reasoning?: string | null;
+  // Set once this milestone has actually been paid out. See lib/api.ts's
+  // ApiMilestone.released_at.
+  releasedAt?: string | null;
 }
 
 export interface Escrow {
@@ -120,6 +132,22 @@ export interface Dispute {
   statusKey: StatusKey;
   chainStatus?: import("@/lib/chain-status").ChainStatus;
   onChainTxHash?: string | null;
+  // NuanceDisputeCourt's own numeric id for this dispute — null until
+  // services/genlayer_indexer.py's resolve_pending_dispute_ids matches
+  // the filing tx (an on-chain-filed dispute can be "linked" per
+  // chainStatus before this resolves). Evidence can't be added on-chain
+  // (genlayer-write-client.ts's addEvidenceOnChain) until this is set —
+  // there's no id to call add_evidence with otherwise.
+  onChainDisputeId?: number | null;
+  // The arbitrator's own stated ruling text — set automatically the
+  // instant a real verdict lands (services/consensus.py's
+  // _apply_verdict_to_state, called from BOTH the off-chain
+  // run_consensus path and the on-chain indexer's adjudicate_dispute
+  // sync). Non-null here means this dispute is already resolved, even
+  // if no live ConsensusJob is being polled for it — see
+  // nuance-app.tsx's disputeVerdict for why that distinction matters.
+  ruling?: string | null;
+  resolvedAt?: string | null;
   messages?: DisputeMessage[];
   evidence?: DisputeEvidence[];
 }

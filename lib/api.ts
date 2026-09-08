@@ -145,6 +145,16 @@ export interface ApiMilestone {
   on_chain_index: number | null;
   chain_status: ApiChainStatus;
   on_chain_tx_hash: string | null;
+  // The validator committee's own stated reasoning for approving/
+  // disputing this milestone — real GenVM validator text once linked
+  // on-chain, or the off-chain ensemble's text otherwise. See
+  // models/core.py's Milestone.reasoning for why this didn't exist
+  // before (silently discarded for on-chain milestones specifically).
+  reasoning: string | null;
+  // Set once this milestone has actually been paid out via POST
+  // /escrows/{id}/release — see models/core.py's Milestone.released_at.
+  // Null means either not yet approved, or approved but not released.
+  released_at: string | null;
 }
 
 export interface ApiEscrow {
@@ -582,6 +592,23 @@ export async function submitEvidence(
   return apiFetch<ApiDisputeEvidence>(`/disputes/${disputeId}/evidence`, {
     method: "POST",
     body: JSON.stringify({ description, link: link || null }),
+  });
+}
+
+// The on-chain counterpart: called after components/app/
+// genlayer-write-client.ts's addEvidenceOnChain has already signed and
+// sent a real NuanceDisputeCourt.add_evidence transaction. Records a
+// local DisputeEvidence row for the UI's evidence list — the real
+// judgment happens via adjudicate_dispute on the contract itself, not
+// anything queued by this call (unlike submitEvidence above).
+export async function submitEvidenceOnChainAck(
+  disputeId: number,
+  txHash: string,
+  evidenceUrl: string
+): Promise<ApiDisputeEvidence> {
+  return apiFetch<ApiDisputeEvidence>(`/disputes/${disputeId}/evidence/on-chain`, {
+    method: "POST",
+    body: JSON.stringify({ tx_hash: txHash, evidence_url: evidenceUrl }),
   });
 }
 

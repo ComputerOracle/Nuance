@@ -24,24 +24,47 @@ function truncateHash(hash: string): string {
 export function ChainStatusBadge({
   chainStatus,
   txHash,
+  // Real bug fixed 2026-09-08, caught live: chainStatus alone conflates
+  // two different things. "legacy_offchain" means BOTH "never linked to
+  // a contract at all" AND "linked, but nothing's been submitted to it
+  // yet" (chain_status only updates once a real transaction lands — see
+  // services/genlayer_indexer.py). Without this flag, a milestone/
+  // dispute/prediction that's fully wired for the real thing but simply
+  // hasn't been tried yet got told to the user as "off-chain," which is
+  // actively wrong: submitting it WILL go through GenVM. Pass true
+  // whenever the underlying contract_address/on_chain_index (or
+  // equivalent) is actually set, regardless of chainStatus.
+  contractLinked = false,
   className = "",
 }: {
   chainStatus: ChainStatus;
   txHash?: string | null;
+  contractLinked?: boolean;
   className?: string;
 }) {
   const meta = chainStatusMeta(chainStatus);
   const isOnChain = chainStatus !== LEGACY_OFFCHAIN;
+  const isReadyButUntried = !isOnChain && contractLinked;
 
   return (
     <div className={`inline-flex flex-col gap-1 ${className}`}>
       <div
-        className={`inline-flex w-fit items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide ${TONE_CLASSES[meta.tone]}`}
-        title={meta.detail}
+        className={`inline-flex w-fit items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide ${
+          isReadyButUntried ? TONE_CLASSES.review : TONE_CLASSES[meta.tone]
+        }`}
+        title={
+          isReadyButUntried
+            ? "Linked to a real deployed contract — the next action here will be a real on-chain transaction, judged by real GenVM validators. Nothing's been submitted to it yet."
+            : meta.detail
+        }
       >
-        <span>{isOnChain ? "⛓" : "🗄"}</span>
+        <span>{isOnChain || isReadyButUntried ? "⛓" : "🗄"}</span>
         <span>
-          {isOnChain ? "On-Chain (GenLayer Bradbury)" : "Legacy Off-Chain (Demo/Cached)"}
+          {isOnChain
+            ? "On-Chain (GenLayer Bradbury)"
+            : isReadyButUntried
+              ? "On-Chain Ready (not yet submitted)"
+              : "Legacy Off-Chain (Demo/Cached)"}
         </span>
         {isOnChain && <span className="opacity-70">· {meta.label}</span>}
       </div>

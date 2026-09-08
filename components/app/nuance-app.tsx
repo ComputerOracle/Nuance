@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Sidebar } from "@/components/app/sidebar";
 import { WalletModal } from "@/components/app/wallet-modal";
 import { DashboardView } from "@/components/app/views/dashboard-view";
@@ -16,7 +16,7 @@ import { AgentsView } from "@/components/app/views/agents-view";
 import { SettingsView } from "@/components/app/views/settings-view";
 import { useWalletConnection } from "@/components/app/use-wallet-connection";
 import { useConsensusPolling } from "@/components/app/use-consensus-polling";
-import { formatAddress } from "@/components/app/status";
+import { activeMilestoneIndex, formatAddress } from "@/components/app/status";
 import type { Eip1193Provider } from "@/components/app/eip1193";
 import {
   escrowContractAddress,
@@ -27,6 +27,7 @@ import {
 import {
   submitDeliverableOnChain,
   fileDisputeOnChain,
+  addEvidenceOnChain,
   betOnChain,
   resolveMarketOnChain,
   claimWinningsOnChain,
@@ -62,6 +63,9 @@ function mapMilestone(m: ApiMilestone): Milestone {
     criteria: m.criteria,
     chainStatus: m.chain_status,
     onChainTxHash: m.on_chain_tx_hash,
+    onChainIndex: m.on_chain_index,
+    reasoning: m.reasoning,
+    releasedAt: m.released_at,
   };
 }
 
@@ -97,6 +101,9 @@ function mapDispute(d: ApiDispute, escrows: Escrow[]): Dispute {
     statusKey: d.status_key,
     chainStatus: d.chain_status,
     onChainTxHash: d.on_chain_tx_hash,
+    onChainDisputeId: d.on_chain_dispute_id,
+    ruling: d.ruling,
+    resolvedAt: d.resolved_at,
     messages: d.messages?.map((m) => ({
       id: m.id,
       disputeId: m.dispute_id,
@@ -349,6 +356,29 @@ export function NuanceApp() {
   // True while a real NuanceEscrow.cancel_escrow transaction is
   // mid-flight — see cancelEscrow below.
   const [isCancellingEscrow, setIsCancellingEscrow] = useState(false);
+  // Escrow id being polled for a real GenVM validator verdict after an
+  // on-chain submit_deliverable, or null when idle — see the effect
+  // below and submitDeliverable's on-chain branch. Added 2026-09-08: a
+  // live test found the result only ever showing up after a manual page
+  // refresh + wallet reconnect, since nothing was re-fetching this
+  // escrow after the ack. services/genlayer_indexer.py already polls
+  // the chain server-side every ~15s; this just re-checks its result
+  // client-side until it lands, instead of making the user do that by hand.
+  const [pollingEscrowId, setPollingEscrowId] = useState<number | null>(null);
+  // Which milestone (DB id) to watch, and its status_key at the moment
+  // polling started — refs, not state, since setting them is always
+  // immediately followed by setPollingEscrowId in the same handler, and
+  // the polling effect below only needs to read their current value once
+  // when it starts, not re-run if they change.
+  const watchedMilestoneIdRef = useRef<number | null>(null);
+  const watchedMilestoneStatusRef = useRef<string | null>(null);
+  // Same idea as pollingEscrowId, for a dispute awaiting a real ruling
+  // (off-chain ConsensusJob or on-chain adjudicate_dispute) — see the
+  // polling effect below and openDispute/escalateToDisputeCourt, which
+  // both set this whenever the dispute being opened/created is still
+  // unresolved ("disputed" — StatusKey's own "still open" state).
+  const [pollingDisputeId, setPollingDisputeId] = useState<number | null>(null);
+  const watchedDisputeStatusRef = useRef<string | null>(null);
 
   const [formTitle, setFormTitle] = useState("");
   const [formCounterparty, setFormCounterparty] = useState("");
@@ -389,6 +419,12 @@ export function NuanceApp() {
     null
   );
   const [evidenceText, setEvidenceText] = useState("");
+  // Lifted up here 2026-09-08, matching escrows' own deliverableText
+  // pattern — dispute-detail-view.tsx used to own this form's state
+  // AND call api.submitEvidence directly, which is exactly why it could
+  // never route on-chain: only this file has wallet/contract access.
+  const [evidenceLink, setEvidenceLink] = useState("");
+  const [isSubmittingEvidence, setIsSubmittingEvidence] = useState(false);
   const [disputeJobIds, setDisputeJobIds] = useState<Record<number, string>>(
     {}
   );
@@ -561,6 +597,105 @@ export function NuanceApp() {
     }
   }, [wallet.status]);
 
+  // Polls GET /escrows/{id} every 5s while pollingEscrowId is set,
+  // stopping once the milestone that was being watched actually changes
+  // status (a real verdict landed) or after ~5 minutes (real GenVM
+  // consensus rounds have been observed taking a few minutes — bail
+  // rather than poll forever if something's stuck; the indexer keeps
+  // trying server-side regardless, a later manual refresh still picks
+  // it up). See pollingEscrowId's own declaration for why this exists.
+  useEffect(() => {
+    if (pollingEscrowId == null) return;
+    const escrowId = pollingEscrowId;
+    const watchedMilestoneId = watchedMilestoneIdRef.current;
+    const startingStatusKey = watchedMilestoneId != null ? watchedMilestoneStatusRef.current : null;
+
+    let cancelled = false;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 60; // 60 * 5s = 5 minutes
+
+    async function poll() {
+      attempts += 1;
+      try {
+        const apiEscrow = await api.getEscrow(escrowId);
+        if (cancelled) return;
+        const updated = mapEscrow(apiEscrow);
+        setEscrows((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+
+        const watched = apiEscrow.milestones.find((m) => m.id === watchedMilestoneId);
+        const resolved =
+          watchedMilestoneId == null || (watched && watched.status_key !== startingStatusKey);
+        if (resolved) {
+          if (!cancelled) setPollingEscrowId(null);
+          return;
+        }
+      } catch (err) {
+        console.error("On-chain milestone poll failed:", err);
+      }
+      if (!cancelled && attempts < MAX_ATTEMPTS) {
+        setTimeout(poll, 5000);
+      } else if (!cancelled) {
+        setPollingEscrowId(null);
+      }
+    }
+
+    const timeoutId = setTimeout(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [pollingEscrowId]);
+
+  // Same mechanism as the escrow-polling effect above, for a dispute
+  // awaiting a real ruling (off-chain ConsensusJob or on-chain
+  // adjudicate_dispute — services/genlayer_indexer.py's sync). See
+  // pollingDisputeId's own declaration for why this exists.
+  //
+  // `escrows` deliberately left out of the deps array (react-hooks/
+  // exhaustive-deps warns) — it's only used inside mapDispute for a
+  // counterparty-address lookup that doesn't meaningfully change during
+  // a single poll window; including it would restart this effect (reset
+  // the timer/attempt count) every time escrows updates anywhere else in
+  // the app, which is disruptive for no real benefit. Same reasoning as
+  // this file's own loadData omissions elsewhere.
+  useEffect(() => {
+    if (pollingDisputeId == null) return;
+    const disputeId = pollingDisputeId;
+    const startingStatusKey = watchedDisputeStatusRef.current;
+
+    let cancelled = false;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 60; // 60 * 5s = 5 minutes
+
+    async function poll() {
+      attempts += 1;
+      try {
+        const apiDispute = await api.getDispute(disputeId);
+        if (cancelled) return;
+        const updated = mapDispute(apiDispute, escrows);
+        setDisputes((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+
+        if (apiDispute.status_key !== startingStatusKey) {
+          if (!cancelled) setPollingDisputeId(null);
+          return;
+        }
+      } catch (err) {
+        console.error("Dispute ruling poll failed:", err);
+      }
+      if (!cancelled && attempts < MAX_ATTEMPTS) {
+        setTimeout(poll, 5000);
+      } else if (!cancelled) {
+        setPollingDisputeId(null);
+      }
+    }
+
+    const timeoutId = setTimeout(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [pollingDisputeId]);
+
   const handleToggleNotify = () => {
     const next = !notifyOn;
     setNotifyOn(next);
@@ -644,6 +779,11 @@ export function NuanceApp() {
           `Submitted on-chain — tx ${txHash.slice(0, 10)}…${txHash.slice(-6)}. ` +
             "GenLayer validators are reviewing it now; this can take a few minutes."
         );
+        // Start polling for the real result instead of leaving it to a
+        // manual refresh — see pollingEscrowId's own declaration.
+        watchedMilestoneIdRef.current = activeMilestone.id;
+        watchedMilestoneStatusRef.current = activeMilestone.status_key;
+        setPollingEscrowId(escrowId);
       } catch (err) {
         setEscrowActionError(describeWriteError(err));
       } finally {
@@ -705,8 +845,12 @@ export function NuanceApp() {
         wallet.address.toLowerCase() === escrowData.creator_address.toLowerCase()
           ? escrowData.counterparty_address
           : escrowData.creator_address;
-      const claimStatement = escrowConsensus.verdict?.reasoning
-        ? `Escalating AI Consensus verdict: ${escrowConsensus.verdict.reasoning}`
+      // escrowVerdict (not the raw escrowConsensus.verdict) — see that
+      // value's own fix note: it now covers the on-chain-judged case too,
+      // so escalating a real GenVM-disputed milestone carries its actual
+      // reasoning instead of falling through to the generic fallback.
+      const claimStatement = escrowVerdict?.reasoning
+        ? `Escalating ${activeMilestoneOnChain ? "GenVM validator" : "AI"} consensus verdict: ${escrowVerdict.reasoning}`
         : `Escalating escrow #${escrowId} to Dispute Court review.`;
 
       try {
@@ -723,6 +867,11 @@ export function NuanceApp() {
         const mapped = mapDispute(created, escrows);
         setDisputes((prev) => [mapped, ...prev]);
         openDispute(created.id);
+        // Explicit, authoritative override — openDispute's own lookup
+        // reads the (still-stale, this same tick) `disputes` state, which
+        // doesn't have this brand-new dispute yet. `created` is fresh.
+        watchedDisputeStatusRef.current = created.status_key;
+        setPollingDisputeId(created.id);
       } catch (err) {
         setEscrowActionError(describeWriteError(err));
       } finally {
@@ -741,6 +890,13 @@ export function NuanceApp() {
         setDisputeJobIds((prev) => ({ ...prev, [created.id]: String(created.consensus_job_id) }));
       }
       openDispute(created.id);
+      // Same override as the on-chain branch above — belt-and-suspenders
+      // here too: the off-chain path's own ConsensusJob polling
+      // (activeDisputeJobId) is the primary mechanism, but this covers
+      // the same edge case if that job somehow finishes/gets missed
+      // before polling picks it up.
+      watchedDisputeStatusRef.current = created.status_key;
+      setPollingDisputeId(created.id);
     } catch (err) {
       setEscrowActionError(errorText(err, "Failed to raise a dispute."));
     } finally {
@@ -782,6 +938,23 @@ export function NuanceApp() {
       escrowData = await api.getEscrow(escrowId);
     } catch (err) {
       setEscrowActionError(errorText(err, "Failed to fund escrow."));
+      setIsFundingEscrow(false);
+      return;
+    }
+    // CRITICAL — added 2026-09-08 after this exact gap let a wrong
+    // wallet sign a real fund_escrow call that then reverted, but GenVM
+    // doesn't refund a payable call's attached value on revert (see
+    // contracts/nuance_escrow.py's fund_escrow docstring — the same
+    // mechanism that caused the original fund-loss incident). The
+    // contract's own creator check is real enforcement, but it runs
+    // AFTER the GEN has already left the wallet — this check has to
+    // happen client-side, before ever calling fundEscrowOnChain, to
+    // actually prevent the loss rather than just reject it too late.
+    if (wallet.address.toLowerCase() !== escrowData.creator_address.toLowerCase()) {
+      setEscrowActionError(
+        "Only the escrow creator's wallet can fund this escrow — switch wallets first. " +
+          "(Signing this from any other wallet would still send real GEN and lose it — the contract rejects the call, but doesn't refund the value.)"
+      );
       setIsFundingEscrow(false);
       return;
     }
@@ -832,6 +1005,14 @@ export function NuanceApp() {
       escrowData = await api.getEscrow(escrowId);
     } catch (err) {
       setEscrowActionError(errorText(err, "Failed to cancel escrow."));
+      setIsCancellingEscrow(false);
+      return;
+    }
+    // Not a fund-loss risk here (cancel_escrow sends no value), but same
+    // principle as fundEscrow's own check: don't let a wrong wallet pay
+    // gas to sign a transaction that's guaranteed to be rejected.
+    if (wallet.address.toLowerCase() !== escrowData.creator_address.toLowerCase()) {
+      setEscrowActionError("Only the escrow creator's wallet can cancel this escrow — switch wallets first.");
       setIsCancellingEscrow(false);
       return;
     }
@@ -1091,6 +1272,7 @@ export function NuanceApp() {
     setView("disputes");
     setSelectedDisputeId(null);
     setEvidenceText("");
+    setEvidenceLink("");
     setActiveDisputeJobId(null);
     setDisputeActionError(null);
   }
@@ -1098,16 +1280,95 @@ export function NuanceApp() {
     setView("disputeDetail");
     setSelectedDisputeId(id);
     setEvidenceText("");
+    setEvidenceLink("");
     setDisputeActionError(null);
     setActiveDisputeJobId(disputeJobIds[id] ?? null);
+    // Start polling if this dispute is still open ("disputed" — see
+    // pollingDisputeId's own declaration). Looks up the already-loaded
+    // `disputes` list — fine for navigating to an existing dispute, but
+    // NOT authoritative for one just created this same tick (that state
+    // update hasn't committed yet); escalateToDisputeCourt below sets
+    // this explicitly, right after calling openDispute, using the fresh
+    // data it already has instead of relying on this lookup.
+    const existing = disputes.find((d) => d.id === id);
+    if (existing && existing.statusKey === "disputed") {
+      watchedDisputeStatusRef.current = existing.statusKey;
+      setPollingDisputeId(id);
+    }
   }
+  // REWRITTEN 2026-09-08 — this used to always call the off-chain
+  // api.submitEvidence, full stop, no matter how the dispute was filed.
+  // That's the actual bug a live test caught: an on-chain-filed dispute
+  // got its ruling silently produced by Nuance's own off-chain fallback
+  // instead of real GenVM validators the moment evidence was submitted,
+  // with nothing in the UI making the swap visible. See
+  // contracts/nuance_dispute_court.py's add_evidence and
+  // genlayer-write-client.ts's addEvidenceOnChain, both added to close
+  // this for real rather than just describe it.
   async function submitEvidence() {
-    if (!evidenceText.trim() || selectedDisputeId == null) return;
+    if (!evidenceText.trim() || selectedDisputeId == null || isSubmittingEvidence) return;
     const disputeId = selectedDisputeId;
     setDisputeActionError(null);
+
+    let disputeData: api.ApiDispute;
     try {
-      const submission = await api.submitEvidence(disputeId, evidenceText);
+      disputeData = await api.getDispute(disputeId);
+    } catch (err) {
+      setDisputeActionError(errorText(err, "Failed to submit evidence."));
+      return;
+    }
+    const disputeCourtAddress = disputeCourtContractAddress();
+    const isOnChainFiled = disputeData.chain_status !== "legacy_offchain";
+
+    if (isOnChainFiled && disputeCourtAddress && wallet.status === "connected" && wallet.provider) {
+      // On-chain path — requires the real numeric dispute id, which only
+      // exists once services/genlayer_indexer.py's resolve_pending_
+      // dispute_ids has matched the filing tx. Refuse rather than
+      // silently fall back off-chain (the exact bug this rewrite fixes)
+      // if it hasn't resolved yet.
+      if (disputeData.on_chain_dispute_id == null) {
+        setDisputeActionError(
+          "This dispute was filed on-chain, but hasn't finished linking to its on-chain id yet " +
+            "(usually a few minutes) — try again shortly rather than submitting off-chain evidence for it."
+        );
+        return;
+      }
+      // The contract's own add_evidence only accepts a URL — there's
+      // nowhere for free-text-only evidence to go on-chain.
+      if (!evidenceLink.trim()) {
+        setDisputeActionError(
+          "This dispute is on-chain — evidence needs a real link (URL) for validators to fetch. " +
+            "A description with no link can't be submitted on-chain."
+        );
+        return;
+      }
+
+      setIsSubmittingEvidence(true);
+      try {
+        const txHash = await addEvidenceOnChain({
+          walletAddress: wallet.address,
+          provider: wallet.provider,
+          disputeCourtAddress,
+          onChainDisputeId: disputeData.on_chain_dispute_id,
+          evidenceUrl: evidenceLink.trim(),
+        });
+        await api.submitEvidenceOnChainAck(disputeId, txHash, evidenceLink.trim());
+        setEvidenceText("");
+        setEvidenceLink("");
+      } catch (err) {
+        setDisputeActionError(describeWriteError(err));
+      } finally {
+        setIsSubmittingEvidence(false);
+      }
+      return;
+    }
+
+    // Legacy off-chain path — unchanged: Nuance's own AI review judges it.
+    setIsSubmittingEvidence(true);
+    try {
+      const submission = await api.submitEvidence(disputeId, evidenceText, evidenceLink.trim() || null);
       setEvidenceText("");
+      setEvidenceLink("");
       if (submission.consensus_job_id != null) {
         const jobId = String(submission.consensus_job_id);
         setDisputeJobIds((prev) => ({ ...prev, [disputeId]: jobId }));
@@ -1115,25 +1376,16 @@ export function NuanceApp() {
       }
     } catch (err) {
       setDisputeActionError(errorText(err, "Failed to submit evidence."));
+    } finally {
+      setIsSubmittingEvidence(false);
     }
   }
-  async function enforceRuling() {
-    if (selectedDisputeId == null || !disputeConsensus.verdict) return;
-    const disputeId = selectedDisputeId;
-    setDisputeActionError(null);
-    try {
-      const updated = mapDispute(
-        await api.enforceRuling(disputeId, {
-          approved: disputeConsensus.verdict.approved,
-          ruling: disputeConsensus.verdict.reasoning,
-        }),
-        escrows
-      );
-      setDisputes((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
-    } catch (err) {
-      setDisputeActionError(errorText(err, "Failed to enforce ruling."));
-    }
-  }
+  // enforceRuling() removed 2026-09-08 — see dispute-detail-view.tsx's
+  // consensusVerdict comment for the full account: POST /disputes/{id}/
+  // enforce always 400s in real use, since services/consensus.py's
+  // _apply_verdict_to_state already resolves the dispute (off-chain or
+  // on-chain, same function) before this button could ever become
+  // clickable. Nothing replaced it — there was nothing left to enforce.
 
   // Governance handlers -----------------------------------------------------
   async function vote(id: number, choice: "For" | "Against") {
@@ -1173,6 +1425,35 @@ export function NuanceApp() {
   const selectedDispute =
     disputes.find((d) => d.id === selectedDisputeId) ?? null;
 
+  // CRITICAL fix, 2026-09-08: escrowVerdict used to come ONLY from
+  // escrowConsensus (useConsensusPolling against a ConsensusJob id) —
+  // which only ever exists for the off-chain path. An on-chain-judged
+  // milestone (a real GenVM verdict already landed) had no ConsensusJob
+  // at all, so this stayed null forever — meaning "Release Payment" and
+  // "Escalate to Internet Court" (both driven entirely by this value,
+  // via ConsensusPanel) never appeared for it, no matter what the real
+  // on-chain result was. A live test found the panel stuck on "Awaiting
+  // deliverable submission…" even after a real "Disputed" verdict had
+  // already come back. Falls back to synthesizing a verdict straight
+  // from the active milestone's own on-chain-synced statusKey/reasoning
+  // when there's no ConsensusJob to poll.
+  const activeMilestone = selectedEscrow
+    ? selectedEscrow.milestones[activeMilestoneIndex(selectedEscrow.milestones)]
+    : null;
+  const activeMilestoneOnChain =
+    Boolean(selectedEscrow?.contractAddress) && activeMilestone?.onChainIndex != null;
+  // Both added 2026-09-08 — found live: "Release Payment" and "Escalate
+  // to Internet Court" kept showing (and, for release, kept genuinely
+  // failing — see routers/escrows.py's _releasable_milestone fix) even
+  // after the underlying action had already been taken. Neither the
+  // verdict object nor the milestone's own statusKey change once
+  // released/escalated (statusKey stays "approved"/"disputed" either
+  // way), so these need their own separate signals.
+  const milestoneAlreadyReleased = activeMilestone?.releasedAt != null;
+  const existingDisputeForEscrow = selectedEscrow
+    ? disputes.find((d) => d.escrowId === selectedEscrow.id) ?? null
+    : null;
+
   const escrowVerdict: EscrowVerdict | null = escrowConsensus.verdict
     ? {
         approved: escrowConsensus.verdict.approved,
@@ -1183,8 +1464,34 @@ export function NuanceApp() {
         confidence: escrowConsensus.verdict.confidence,
         reasoning: escrowConsensus.verdict.reasoning,
       }
-    : null;
+    : activeMilestoneOnChain &&
+        activeMilestone &&
+        (activeMilestone.statusKey === "approved" || activeMilestone.statusKey === "disputed")
+      ? {
+          approved: activeMilestone.statusKey === "approved",
+          disputed: activeMilestone.statusKey === "disputed",
+          label:
+            activeMilestone.statusKey === "approved"
+              ? "GenVM Consensus: Approved"
+              : "GenVM Consensus: Disputed",
+          // GenVM doesn't expose a numeric confidence the way the
+          // off-chain ensemble's per-provider vote average does — this
+          // just means "a real decided on-chain verdict exists."
+          confidence: 100,
+          reasoning: activeMilestone.reasoning ?? "",
+        }
+      : null;
 
+  // Same fix as escrowVerdict above, same root cause: disputeConsensus
+  // only ever reflects a live ConsensusJob (off-chain path). A dispute
+  // ruled on-chain (adjudicate_dispute -> services/genlayer_indexer.py's
+  // sync) has its ruling/status_key set directly with no ConsensusJob
+  // involved at all — this used to leave the panel stuck on "Awaiting
+  // evidence submission…" forever regardless of a real ruling already
+  // being recorded. Falls back to the dispute's own persisted ruling/
+  // statusKey once there's no live job to poll — also covers simply
+  // reopening an already-resolved off-chain dispute later, when its
+  // ConsensusJob has long since finished being polled.
   const disputeVerdict: DisputeVerdict | null = disputeConsensus.verdict
     ? {
         label: disputeConsensus.verdict.approved
@@ -1193,7 +1500,17 @@ export function NuanceApp() {
         approved: disputeConsensus.verdict.approved,
         reasoning: disputeConsensus.verdict.reasoning,
       }
-    : null;
+    : selectedDispute &&
+        (selectedDispute.statusKey === "approved" || selectedDispute.statusKey === "rejected")
+      ? {
+          label:
+            selectedDispute.statusKey === "approved"
+              ? `Ruling: In favor of ${formatAddress(selectedDispute.openedByAddress)}`
+              : `Ruling: In favor of ${formatAddress(selectedDispute.counterpartyAddress)}`,
+          approved: selectedDispute.statusKey === "approved",
+          reasoning: selectedDispute.ruling ?? "",
+        }
+      : null;
 
   return (
     <div className="flex min-h-screen">
@@ -1263,6 +1580,12 @@ export function NuanceApp() {
                 escalateDisabled={escalatePending}
                 fundingDisabled={isFundingEscrow}
                 cancellingDisabled={isCancellingEscrow}
+                connectedWalletAddress={wallet.status === "connected" ? wallet.address : null}
+                milestoneReleased={milestoneAlreadyReleased}
+                existingDisputeId={existingDisputeForEscrow?.id ?? null}
+                onViewExistingDispute={
+                  existingDisputeForEscrow ? () => openDispute(existingDisputeForEscrow.id) : undefined
+                }
               />
             </>
           ) : null)}
@@ -1341,13 +1664,12 @@ export function NuanceApp() {
                 verdict={disputeVerdict}
                 currentWalletAddress={wallet.address}
                 onBack={goDisputes}
-                onEvidenceSubmitted={(jobId) => {
-                  if (selectedDisputeId != null) {
-                    setDisputeJobIds((prev) => ({ ...prev, [selectedDisputeId]: jobId }));
-                  }
-                  setActiveDisputeJobId(jobId);
-                }}
-                onEnforceRuling={enforceRuling}
+                evidenceDesc={evidenceText}
+                evidenceLink={evidenceLink}
+                onEvidenceDescChange={setEvidenceText}
+                onEvidenceLinkChange={setEvidenceLink}
+                onSubmitEvidence={submitEvidence}
+                submittingEvidence={isSubmittingEvidence}
               />
             </>
           ) : null)}

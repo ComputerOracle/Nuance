@@ -21,6 +21,7 @@ from app.schemas import (
     DisputeMessageCreate,
     DisputeMessageRead,
     DisputeRead,
+    OnChainEvidenceAck,
 )
 from app.services.consensus import run_consensus
 
@@ -181,6 +182,63 @@ async def submit_evidence(
         link=evidence.link,
         created_at=evidence.created_at,
         consensus_job_id=job.id,
+    )
+
+
+@router.post(
+    "/{dispute_id}/evidence/on-chain",
+    response_model=DisputeEvidenceRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def submit_evidence_on_chain(
+    dispute_id: int,
+    payload: OnChainEvidenceAck,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DisputeEvidenceRead:
+    """The on-chain counterpart to submit_evidence above — reached once
+    components/app/genlayer-write-client.ts's addEvidenceOnChain has
+    already signed and sent a real NuanceDisputeCourt.add_evidence
+    transaction. Added 2026-09-08 to close the actual gap that caused a
+    real bug: before this endpoint existed, submitting evidence for ANY
+    dispute — on-chain or not — always went through submit_evidence
+    above, which always queues an off-chain ConsensusJob. That silently
+    routed an on-chain-filed dispute's ruling through Nuance's own
+    off-chain AI review instead of real GenVM validators, with nothing
+    in the UI making the swap visible (found live, see contracts/
+    nuance_dispute_court.py's add_evidence docstring for the full
+    account).
+
+    Unlike submit_evidence, this does NOT queue a ConsensusJob — real
+    judgment happens via adjudicate_dispute on the contract itself
+    (services/genlayer_indexer.py's trigger_pending_adjudications
+    triggers it automatically once the dispute is open and matched).
+    Still creates a local DisputeEvidence row purely so the evidence
+    shows up in the UI's evidence list — same "not a trust boundary"
+    reasoning as every other on-chain ack in this app: nothing here
+    verifies the hash is real or that the contract call actually
+    succeeded; only the indexer reading the contract's own ruling back
+    is what actually matters.
+    """
+    dispute = await _get_dispute_or_404(dispute_id, db)
+    evidence = DisputeEvidence(
+        dispute_id=dispute.id,
+        submitter_address=current_user.wallet_address,
+        description=f"On-chain evidence submitted (tx {payload.tx_hash}).",
+        link=payload.evidence_url,
+    )
+    db.add(evidence)
+    await db.commit()
+    await db.refresh(evidence)
+
+    return DisputeEvidenceRead(
+        id=evidence.id,
+        dispute_id=evidence.dispute_id,
+        submitter_address=evidence.submitter_address,
+        description=evidence.description,
+        link=evidence.link,
+        created_at=evidence.created_at,
+        consensus_job_id=None,
     )
 
 

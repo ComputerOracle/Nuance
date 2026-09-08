@@ -114,6 +114,13 @@ class MilestoneRead(BaseModel):
     on_chain_index: int | None = None
     chain_status: ChainStatus = ChainStatus.LEGACY_OFFCHAIN
     on_chain_tx_hash: str | None = None
+    # The validator committee's own stated reasoning — see
+    # Milestone.reasoning's own docstring.
+    reasoning: str | None = None
+    # Set once this milestone has actually been paid out via POST
+    # /escrows/{id}/release — see Milestone.released_at's own docstring.
+    # Null means either not yet approved, or approved but not released.
+    released_at: datetime | None = None
 
 
 # --- Escrow -------------------------------------------------------------
@@ -393,6 +400,39 @@ class DisputeEvidenceCreate(BaseModel):
     def not_blank(cls, v: str) -> str:
         if not v:
             raise ValueError("Evidence description can't be blank.")
+        return v
+
+
+class OnChainEvidenceAck(BaseModel):
+    """Body for POST /disputes/{id}/evidence/on-chain — the frontend
+    reporting a tx hash it already got back from signing and sending a
+    real NuanceDisputeCourt.add_evidence transaction (components/app/
+    genlayer-write-client.ts's addEvidenceOnChain). Unlike the off-chain
+    submit_evidence, this does NOT queue a ConsensusJob — the real
+    judgment happens via adjudicate_dispute on the contract itself
+    (triggered automatically by services/genlayer_indexer.py, or
+    manually). `evidence_url` is required (unlike the off-chain path's
+    optional `link`) because the contract's own add_evidence only ever
+    takes a URL — there's nowhere for free-text-only evidence to go
+    on-chain (see that contract method's own docstring)."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    tx_hash: str
+    evidence_url: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("tx_hash")
+    @classmethod
+    def _validate_tx_hash(cls, v: str) -> str:
+        if not _TX_HASH_RE.match(v):
+            raise ValueError("tx_hash must be a 0x-prefixed 64-hex-character transaction hash.")
+        return v.lower()
+
+    @field_validator("evidence_url")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v:
+            raise ValueError("evidence_url can't be blank.")
         return v
 
 

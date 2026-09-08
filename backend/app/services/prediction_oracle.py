@@ -43,7 +43,10 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 VALIDATOR_NAMES = ("Validator-Alpha", "Validator-Beta", "Validator-Gamma")
-MODEL = "gemini-2.5-flash"
+# "gemini-2.5-flash" retired 2026-09-08 — see services/consensus.py's own
+# PROVIDER_MODELS comment for the full account (confirmed live via a
+# direct API call, not guessed).
+MODEL = "gemini-3.5-flash"
 
 
 class OracleUnavailableError(RuntimeError):

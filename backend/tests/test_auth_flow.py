@@ -214,10 +214,31 @@ def test_protected_escrow_flow_accepts_valid_token(client, wallet):
     assert deliver.status_code == 201
     assert deliver.json()["wallet"] == wallet.address.lower()
 
+    # release_milestone requires a real, already-APPROVED milestone (see
+    # routers/escrows.py's _releasable_milestone, fixed 2026-09-08) —
+    # submitting a deliverable alone only moves it to IN_REVIEW pending
+    # consensus, which this test doesn't run; force the approval the same
+    # way a real verdict would rather than skip straight to release.
+    import asyncio
+
+    from app.db import AsyncSessionLocal
+    from app.enums import StatusKey
+    from app.models import Milestone
+    from sqlalchemy import select
+
+    async def _approve_milestone() -> None:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Milestone).where(Milestone.escrow_id == escrow_id))
+            milestone = result.scalars().one()
+            milestone.status_key = StatusKey.APPROVED
+            await db.commit()
+
+    asyncio.run(_approve_milestone())
+
     release = client.post(f"/escrows/{escrow_id}/release", headers=headers)
-    assert release.status_code == 200
-    assert release.json()["status_key"] == "approved"
+    assert release.status_code == 200, release.text
     assert release.json()["milestones"][0]["status_key"] == "approved"
+    assert release.json()["milestones"][0]["released_at"] is not None
 
 
 def test_dispute_messages_and_evidence_flow(client, wallet):
