@@ -122,20 +122,20 @@
 // real, live address to build lib/chain-config.ts's cutover against.
 
 import { createAccount, createClient, chains } from "genlayer-js";
-import {
-  TransactionStatus,
-  ExecutionResult,
-  transactionsStatusNameToNumber,
-  type GenLayerTransaction,
-  type TransactionHash,
-  type DecodedDeployData,
-} from "genlayer-js/types";
-import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { writeFileSync, existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { deployOne, REPO_ROOT } from "./genlayer-deploy-core";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, "..");
+// 2026-09-07: the deploy engine itself (deployOne, extractDeployedAddress,
+// isAcceptedOrFinalized, rate-limit retry — everything the "Second/Third/
+// Fourth round" notes below describe) moved to scripts/genlayer-deploy-core.ts
+// so scripts/genlayer-deploy.ts (the per-escrow auto-deploy bridge
+// backend/app/services/genlayer_deploy.py invokes) can reuse it rather
+// than duplicate five rounds of hard-won live-Bradbury fixes. Behavior
+// here is unchanged — this file is now the CLI orchestration
+// (which contracts, what args, writing addresses into both .env files)
+// around that shared engine.
+
 const BACKEND_ENV_PATH = resolve(REPO_ROOT, "backend/.env");
 const FRONTEND_ENV_PATH = resolve(REPO_ROOT, ".env.local");
 // Step 3's brief says "frontend/.env.local" — this repo's Next.js app is
@@ -143,12 +143,6 @@ const FRONTEND_ENV_PATH = resolve(REPO_ROOT, ".env.local");
 // .env.local.example living at the root), so that's where the real file
 // actually needs to be for Next.js to pick it up.
 
-const CONTRACTS_DIR = resolve(REPO_ROOT, "contracts");
-
-// Bradbury's observed rate-limit error code, and how long to back off.
-const RATE_LIMIT_ERROR_CODE = -32005;
-const RATE_LIMIT_BACKOFF_MS = 2000;
-const MAX_RATE_LIMIT_RETRIES = 5;
 // Deploying three contracts back-to-back is exactly the kind of burst
 // that trips -32005 in the first place — space them out regardless of
 // whether any single call got rate-limited.
@@ -156,46 +150,6 @@ const DELAY_BETWEEN_DEPLOYMENTS_MS = 5000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
-}
-
-// BigInt-safe — plain JSON.stringify throws on any bigint field, which a
-// GenLayerTransaction (u256 storage values, wei amounts) commonly has.
-function safeStringify(value: unknown): string {
-  return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? v.toString() : v), 2);
-}
-
-// Viem (which genlayer-js is built on) commonly nests the real JSON-RPC
-// error under `.cause`, sometimes more than one level deep — checked
-// recursively rather than assuming a fixed depth, plus a message-text
-// fallback since the exact wrapping shape for a Bradbury -32005 response
-// specifically hasn't been confirmed against a live example.
-function extractErrorCode(err: unknown, depth = 0): number | undefined {
-  if (depth > 5 || !err || typeof err !== "object") return undefined;
-  const e = err as Record<string, unknown>;
-  if (typeof e.code === "number") return e.code;
-  if ("cause" in e) return extractErrorCode(e.cause, depth + 1);
-  return undefined;
-}
-
-function isRateLimitError(err: unknown): boolean {
-  if (extractErrorCode(err) === RATE_LIMIT_ERROR_CODE) return true;
-  const message = err instanceof Error ? err.message : String(err);
-  return message.includes("-32005") || /rate limit/i.test(message);
-}
-
-async function withRateLimitRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (!isRateLimitError(err) || attempt >= MAX_RATE_LIMIT_RETRIES) throw err;
-      console.warn(
-        `  ${label}: rate limited (-32005) — retrying in ${RATE_LIMIT_BACKOFF_MS}ms ` +
-          `(attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES})`
-      );
-      await sleep(RATE_LIMIT_BACKOFF_MS);
-    }
-  }
 }
 
 // --- Demo constructor args for the bootstrap Escrow/Prediction Market
@@ -329,104 +283,6 @@ async function main() {
     console.log(`  ${spec.backendEnvKey} / ${spec.frontendEnvKey} = ${deployed[spec.backendEnvKey]}`);
   }
   console.log(`\nWritten to:\n  ${BACKEND_ENV_PATH}\n  ${FRONTEND_ENV_PATH}`);
-}
-
-// Checks every field observed to actually carry the status across a live
-// receipt (camelCase per the .d.ts, snake_case per what the client really
-// returned, and numeric as a last resort) rather than trusting any one of
-// them alone — see the header's third-round note.
-function isAcceptedOrFinalized(receipt: GenLayerTransaction): boolean {
-  const nameFromSnakeCase = (receipt as unknown as { status_name?: string }).status_name;
-  const numericStatus = typeof receipt.status === "number" ? receipt.status : undefined;
-  const acceptedNumber = Number(transactionsStatusNameToNumber[TransactionStatus.ACCEPTED]);
-  const finalizedNumber = Number(transactionsStatusNameToNumber[TransactionStatus.FINALIZED]);
-
-  return (
-    receipt.statusName === TransactionStatus.ACCEPTED ||
-    receipt.statusName === TransactionStatus.FINALIZED ||
-    nameFromSnakeCase === TransactionStatus.ACCEPTED ||
-    nameFromSnakeCase === TransactionStatus.FINALIZED ||
-    numericStatus === acceptedNumber ||
-    numericStatus === finalizedNumber
-  );
-}
-
-async function deployOne(
-  client: ReturnType<typeof createClient>,
-  spec: ContractSpec
-): Promise<string> {
-  const contractPath = resolve(CONTRACTS_DIR, spec.file);
-  if (!existsSync(contractPath)) {
-    throw new Error(`Contract source not found: ${contractPath}`);
-  }
-  // Raw bytes, not a UTF-8 string — see the header's second-round note.
-  const code = new Uint8Array(readFileSync(contractPath));
-
-  const txHash = await withRateLimitRetry(`${spec.name} deployContract`, () =>
-    client.deployContract({
-      code,
-      args: spec.args as never,
-    })
-  );
-  console.log(`  tx: ${txHash}`);
-
-  // Step 3 asks to wait for ACCEPTED *or* FINALIZED — ACCEPTED is enough
-  // to know the deployment succeeded and to read the address back out;
-  // see nuance_escrow.py's own header on why Accepted != Finalized isn't
-  // something to gloss over, but for "did this deploy," Accepted answers
-  // the question without waiting through the full appeal window.
-  //
-  // retries/interval set explicitly (60 * 3s = 3 minutes) — the default
-  // wasn't long enough to cover a real commit/reveal round on Bradbury;
-  // the first live attempt timed out at status 4 (REVEALING) waiting on it.
-  const receipt = await withRateLimitRetry(`${spec.name} waitForTransactionReceipt`, () =>
-    client.waitForTransactionReceipt({
-      // deployContract's declared return type is a plain `0x${string}`,
-      // not genlayer-js's own branded TransactionHash (= Hash, which
-      // requires length 66) that waitForTransactionReceipt expects — a
-      // real gap between the two signatures in the installed package's
-      // own types, not a logic issue here. A tx hash is always a 32-byte
-      // hash either way, so the cast is safe.
-      hash: txHash as TransactionHash,
-      status: TransactionStatus.ACCEPTED,
-      retries: 60,
-      interval: 3000,
-    })
-  );
-
-  const statusOk = isAcceptedOrFinalized(receipt);
-  const executionFailed = receipt.txExecutionResultName === ExecutionResult.FINISHED_WITH_ERROR;
-
-  if (!statusOk || executionFailed) {
-    const observedStatus =
-      receipt.statusName ?? (receipt as unknown as { status_name?: string }).status_name ?? receipt.status;
-    throw new Error(
-      `${spec.name} deployment failed — status: ${observedStatus}, ` +
-        `execution: ${receipt.txExecutionResultName ?? "unknown"}. ` +
-        `Full receipt: ${safeStringify(receipt)}`
-    );
-  }
-
-  return extractDeployedAddress(receipt, spec.name);
-}
-
-function extractDeployedAddress(receipt: GenLayerTransaction, contractName: string): string {
-  // Priority order, see the header note above:
-  // 1. The exact typed cast confirmed against a live deploy receipt.
-  const decoded = (receipt.txDataDecoded as DecodedDeployData)?.contractAddress;
-  // 2. The raw snake_case field observed directly on a live receipt —
-  // not in GenLayerTransaction's declared type at all, accessed loosely.
-  const raw = (receipt as unknown as { contract_address?: string }).contract_address;
-  const address = decoded ?? raw ?? receipt.recipient ?? receipt.to_address;
-
-  if (!address) {
-    throw new Error(
-      `${contractName}: couldn't find a deployed address on the transaction receipt ` +
-        `(checked txDataDecoded.contractAddress, contract_address, recipient, and to_address — ` +
-        `all empty). Full receipt: ${safeStringify(receipt)}`
-    );
-  }
-  return address;
 }
 
 function loadEnvFile(path: string): void {

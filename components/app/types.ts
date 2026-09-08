@@ -6,7 +6,12 @@ export type StatusKey =
   | "disputed"
   // A dispute whose claim was rejected by consensus — only ever set on a
   // Dispute, never a Milestone/Escrow. Distinct from "disputed" (still open).
-  | "rejected";
+  | "rejected"
+  // The creator cancelled and reclaimed their funded GEN before any
+  // milestone was approved — only ever set on an Escrow, never a
+  // Milestone/Dispute. See components/app/genlayer-write-client.ts's
+  // cancelEscrowOnChain.
+  | "cancelled";
 
 export type View =
   | "dashboard"
@@ -26,6 +31,13 @@ export interface Milestone {
   amount: number;
   statusKey: StatusKey;
   criteria: string;
+  // "legacy_offchain" unless this milestone is both inside a
+  // contract-linked escrow AND has actually had a real on-chain
+  // submit_deliverable transaction sent against it — see
+  // components/app/chain-status-badge.tsx, the one place this
+  // distinction is actually shown rather than conflated.
+  chainStatus?: import("@/lib/chain-status").ChainStatus;
+  onChainTxHash?: string | null;
 }
 
 export interface Escrow {
@@ -36,6 +48,18 @@ export interface Escrow {
   total: number;
   statusKey: StatusKey;
   milestones: Milestone[];
+  // Which deployed NuanceEscrow instance backs this escrow, if any — only
+  // an escrow with this set has a real fund_escrow()/release_milestone()
+  // to call; most escrows today are still off-chain (null).
+  contractAddress?: string | null;
+  // Set once the creator's real fund_escrow transaction has been sent —
+  // hides the "Fund Escrow" action once present. See lib/api.ts's
+  // ApiEscrow.funded_tx_hash for the full caveat on what this does and
+  // doesn't guarantee.
+  fundedTxHash?: string | null;
+  // Set once a real cancel_escrow transaction has been sent and
+  // acknowledged. See lib/api.ts's ApiEscrow.cancelled_tx_hash.
+  cancelledTxHash?: string | null;
 }
 
 export interface Prediction {
@@ -52,6 +76,13 @@ export interface Prediction {
   resolutionReasoning?: string | null;
   resolvedAt?: string | null;
   positions?: Position[];
+  // Which deployed NuancePredictionMarket instance backs this market, if
+  // any — null for almost every market today. Only markets with this set
+  // have a real claim_winnings() to call (an off-chain "Won $X" figure is
+  // notional bookkeeping, not a real stake to pull out).
+  contractAddress?: string | null;
+  chainStatus?: import("@/lib/chain-status").ChainStatus;
+  resolutionTriggerTxHash?: string | null;
 }
 
 export interface Position {
@@ -87,6 +118,8 @@ export interface Dispute {
   issue: string;
   amount: number;
   statusKey: StatusKey;
+  chainStatus?: import("@/lib/chain-status").ChainStatus;
+  onChainTxHash?: string | null;
   messages?: DisputeMessage[];
   evidence?: DisputeEvidence[];
 }

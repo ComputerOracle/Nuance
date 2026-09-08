@@ -21,7 +21,14 @@ pydantic-settings==2.14.2
 python-dotenv==1.2.2
 
 # --- Auth prompt ---
-eth-account==0.13.7
+# Bumped 0.13.7 -> 0.14.0 2026-09-08 to clear a real pip resolver
+# collision: web3 8.0.0 (a transitive dep pulled in elsewhere) requires
+# eth-account>=0.14, and 0.13.7 doesn't satisfy that — not a routine
+# bump. 0.14.0 is also eth-account's own latest release as of this pin.
+# Verified: full backend suite (127/127) still passes unchanged — our own
+# usage (Account.create/sign_message/encode_defunct/LocalAccount) is
+# untouched by anything that changed between 0.13.7 and 0.14.0.
+eth-account==0.14.0
 pyjwt==2.13.0
 
 # --- Consensus-engine prompt (Gemini) ---

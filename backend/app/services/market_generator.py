@@ -631,6 +631,27 @@ async def _process_events(
     await db.commit()
     for prediction in created:
         await db.refresh(prediction)
+
+    # Part 2's per-market equivalent of routers/escrows.py::create_escrow's
+    # own auto-deploy hook. Only for markets going straight live
+    # (auto_publish — every one of `created` shares status_key="open" in
+    # that case) — a "pending_review" draft might still be discarded or
+    # edited before a human ever makes it live, and deploying a real
+    # contract for a market that may never launch isn't worth the real
+    # testnet GEN. Awaited here (not fired-and-forgotten) because this
+    # function has no HTTP request/BackgroundTasks to hang a background
+    # task off — run_market_ingestion.py's own `asyncio.run(run())` would
+    # otherwise cancel a still-in-flight deploy the moment this coroutine
+    # returned and the process started exiting. Deployed in parallel
+    # (each is independent) rather than one at a time, which is the only
+    # real cost of awaiting a batch that might contain several new markets.
+    if auto_publish and created and get_settings().auto_deploy_prediction_contracts:
+        from app.services.genlayer_deploy import deploy_prediction_contract
+
+        await asyncio.gather(
+            *(deploy_prediction_contract(p.id) for p in created), return_exceptions=True
+        )
+
     return created
 
 

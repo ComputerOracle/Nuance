@@ -24,6 +24,11 @@ class StatusKey(StrEnum):
     # open/unresolved". Only ever set on a Dispute row, never a Milestone or
     # Escrow — see services/consensus.py::_apply_verdict_to_state.
     REJECTED = "rejected"
+    # The creator cancelled and reclaimed their funded GEN before any
+    # milestone was approved — see contracts/nuance_escrow.py's
+    # cancel_escrow() and routers/escrows.py's cancel_escrow_on_chain.
+    # Only ever set on an Escrow row, never a Milestone or Dispute.
+    CANCELLED = "cancelled"
 
 
 class ConsensusSubjectType(StrEnum):

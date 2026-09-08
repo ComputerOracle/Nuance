@@ -58,7 +58,7 @@ export function CreateEscrowView({
         </div>
         <div>
           <div className="mb-1.5 text-[13px] text-fg-meta">
-            Amount (USDC)
+            Amount (GEN)
           </div>
           <input
             value={formAmount}
@@ -84,7 +84,7 @@ export function CreateEscrowView({
           className="mt-1.5 cursor-pointer rounded-[9px] border border-border-6 bg-chip-hover px-5 py-3.5 text-sm font-semibold transition-colors hover:bg-chip-hover-2 disabled:cursor-default"
           style={{ opacity: disabled ? 0.5 : 1 }}
         >
-          Fund Escrow
+          Create Escrow
         </button>
       </div>
     </div>

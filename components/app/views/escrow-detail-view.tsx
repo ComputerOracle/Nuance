@@ -1,7 +1,9 @@
 import type { Escrow, EscrowVerdict } from "@/components/app/types";
 import { StatusBadge } from "@/components/app/status-badge";
+import { ChainStatusBadge } from "@/components/app/chain-status-badge";
 import { activeMilestoneIndex, formatAddress } from "@/components/app/status";
 import { ConsensusPanel, type ConsensusVerdict } from "@/components/app/consensus-panel";
+import { LEGACY_OFFCHAIN } from "@/lib/chain-status";
 
 export function EscrowDetailView({
   escrow,
@@ -13,8 +15,12 @@ export function EscrowDetailView({
   onSubmitDeliverable,
   onReleasePayment,
   onEscalate,
+  onFundEscrow,
+  onCancelEscrow,
   submitDisabled = false,
   escalateDisabled = false,
+  fundingDisabled = false,
+  cancellingDisabled = false,
 }: {
   escrow: Escrow;
   stage: number;
@@ -25,14 +31,26 @@ export function EscrowDetailView({
   onSubmitDeliverable: () => void;
   onReleasePayment: () => void;
   onEscalate: () => void;
+  // Only present once this escrow is linked to a deployed contract — see
+  // the "Fund Escrow" card below.
+  onFundEscrow?: () => void;
+  // Same — only present once contract-linked. See the "Cancel Escrow"
+  // button below for exactly when it's actually shown/usable.
+  onCancelEscrow?: () => void;
   // True while an on-chain submit is mid-flight (waiting on the wallet's
   // own signing prompt / RPC round-trip) — a separate condition from
   // "text is empty," which the button already gates on its own.
   submitDisabled?: boolean;
   // True while POST /escrows/{id}/dispute is in flight.
   escalateDisabled?: boolean;
+  // True while the real, payable fund_escrow transaction is mid-flight.
+  fundingDisabled?: boolean;
+  // True while the real cancel_escrow transaction is mid-flight.
+  cancellingDisabled?: boolean;
 }) {
   const activeIdx = activeMilestoneIndex(escrow.milestones);
+  const activeMilestoneOnChain =
+    (escrow.milestones[activeIdx]?.chainStatus ?? LEGACY_OFFCHAIN) !== LEGACY_OFFCHAIN;
 
   const consensusVerdict: ConsensusVerdict | null = verdict
     ? {
@@ -63,6 +81,35 @@ export function EscrowDetailView({
       }
     : null;
 
+  // Only a contract-linked, not-yet-funded escrow has anything to fund —
+  // most escrows today are still off-chain (contractAddress null), and
+  // once funded_tx_hash is set this app treats funding as already done
+  // (see types.ts's Escrow.fundedTxHash for the caveat on what that
+  // does/doesn't guarantee).
+  // RE-ENABLED (2026-09-08) — the underlying bug is fixed and verified
+  // against a real live Bradbury redeploy, not just code review:
+  // NuanceEscrow's constructor now takes an explicit `creator` arg
+  // (deploy_escrow_contract passes the real escrow.creator_address, not
+  // gl.message.sender_address — see the contract's own __init__ docstring
+  // for the full account of why that was wrong and cost real GEN), and a
+  // fresh test deploy read back `creator` matching the real address
+  // exactly, with milestone.amount correctly landing as real wei
+  // (1000000000000000000, no JSON-bridge precision loss — see
+  // genlayer_deploy.py's _gen_to_wei/_bigint_arg). Escrow #3 specifically
+  // was redeployed under the corrected contract as part of this fix; its
+  // original broken contract (and the 1 GEN stuck in it) stays abandoned.
+  const showFundCard = Boolean(escrow.contractAddress) && !escrow.fundedTxHash;
+
+  // Client-side pre-check only, matching cancel_escrow's own on-chain
+  // condition (see that method's docstring on why a deadline gate isn't
+  // included: no on-chain clock exists for it to check) — hides a button
+  // that would obviously fail rather than let someone pay gas to find
+  // that out. The contract itself is the real enforcement either way.
+  const canCancel =
+    Boolean(escrow.contractAddress) &&
+    escrow.statusKey !== "cancelled" &&
+    !escrow.milestones.some((m) => m.statusKey === "approved");
+
   return (
     <div style={{ animation: "fadeUp 0.3s ease" }}>
       <div
@@ -86,12 +133,49 @@ export function EscrowDetailView({
             </span>{" "}
             · Total{" "}
             <span className="font-semibold text-fg">
-              {escrow.total.toLocaleString()} USDC
+              {escrow.total.toLocaleString()} GEN
             </span>
           </div>
         </div>
-        <StatusBadge status={escrow.statusKey} />
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <StatusBadge status={escrow.statusKey} />
+          {canCancel && onCancelEscrow && (
+            <button
+              onClick={onCancelEscrow}
+              disabled={cancellingDisabled}
+              title="Refunds whatever's locked back to you — only possible before any milestone is approved."
+              className="cursor-pointer rounded-lg border border-negative/30 bg-negative/10 px-3 py-1.5 text-xs font-semibold text-negative-text transition-colors hover:bg-negative/20 disabled:cursor-default disabled:opacity-60"
+            >
+              {cancellingDisabled ? "Cancelling…" : "Cancel & Refund"}
+            </button>
+          )}
+        </div>
       </div>
+
+      {showFundCard && (
+        <div className="mt-5 rounded-xl border border-review/30 bg-review/10 p-4.5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-[13px] font-semibold text-review-text">
+                Escrow contract deployed — awaiting funding
+              </div>
+              <div className="mt-1 text-xs text-fg-meta">
+                Send {escrow.total.toLocaleString()} GEN from your wallet into this
+                escrow&rsquo;s contract before any milestone can be released.
+              </div>
+            </div>
+            {onFundEscrow && (
+              <button
+                onClick={onFundEscrow}
+                disabled={fundingDisabled}
+                className="cursor-pointer rounded-lg border border-review/40 bg-review/20 px-4 py-2.5 text-[13px] font-semibold text-review-text transition-colors hover:bg-review/30 disabled:cursor-default disabled:opacity-60"
+              >
+                {fundingDisabled ? "Waiting for wallet…" : `Fund Escrow (${escrow.total.toLocaleString()} GEN)`}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="mt-7 grid grid-cols-1 gap-6 lg:grid-cols-[1.1fr_1fr]">
         <div className="flex flex-col gap-3">
@@ -117,19 +201,33 @@ export function EscrowDetailView({
                 <div className="mt-1.5 text-[13px] text-fg-meta">
                   {m.criteria}
                 </div>
-                <div className="mt-2.5 font-brand-mono text-[13px] text-fg-bright">
-                  {m.amount.toLocaleString()} USDC
+                <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-brand-mono text-[13px] text-fg-bright">
+                    {m.amount.toLocaleString()} GEN
+                  </div>
+                  <ChainStatusBadge
+                    chainStatus={m.chainStatus ?? LEGACY_OFFCHAIN}
+                    txHash={m.onChainTxHash}
+                  />
                 </div>
 
                 {m.statusKey === "approved" && (
                   <div className="mt-3 rounded-lg border border-positive/30 bg-positive/10 px-3 py-2 text-xs font-medium text-positive-text">
-                    ✓ Milestone deliverable approved by AI Consensus.
+                    ✓ Milestone deliverable approved by{" "}
+                    {(m.chainStatus ?? LEGACY_OFFCHAIN) === LEGACY_OFFCHAIN
+                      ? "Nuance's off-chain AI consensus"
+                      : "real GenVM validator consensus on Bradbury"}
+                    .
                   </div>
                 )}
 
                 {m.statusKey === "disputed" && (
                   <div className="mt-3 rounded-lg border border-negative/30 bg-negative/10 px-3 py-2 text-xs font-medium text-negative-text">
-                    ⚠ Milestone deliverable disputed by AI Consensus.
+                    ⚠ Milestone deliverable disputed by{" "}
+                    {(m.chainStatus ?? LEGACY_OFFCHAIN) === LEGACY_OFFCHAIN
+                      ? "Nuance's off-chain AI consensus"
+                      : "real GenVM validator consensus on Bradbury"}
+                    .
                   </div>
                 )}
 
@@ -161,8 +259,12 @@ export function EscrowDetailView({
         </div>
 
         <ConsensusPanel
-          title="AI Validator Consensus"
-          subtitle="3-of-3 GenVM validators adjudicate this milestone."
+          title={activeMilestoneOnChain ? "GenVM Validator Consensus" : "AI Validator Consensus"}
+          subtitle={
+            activeMilestoneOnChain
+              ? "3-of-3 real GenVM validators on Bradbury adjudicate this milestone on-chain."
+              : "Nuance's own off-chain AI review adjudicates this milestone — not GenVM."
+          }
           stage={stage}
           analyzingLabel="Analyzing deliverable…"
           doneLabel="Consensus recorded"

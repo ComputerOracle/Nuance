@@ -40,7 +40,7 @@ export function DashboardView({
             Total Escrowed
           </div>
           <div className="mt-1.5 font-display text-[26px] font-bold">
-            ${totalEscrowed.toLocaleString()} <span className="text-sm font-normal text-fg-meta">USDC</span>
+            {totalEscrowed.toLocaleString()} <span className="text-sm font-normal text-fg-meta">GEN</span>
           </div>
         </div>
         <div className="rounded-[14px] border border-border-1 bg-surface-1 p-5">
@@ -105,7 +105,7 @@ export function DashboardView({
                     <div className="font-brand-mono text-sm font-semibold">
                       {e.total.toLocaleString()}
                     </div>
-                    <div className="text-xs text-fg-meta">USDC</div>
+                    <div className="text-xs text-fg-meta">GEN</div>
                   </div>
                   <StatusBadge status={e.statusKey} />
                 </div>

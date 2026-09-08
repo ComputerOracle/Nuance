@@ -135,11 +135,11 @@ def test_duplicate_idempotency_key_on_bet_does_not_double_the_position(client, w
     pred_id = asyncio.run(_seed_open_prediction())
     token = _get_token(client, wallet)
     headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "bet-key-1"}
-    payload = {"side": "YES", "amount": 250}
+    payload = {"side": "YES", "amount": 500}  # 0.5 GEN — see BET_AMOUNTS_MILLI_GEN
 
     first = client.post(f"/predictions/{pred_id}/bet", json=payload, headers=headers)
     assert first.status_code == 201
-    assert first.json()["volume"] == 250
+    assert first.json()["volume"] == 500
 
     second = client.post(f"/predictions/{pred_id}/bet", json=payload, headers=headers)
     assert second.status_code == 201
@@ -157,12 +157,12 @@ def test_same_key_different_body_is_rejected_with_409(client, wallet):
     headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "bet-key-conflict"}
 
     first = client.post(
-        f"/predictions/{pred_id}/bet", json={"side": "YES", "amount": 100}, headers=headers
+        f"/predictions/{pred_id}/bet", json={"side": "YES", "amount": 500}, headers=headers
     )
     assert first.status_code == 201
 
     second = client.post(
-        f"/predictions/{pred_id}/bet", json={"side": "YES", "amount": 999}, headers=headers
+        f"/predictions/{pred_id}/bet", json={"side": "YES", "amount": 1000}, headers=headers
     )
     assert second.status_code == 409
     assert "different request" in second.json()["detail"].lower()
@@ -197,7 +197,7 @@ def test_in_flight_key_is_rejected_with_409(client, wallet):
 
     resp = client.post(
         f"/predictions/{pred_id}/bet",
-        json={"side": "YES", "amount": 100},
+        json={"side": "YES", "amount": 500},
         headers={"Authorization": f"Bearer {token}", "Idempotency-Key": "bet-key-in-flight"},
     )
     assert resp.status_code == 409
@@ -214,13 +214,13 @@ def test_missing_idempotency_key_header_is_not_deduplicated(client, wallet):
     pred_id = asyncio.run(_seed_open_prediction())
     token = _get_token(client, wallet)
     headers = {"Authorization": f"Bearer {token}"}  # no Idempotency-Key
-    payload = {"side": "NO", "amount": 50}
+    payload = {"side": "NO", "amount": 500}
 
     first = client.post(f"/predictions/{pred_id}/bet", json=payload, headers=headers)
     second = client.post(f"/predictions/{pred_id}/bet", json=payload, headers=headers)
     assert first.status_code == 201
     assert second.status_code == 201
-    assert second.json()["volume"] == 100  # both bets actually landed
+    assert second.json()["volume"] == 1000  # both bets actually landed
 
     assert asyncio.run(_count_positions(pred_id)) == 2
 
@@ -319,7 +319,7 @@ def test_write_rate_limit_returns_429_after_the_configured_max(client, wallet, m
 
     statuses = [
         client.post(
-            f"/predictions/{pred_id}/bet", json={"side": "YES", "amount": 10}, headers=headers
+            f"/predictions/{pred_id}/bet", json={"side": "YES", "amount": 500}, headers=headers
         ).status_code
         for _ in range(4)
     ]
@@ -339,17 +339,17 @@ def test_rate_limit_is_scoped_per_wallet(client, monkeypatch):
 
     first = client.post(
         f"/predictions/{pred_id}/bet",
-        json={"side": "YES", "amount": 10},
+        json={"side": "YES", "amount": 500},
         headers={"Authorization": f"Bearer {token_a}"},
     )
     second_same_wallet = client.post(
         f"/predictions/{pred_id}/bet",
-        json={"side": "YES", "amount": 10},
+        json={"side": "YES", "amount": 500},
         headers={"Authorization": f"Bearer {token_a}"},
     )
     third_other_wallet = client.post(
         f"/predictions/{pred_id}/bet",
-        json={"side": "YES", "amount": 10},
+        json={"side": "YES", "amount": 500},
         headers={"Authorization": f"Bearer {token_b}"},
     )
 

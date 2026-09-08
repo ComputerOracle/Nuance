@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispute, DisputeEvidence, DisputeMessage, DisputeVerdict } from "@/components/app/types";
 import { ConsensusPanel, type ConsensusVerdict } from "@/components/app/consensus-panel";
+import { ChainStatusBadge } from "@/components/app/chain-status-badge";
 import { formatAddress } from "@/components/app/status";
+import { LEGACY_OFFCHAIN } from "@/lib/chain-status";
 import * as api from "@/lib/api";
 
 export function DisputeDetailView({
@@ -221,8 +223,14 @@ export function DisputeDetailView({
           <div className="mt-1 text-sm text-fg-dim-2">
             Dispute Room #{dispute.id} · Stake:{" "}
             <span className="font-semibold text-fg font-brand-mono">
-              {dispute.amount.toLocaleString()} USDC
+              {dispute.amount.toLocaleString()} GEN
             </span>
+          </div>
+          <div className="mt-2">
+            <ChainStatusBadge
+              chainStatus={dispute.chainStatus ?? LEGACY_OFFCHAIN}
+              txHash={dispute.onChainTxHash}
+            />
           </div>
         </div>
         <div className="rounded-full border border-border-4 bg-surface-2 px-3 py-1 text-xs font-mono text-fg-meta">
@@ -417,8 +425,16 @@ export function DisputeDetailView({
         {/* Right Column: AI Validator Consensus Panel */}
         <div>
           <ConsensusPanel
-            title="Internet Court Ruling"
-            subtitle="3-of-3 GenVM validators evaluate dialogue and evidence in real-time."
+            title={
+              (dispute.chainStatus ?? LEGACY_OFFCHAIN) !== LEGACY_OFFCHAIN
+                ? "Internet Court Ruling"
+                : "Off-Chain Dispute Review"
+            }
+            subtitle={
+              (dispute.chainStatus ?? LEGACY_OFFCHAIN) !== LEGACY_OFFCHAIN
+                ? "3-of-3 real GenVM validators on Bradbury evaluate dialogue and evidence — on-chain."
+                : "Nuance's own off-chain AI review evaluates dialogue and evidence — not GenVM's Internet Court."
+            }
             stage={stage}
             analyzingLabel="Reviewing chat history & evidence…"
             doneLabel="Ruling recorded"

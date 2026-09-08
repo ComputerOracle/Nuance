@@ -31,7 +31,7 @@ export function PredictionsView({
                 {p.question}
               </div>
               <div className="mt-1.5 text-[13px] text-fg-meta">
-                Resolves {p.resolveDate} · ${p.volume.toLocaleString()} volume
+                Resolves {p.resolveDate} · {(p.volume / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 })} GEN volume
               </div>
             </div>
             <div className="rounded-[10px] bg-surface-3 px-4.5 py-2.5 text-center">

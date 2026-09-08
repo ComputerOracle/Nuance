@@ -26,7 +26,7 @@ from sqlalchemy.orm import selectinload
 from app.db import get_db
 from app.dependencies import get_current_user
 from app.models import Prediction, PredictionPosition, User
-from app.schemas import PredictionBetCreate, PredictionPositionRead, PredictionRead
+from app.schemas import OnChainBetAck, PredictionBetCreate, PredictionPositionRead, PredictionRead
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
 
@@ -142,6 +142,50 @@ async def place_bet(
 
 
 @router.post(
+    "/{prediction_id}/bet/on-chain",
+    response_model=PredictionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def place_bet_on_chain(
+    prediction_id: int,
+    payload: OnChainBetAck,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Prediction:
+    """The on-chain counterpart to place_bet above — reached once
+    components/app/genlayer-write-client.ts's betOnChain has already
+    signed and sent a real NuancePredictionMarket.bet transaction directly
+    to the chain. Doesn't verify the hash is real (see
+    OnChainSubmissionAck's own docstring on why that's fine — nothing here
+    is a trust boundary for the market's actual outcome); this only
+    mirrors the stake into a PredictionPosition row so the existing "my
+    positions" UI keeps working, since services/genlayer_indexer.py's
+    view-sync doesn't track individual bettors' on-chain stakes today,
+    only the market's own state/outcome as a whole.
+    """
+    prediction = await _get_prediction_or_404(prediction_id, db)
+    if prediction.contract_address is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This market isn't linked to a deployed contract — use the "
+            "off-chain POST /predictions/{id}/bet instead.",
+        )
+
+    position = PredictionPosition(
+        prediction_id=prediction.id,
+        wallet_address=current_user.wallet_address,
+        side=payload.side,
+        amount=payload.amount,
+    )
+    prediction.volume = (prediction.volume or 0) + payload.amount
+
+    db.add(position)
+    await db.commit()
+    db.expire_all()
+    return await _get_prediction_or_404(prediction_id, db)
+
+
+@router.post(
     "/{prediction_id}/resolve",
     response_model=PredictionRead,
 )
@@ -150,6 +194,15 @@ async def resolve_prediction(
     db: AsyncSession = Depends(get_db),
 ) -> Prediction:
     prediction = await _get_prediction_or_404(prediction_id, db)
+
+    if prediction.contract_address is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This market is linked to a deployed contract — it resolves on-chain "
+            "automatically (services/genlayer_indexer.py's "
+            "trigger_pending_market_resolutions) once its cutoff passes, not through "
+            "this off-chain endpoint.",
+        )
 
     now = datetime.now(timezone.utc)
     res_date = (
@@ -163,10 +216,19 @@ async def resolve_prediction(
             detail=f"Market cannot be resolved before its resolution date: {prediction.resolution_date.isoformat()}",
         )
 
-    from app.services.prediction_oracle import resolve_prediction_market
+    from app.services.prediction_oracle import OracleUnavailableError, resolve_prediction_market
 
     try:
         return await resolve_prediction_market(prediction_id, db)
+    except OracleUnavailableError as exc:
+        # Distinct from the ValueError->404 mapping below: the market
+        # itself is fine (found, past its resolution date) — the oracle
+        # just isn't reachable right now (e.g. no GEMINI_API_KEY
+        # configured). See that exception's own docstring for why this
+        # must never fall back to fabricating a resolution instead.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)

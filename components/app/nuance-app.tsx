@@ -22,10 +22,16 @@ import {
   escrowContractAddress,
   milestoneIsOnChain,
   disputeCourtContractAddress,
+  predictionContractAddress,
 } from "@/lib/chain-config";
 import {
   submitDeliverableOnChain,
   fileDisputeOnChain,
+  betOnChain,
+  resolveMarketOnChain,
+  claimWinningsOnChain,
+  fundEscrowOnChain,
+  cancelEscrowOnChain,
   describeWriteError,
 } from "@/components/app/genlayer-write-client";
 import * as api from "@/lib/api";
@@ -54,6 +60,8 @@ function mapMilestone(m: ApiMilestone): Milestone {
     amount: Number(m.amount),
     statusKey: m.status_key,
     criteria: m.criteria,
+    chainStatus: m.chain_status,
+    onChainTxHash: m.on_chain_tx_hash,
   };
 }
 
@@ -66,6 +74,9 @@ function mapEscrow(e: ApiEscrow): Escrow {
     total: Number(e.total),
     statusKey: e.status_key,
     milestones: e.milestones.map(mapMilestone),
+    contractAddress: e.contract_address,
+    fundedTxHash: e.funded_tx_hash,
+    cancelledTxHash: e.cancelled_tx_hash,
   };
 }
 
@@ -84,6 +95,8 @@ function mapDispute(d: ApiDispute, escrows: Escrow[]): Dispute {
     issue: d.issue,
     amount: linkedEscrow?.total ?? 0,
     statusKey: d.status_key,
+    chainStatus: d.chain_status,
+    onChainTxHash: d.on_chain_tx_hash,
     messages: d.messages?.map((m) => ({
       id: m.id,
       disputeId: m.dispute_id,
@@ -135,6 +148,9 @@ function mapPrediction(p: api.ApiPrediction): Prediction {
       payout: pos.payout,
       status: pos.status,
     })) || [],
+    contractAddress: p.contract_address,
+    chainStatus: p.chain_status,
+    resolutionTriggerTxHash: p.resolution_trigger_tx_hash,
   };
 }
 
@@ -326,6 +342,13 @@ export function NuanceApp() {
   const [onChainSubmitNotice, setOnChainSubmitNotice] = useState<string | null>(null);
   const [onChainSubmitPending, setOnChainSubmitPending] = useState(false);
   const [escalatePending, setEscalatePending] = useState(false);
+  // True while a real, payable NuanceEscrow.fund_escrow transaction is
+  // mid-flight (wallet signing prompt / RPC round-trip) — see fundEscrow
+  // below.
+  const [isFundingEscrow, setIsFundingEscrow] = useState(false);
+  // True while a real NuanceEscrow.cancel_escrow transaction is
+  // mid-flight — see cancelEscrow below.
+  const [isCancellingEscrow, setIsCancellingEscrow] = useState(false);
 
   const [formTitle, setFormTitle] = useState("");
   const [formCounterparty, setFormCounterparty] = useState("");
@@ -340,11 +363,21 @@ export function NuanceApp() {
   const [selectedPredictionId, setSelectedPredictionId] = useState<
     number | null
   >(null);
-  const [betAmount, setBetAmount] = useState("");
+  // Milli-GEN (1000 = 1 GEN) — one of BET_AMOUNTS_MILLI_GEN's fixed
+  // quick-pick presets (0.5/1/2/3 GEN), never free-typed. See
+  // prediction-detail-view.tsx's own quick-pick buttons.
+  const [betAmountMilliGen, setBetAmountMilliGen] = useState<number | null>(null);
   const [betSide, setBetSide] = useState<"yes" | "no" | null>(null);
   const [positions, setPositions] = useState<Record<number, Position>>({});
   const [isBetting, setIsBetting] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
+  const [isClaiming, setIsClaiming] = useState(false);
+  // Per-session only — this app has no read call yet for "has this
+  // wallet already called claim_winnings on this market" (the contract's
+  // own `claimed` map isn't queried from the frontend today), so this
+  // just hides the button immediately after a successful claim in this
+  // browser session rather than tracking it durably.
+  const [claimedPredictionIds, setClaimedPredictionIds] = useState<Set<number>>(new Set());
   const [bettingError, setBettingError] = useState<string | null>(null);
 
   // Disputes ------------------------------------------------------------
@@ -489,8 +522,20 @@ export function NuanceApp() {
     }
   };
 
+  // loadData's own first act, on every call, is six synchronous setState
+  // calls (reset every *Loading flag to true / every *Error to null)
+  // before its first await — react-hooks/set-state-in-effect correctly
+  // flags calling it directly here, since that runs those six setState
+  // calls as part of this effect's own synchronous execution (real
+  // cascading-render risk, not a false positive). queueMicrotask defers
+  // the call past that synchronous phase — a true microtask, not a
+  // setTimeout(…, 0) macrotask, so there's no perceptible delay before
+  // loading actually starts; it just genuinely isn't "synchronously
+  // inside the effect" by the time loadData's own setState calls run.
   useEffect(() => {
-    loadData();
+    queueMicrotask(() => {
+      loadData();
+    });
   }, []);
 
   useEffect(() => {
@@ -503,9 +548,16 @@ export function NuanceApp() {
           }
         })
         .catch(() => {});
-      loadData();
+      queueMicrotask(() => {
+        loadData();
+      });
     } else {
-      setPositions({});
+      // Same reasoning as the queueMicrotask calls above — a direct
+      // synchronous setState here is exactly what react-hooks/
+      // set-state-in-effect flags, even with nothing async involved.
+      queueMicrotask(() => {
+        setPositions({});
+      });
     }
   }, [wallet.status]);
 
@@ -708,6 +760,104 @@ export function NuanceApp() {
       setEscrowActionError(errorText(err, "Failed to release payment."));
     }
   }
+  // The "Fund Escrow" action (escrow-detail-view.tsx) — a real, payable
+  // NuanceEscrow.fund_escrow transaction, signed by the connected wallet.
+  // Only shown/usable once auto-deploy has linked a contract_address (see
+  // services/genlayer_deploy.py's deploy_escrow_contract, a background
+  // task kicked off when the escrow is first created) and only meaningful
+  // for the escrow's own creator — the contract itself enforces that
+  // restriction, this handler doesn't duplicate the check client-side.
+  async function fundEscrow() {
+    if (selectedId == null || isFundingEscrow) return;
+    if (wallet.status !== "connected" || !wallet.provider) {
+      setEscrowActionError("Connect your wallet to fund this escrow.");
+      return;
+    }
+    const escrowId = selectedId;
+    setEscrowActionError(null);
+    setIsFundingEscrow(true);
+
+    let escrowData: api.ApiEscrow;
+    try {
+      escrowData = await api.getEscrow(escrowId);
+    } catch (err) {
+      setEscrowActionError(errorText(err, "Failed to fund escrow."));
+      setIsFundingEscrow(false);
+      return;
+    }
+    const contractAddress = escrowContractAddress(escrowData);
+    if (!contractAddress) {
+      setEscrowActionError(
+        "This escrow isn't linked to a deployed contract yet — funding isn't available until auto-deploy finishes."
+      );
+      setIsFundingEscrow(false);
+      return;
+    }
+
+    try {
+      const txHash = await fundEscrowOnChain({
+        walletAddress: wallet.address,
+        provider: wallet.provider,
+        contractAddress,
+        amountGen: escrowData.total,
+      });
+      const updated = mapEscrow(await api.fundEscrowOnChainAck(escrowId, txHash));
+      setEscrows((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+    } catch (err) {
+      setEscrowActionError(describeWriteError(err));
+    } finally {
+      setIsFundingEscrow(false);
+    }
+  }
+  // The "Cancel Escrow" action (escrow-detail-view.tsx) — a real
+  // NuanceEscrow.cancel_escrow transaction, signed by the connected
+  // wallet. The contract refunds whatever's locked back to the creator
+  // as part of that same transaction (see that method's own contract-
+  // side docstring) — nothing further to do here to receive it. Only
+  // meaningful for the creator and only while no milestone has been
+  // approved yet — the contract itself enforces both, this handler
+  // doesn't duplicate the checks client-side.
+  async function cancelEscrow() {
+    if (selectedId == null || isCancellingEscrow) return;
+    if (wallet.status !== "connected" || !wallet.provider) {
+      setEscrowActionError("Connect your wallet to cancel this escrow.");
+      return;
+    }
+    const escrowId = selectedId;
+    setEscrowActionError(null);
+    setIsCancellingEscrow(true);
+
+    let escrowData: api.ApiEscrow;
+    try {
+      escrowData = await api.getEscrow(escrowId);
+    } catch (err) {
+      setEscrowActionError(errorText(err, "Failed to cancel escrow."));
+      setIsCancellingEscrow(false);
+      return;
+    }
+    const contractAddress = escrowContractAddress(escrowData);
+    if (!contractAddress) {
+      setEscrowActionError(
+        "This escrow isn't linked to a deployed contract — nothing on-chain to cancel."
+      );
+      setIsCancellingEscrow(false);
+      return;
+    }
+
+    try {
+      const txHash = await cancelEscrowOnChain({
+        walletAddress: wallet.address,
+        provider: wallet.provider,
+        contractAddress,
+      });
+      const updated = mapEscrow(await api.cancelEscrowOnChainAck(escrowId, txHash));
+      setEscrows((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+    } catch (err) {
+      setEscrowActionError(describeWriteError(err));
+    } finally {
+      setIsCancellingEscrow(false);
+    }
+  }
   async function submitCreate() {
     if (!formTitle.trim() || !formCounterparty.trim() || !formAmount) return;
     setCreateError(null);
@@ -738,39 +888,84 @@ export function NuanceApp() {
   function goPredictions() {
     setView("predictions");
     setSelectedPredictionId(null);
-    setBetAmount("");
+    setBetAmountMilliGen(null);
     setBetSide(null);
     setBettingError(null);
   }
   function openPrediction(id: number) {
     setView("predictionDetail");
     setSelectedPredictionId(id);
-    setBetAmount("");
+    setBetAmountMilliGen(null);
     setBetSide(null);
     setBettingError(null);
   }
   async function placeBet() {
-    if (!betAmount || !betSide || selectedPredictionId == null || isBetting) return;
-    const parsedAmount = parseInt(betAmount, 10);
-    if (isNaN(parsedAmount) || parsedAmount <= 0) {
-      setBettingError("Enter a valid bet amount.");
-      return;
-    }
+    if (betAmountMilliGen == null || !betSide || selectedPredictionId == null || isBetting) return;
+    const amountMilliGen = betAmountMilliGen;
 
     setIsBetting(true);
     setBettingError(null);
+    const predictionId = selectedPredictionId;
+
+    // A fresh, authoritative read rather than trusting the already-loaded
+    // `predictions` state — same reasoning submitDeliverable/
+    // escalateToDisputeCourt already give: this decision (on-chain vs.
+    // legacy) has to be made against real, current linkage.
+    let predictionData: api.ApiPrediction;
     try {
-      const updatedApi = await api.placeBet(selectedPredictionId, betSide, parsedAmount);
+      predictionData = await api.getPrediction(predictionId);
+    } catch (err) {
+      setBettingError(errorText(err, "Failed to place bet."));
+      setIsBetting(false);
+      return;
+    }
+    const contractAddress = predictionContractAddress(predictionData);
+
+    if (contractAddress && wallet.status === "connected" && wallet.provider) {
+      // On-chain path: sign and send NuancePredictionMarket.bet directly
+      // from this browser via the connected wallet — a real, payable
+      // transaction (see betOnChain's own comment on the milli-GEN-to-wei
+      // conversion), unlike every other on-chain write this app makes.
+      try {
+        const txHash = await betOnChain({
+          walletAddress: wallet.address,
+          provider: wallet.provider,
+          contractAddress,
+          outcome: betSide.toUpperCase() as "YES" | "NO",
+          amountMilliGen,
+        });
+        const updatedApi = await api.placeBetOnChainAck(predictionId, txHash, betSide, amountMilliGen);
+        const updatedPred = mapPrediction(updatedApi);
+        setPredictions((prev) => prev.map((p) => (p.id === updatedPred.id ? updatedPred : p)));
+        setPositions((prev) => ({
+          ...prev,
+          [predictionId]: {
+            side: betSide,
+            amount: (prev[predictionId]?.amount || 0) + amountMilliGen,
+          },
+        }));
+        setBetAmountMilliGen(null);
+      } catch (err) {
+        setBettingError(describeWriteError(err));
+      } finally {
+        setIsBetting(false);
+      }
+      return;
+    }
+
+    // Legacy off-chain path — unchanged.
+    try {
+      const updatedApi = await api.placeBet(predictionId, betSide, amountMilliGen);
       const updatedPred = mapPrediction(updatedApi);
       setPredictions((prev) => prev.map((p) => (p.id === updatedPred.id ? updatedPred : p)));
       setPositions((prev) => ({
         ...prev,
-        [selectedPredictionId]: {
+        [predictionId]: {
           side: betSide,
-          amount: (prev[selectedPredictionId]?.amount || 0) + parsedAmount,
+          amount: (prev[predictionId]?.amount || 0) + amountMilliGen,
         },
       }));
-      setBetAmount("");
+      setBetAmountMilliGen(null);
     } catch (err) {
       setBettingError(errorText(err, "Failed to place bet. Ensure wallet is connected."));
     } finally {
@@ -782,8 +977,44 @@ export function NuanceApp() {
     if (selectedPredictionId == null || isResolving) return;
     setIsResolving(true);
     setBettingError(null);
+    const predictionId = selectedPredictionId;
+
+    let predictionData: api.ApiPrediction;
     try {
-      const updatedApi = await api.resolvePrediction(selectedPredictionId);
+      predictionData = await api.getPrediction(predictionId);
+    } catch (err) {
+      setBettingError(errorText(err, "Failed to resolve prediction market."));
+      setIsResolving(false);
+      return;
+    }
+    const contractAddress = predictionContractAddress(predictionData);
+
+    if (contractAddress && wallet.status === "connected" && wallet.provider) {
+      // On-chain path: sign and send NuancePredictionMarket.resolve_market
+      // directly. Manual/optional — services/genlayer_indexer.py's
+      // trigger_pending_market_resolutions already does this automatically
+      // once the cutoff passes; this just lets someone trigger it sooner
+      // rather than wait for the indexer's own poll cycle. No local state
+      // to update yet either way: resolution isn't instant (GenVM
+      // validators still have to decide), so there's nothing real to show
+      // until a later refetch picks up the actual outcome.
+      try {
+        await resolveMarketOnChain({
+          walletAddress: wallet.address,
+          provider: wallet.provider,
+          contractAddress,
+        });
+      } catch (err) {
+        setBettingError(describeWriteError(err));
+      } finally {
+        setIsResolving(false);
+      }
+      return;
+    }
+
+    // Legacy off-chain path — unchanged.
+    try {
+      const updatedApi = await api.resolvePrediction(predictionId);
       const updatedPred = mapPrediction(updatedApi);
       setPredictions((prev) => prev.map((p) => (p.id === updatedPred.id ? updatedPred : p)));
 
@@ -796,7 +1027,7 @@ export function NuanceApp() {
           const lastPos = userPos[userPos.length - 1];
           setPositions((prev) => ({
             ...prev,
-            [selectedPredictionId]: {
+            [predictionId]: {
               id: lastPos.id,
               side: lastPos.side.toLowerCase() as "yes" | "no",
               amount: userPos.reduce((sum, p) => sum + p.amount, 0),
@@ -810,6 +1041,48 @@ export function NuanceApp() {
       setBettingError(errorText(err, "Failed to resolve prediction market."));
     } finally {
       setIsResolving(false);
+    }
+  }
+
+  async function claimWinnings() {
+    if (selectedPredictionId == null || isClaiming) return;
+    if (wallet.status !== "connected" || !wallet.provider) {
+      setBettingError("Connect your wallet to claim winnings.");
+      return;
+    }
+    const predictionId = selectedPredictionId;
+    setIsClaiming(true);
+    setBettingError(null);
+
+    let predictionData: api.ApiPrediction;
+    try {
+      predictionData = await api.getPrediction(predictionId);
+    } catch (err) {
+      setBettingError(errorText(err, "Failed to claim winnings."));
+      setIsClaiming(false);
+      return;
+    }
+    const contractAddress = predictionContractAddress(predictionData);
+    if (!contractAddress) {
+      // Off-chain "Won $X" is a notional figure computed by
+      // services/payout.py — there's no real stake to pull out for a
+      // market that was never linked to a deployed contract.
+      setBettingError("This market's payout is off-chain and settles automatically.");
+      setIsClaiming(false);
+      return;
+    }
+
+    try {
+      await claimWinningsOnChain({
+        walletAddress: wallet.address,
+        provider: wallet.provider,
+        contractAddress,
+      });
+      setClaimedPredictionIds((prev) => new Set(prev).add(predictionId));
+    } catch (err) {
+      setBettingError(describeWriteError(err));
+    } finally {
+      setIsClaiming(false);
     }
   }
 
@@ -984,8 +1257,12 @@ export function NuanceApp() {
                 onSubmitDeliverable={submitDeliverable}
                 onReleasePayment={releasePayment}
                 onEscalate={escalateToDisputeCourt}
+                onFundEscrow={fundEscrow}
+                onCancelEscrow={cancelEscrow}
                 submitDisabled={onChainSubmitPending}
                 escalateDisabled={escalatePending}
+                fundingDisabled={isFundingEscrow}
+                cancellingDisabled={isCancellingEscrow}
               />
             </>
           ) : null)}
@@ -1023,18 +1300,21 @@ export function NuanceApp() {
         {view === "predictionDetail" && selectedPrediction && (
           <PredictionDetailView
             prediction={selectedPrediction}
-            betAmount={betAmount}
+            betAmountMilliGen={betAmountMilliGen}
             betSide={betSide}
             position={positions[selectedPrediction.id] ?? null}
             isBetting={isBetting}
             isResolving={isResolving}
+            isClaiming={isClaiming}
+            hasClaimed={claimedPredictionIds.has(selectedPrediction.id)}
             bettingError={bettingError}
             onBack={goPredictions}
             onSelectYes={() => setBetSide("yes")}
             onSelectNo={() => setBetSide("no")}
-            onBetAmountChange={setBetAmount}
+            onSelectAmount={setBetAmountMilliGen}
             onPlaceBet={placeBet}
             onResolveMarket={resolveMarket}
+            onClaimWinnings={claimWinnings}
           />
         )}
 

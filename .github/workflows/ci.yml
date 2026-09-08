@@ -73,12 +73,12 @@ jobs:
           cache: "npm"
       - run: npm ci
       - run: npm run typecheck
-      # `npm run lint` deliberately not gated here yet: as of 2026-09-07 it
-      # fails on a pre-existing `react-hooks/set-state-in-effect` finding
-      # against nuance-app.tsx's core "fetch everything on mount" loadData()
-      # pattern — a real architectural question (is that rule's strictness
-      # actually wanted against this app's data-loading design?) for
-      # whoever owns that file to decide, not something to blind-refactor
-      # inside an unrelated CI/infra change. Add this back once that's
-      # resolved one way or the other.
+      # Re-gated 2026-09-08 — the react-hooks/set-state-in-effect finding
+      # this was waiting on is fixed: nuance-app.tsx's loadData() calls
+      # (and the wallet-disconnect setPositions({}) reset next to them)
+      # now go through queueMicrotask, deferring past the effect's own
+      # synchronous execution rather than setState-ing directly inside
+      # it — a true microtask, not a setTimeout(…, 0) macrotask, so
+      # there's no perceptible delay before loading actually starts.
+      - run: npm run lint
       - run: npm run build

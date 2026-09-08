@@ -48,7 +48,7 @@ export function DisputesView({
                 <StatusBadge status={d.statusKey} />
               </div>
               <div className="mt-2.5 font-brand-mono text-[13px] text-fg-bright">
-                {d.amount.toLocaleString()} USDC at stake
+                {d.amount.toLocaleString()} GEN at stake
               </div>
             </div>
           ))}
