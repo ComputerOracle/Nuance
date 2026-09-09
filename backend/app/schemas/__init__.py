@@ -8,7 +8,9 @@ ProposalRead` keeps working exactly as before the split.
 from __future__ import annotations
 
 from app.schemas.core import (
+    AgentCaseRead,
     AgentStatRead,
+    AnalyticsOverview,
     ConsensusJobRead,
     ConsensusStatus,
     ConsensusVerdict,
@@ -54,7 +56,9 @@ from app.schemas.governance import (
 )
 
 __all__ = [
+    "AgentCaseRead",
     "AgentStatRead",
+    "AnalyticsOverview",
     "ConsensusJobRead",
     "ConsensusStatus",
     "ConsensusVerdict",

@@ -153,3 +153,28 @@ async def publish_dispute_message(dispute_id: int, payload: dict[str, Any]) -> N
 
 async def subscribe_dispute_messages(dispute_id: int) -> AsyncIterator[dict[str, Any]] | None:
     return await subscribe_updates(f"dispute_messages:{dispute_id}")
+
+
+def format_sse(payload: dict[str, Any], *, event: str | None = None) -> str:
+    """ROADMAP.md Part 3 5.2's SSE fallback transport — the wire format
+    both routers/consensus.py's and routers/disputes.py's `/sse/...`
+    endpoints emit, alongside their existing WS ones. A bare `data: ...`
+    line (`event` omitted) is what `EventSource.onmessage` picks up
+    client-side without needing a named-event listener, matching how the
+    WS handlers' `onmessage` already works today — the SSE endpoints are
+    meant to be a drop-in second transport for the exact same payload
+    shape, not a different protocol. `error` payloads deliberately stay
+    on the bare/default event too, same reason: a real EventSource fires
+    its own native `error` event (a plain `Event`, no `.data`) on any
+    transport-level failure, and `addEventListener("error", ...)` catches
+    both that AND a server-sent `event: error` with the same name — there
+    would be no reliable way for a client to tell them apart. Named
+    events (`event` set) are reserved for the one thing bare `data:`
+    genuinely can't do: a client-detectable clean stream end (see
+    routers/consensus.py's own `event="done"` usage) — plain EventSource
+    has no "the stream just closed on purpose" signal otherwise and will
+    auto-reconnect a deliberately-closed connection like any dropped one.
+    """
+    lines = [f"event: {event}"] if event else []
+    lines.append(f"data: {json.dumps(payload)}")
+    return "\n".join(lines) + "\n\n"

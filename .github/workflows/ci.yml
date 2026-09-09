@@ -82,3 +82,36 @@ jobs:
       # there's no perceptible delay before loading actually starts.
       - run: npm run lint
       - run: npm run build
+
+  # ROADMAP.md Part 3 5.3's E2E row: "Full escrow lifecycle: connect a
+  # mocked injected wallet -> create escrow -> submit deliverable -> watch
+  # consensus resolve -> release funds" (playwright.config.ts, e2e/). Runs
+  # the real frontend (next build/start) against the real backend (a
+  # throwaway SQLite db, no LLM keys -> services/consensus.py's
+  # deterministic offline heuristic) — not mocked API responses, only the
+  # wallet and the (unconfigured, deliberately) LLM providers are stood in
+  # for. `channel: "chrome"` (playwright.config.ts) uses the runner's
+  # already-installed Google Chrome directly — ubuntu-latest ships it —
+  # so no `playwright install` browser download is needed here at all.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+      # A real backend/venv, matching local dev exactly (see backend/
+      # requirements.txt / README) — playwright.config.ts's backend
+      # webServer command runs `venv/bin/uvicorn` unconditionally, the
+      # same either way, rather than branching CI onto a different
+      # invocation than what a contributor runs locally.
+      - run: python -m venv venv && venv/bin/pip install -r requirements.txt
+        working-directory: backend
+      - run: npx playwright test

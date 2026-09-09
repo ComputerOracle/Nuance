@@ -1,16 +1,21 @@
-"""GET/POST /disputes/{id}/messages, GET/POST /disputes/{id}/evidence, GET /disputes, enforce.
+"""GET/POST /disputes/{id}/messages (+ WS/SSE live variants), GET/POST
+/disputes/{id}/evidence, GET /disputes, enforce.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db import get_db
+from app.db import AsyncSessionLocal, get_db
 from app.dependencies import get_current_user
 from app.enums import ConsensusStage, ConsensusSubjectType, StatusKey
 from app.models import ConsensusJob, Dispute, DisputeEvidence, DisputeMessage, User
@@ -24,8 +29,12 @@ from app.schemas import (
     OnChainEvidenceAck,
 )
 from app.services.consensus import run_consensus
+from app.services.realtime import format_sse, publish_dispute_message, subscribe_dispute_messages
 
 router = APIRouter(prefix="/disputes", tags=["disputes"])
+logger = logging.getLogger(__name__)
+
+MESSAGES_POLL_INTERVAL_SECONDS = 2.0
 
 
 async def _get_dispute_or_404(dispute_id: int, db: AsyncSession) -> Dispute:
@@ -116,7 +125,142 @@ async def send_message(
     db.add(msg)
     await db.commit()
     await db.refresh(msg)
+
+    # Best-effort — see realtime.publish_update's own docstring: a publish
+    # failure never breaks the request that triggered it, subscribers just
+    # fall back to their own db-polling loop below instead of getting an
+    # instant push.
+    await publish_dispute_message(
+        dispute_id, {"type": "message", "message": DisputeMessageRead.model_validate(msg).model_dump(mode="json")}
+    )
     return msg
+
+
+async def _list_messages_fresh(dispute_id: int) -> list[DisputeMessage] | None:
+    """Same reasoning as routers/consensus.py's `_get_job_or_none` — a
+    fresh session per call rather than one held for a WS/SSE connection's
+    whole life, so SQLAlchemy's identity map can't keep handing back a
+    stale row set across poll ticks. Returns None if the dispute itself
+    doesn't exist (vs. an empty list, which just means no messages yet)."""
+    async with AsyncSessionLocal() as db:
+        dispute = await db.get(Dispute, dispute_id)
+        if dispute is None:
+            return None
+        result = await db.execute(
+            select(DisputeMessage)
+            .where(DisputeMessage.dispute_id == dispute_id)
+            .order_by(DisputeMessage.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+
+def _messages_init_payload(messages: list[DisputeMessage]) -> dict:
+    return {
+        "type": "init",
+        "messages": [DisputeMessageRead.model_validate(m).model_dump(mode="json") for m in messages],
+    }
+
+
+@router.websocket("/ws/{dispute_id}/messages")
+async def dispute_messages_ws(websocket: WebSocket, dispute_id: int) -> None:
+    """Live counterpart to GET/POST /{dispute_id}/messages above — added
+    2026-09-08 (ROADMAP.md Part 3 5.2's "live dispute-message updates over
+    the same realtime channel"): dispute-detail-view.tsx used to have no
+    push channel at all for chat messages, just a 3s setInterval poll.
+    Mirrors routers/consensus.py's consensus_status_ws structure (subscribe
+    *before* the initial read, so nothing published in between is missed;
+    Redis pub/sub when reachable, db polling unchanged otherwise) — the
+    one real difference is there's no terminal "DONE" state here: a
+    dispute's chat never stops, so this loops until the client disconnects
+    rather than until some stage is reached.
+    """
+    await websocket.accept()
+    try:
+        updates = await subscribe_dispute_messages(dispute_id)
+
+        messages = await _list_messages_fresh(dispute_id)
+        if messages is None:
+            await websocket.send_json({"error": "Dispute not found."})
+            await websocket.close(code=1008)
+            return
+
+        await websocket.send_json(_messages_init_payload(messages))
+
+        if updates is not None:
+            async for payload in updates:
+                await websocket.send_json(payload)
+            return
+
+        # Redis unavailable — poll for messages newer than the last one
+        # already sent, unchanged in spirit from the frontend's own old
+        # setInterval loop, just server-side now.
+        last_id = messages[-1].id if messages else 0
+        while True:
+            await asyncio.sleep(MESSAGES_POLL_INTERVAL_SECONDS)
+            fresh = await _list_messages_fresh(dispute_id)
+            if fresh is None:
+                await websocket.send_json({"error": "Dispute not found."})
+                await websocket.close(code=1008)
+                return
+            new_messages = [m for m in fresh if m.id > last_id]
+            if new_messages:
+                for m in new_messages:
+                    await websocket.send_json(
+                        {"type": "message", "message": DisputeMessageRead.model_validate(m).model_dump(mode="json")}
+                    )
+                last_id = new_messages[-1].id
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001 — never let a bad tick crash the server, just drop this connection
+        logger.exception("Dispute messages WS tick failed for dispute %s", dispute_id)
+        try:
+            await websocket.close(code=1011)
+        except RuntimeError:
+            pass  # already closed
+
+
+async def _dispute_messages_sse_events(dispute_id: int) -> AsyncIterator[str]:
+    """SSE counterpart to dispute_messages_ws — see routers/consensus.py's
+    _consensus_sse_events for why this is factored out as its own
+    generator (directly testable) and ROADMAP.md Part 3 5.2 for why SSE
+    exists as a fallback tier at all. No terminal event here (unlike
+    consensus's `event: done`) — a dispute's chat has no "finished" state,
+    so this streams until the client disconnects, same as the WS variant."""
+    updates = await subscribe_dispute_messages(dispute_id)
+
+    messages = await _list_messages_fresh(dispute_id)
+    if messages is None:
+        yield format_sse({"error": "Dispute not found."})
+        return
+
+    yield format_sse(_messages_init_payload(messages))
+
+    if updates is not None:
+        async for payload in updates:
+            yield format_sse(payload)
+        return
+
+    last_id = messages[-1].id if messages else 0
+    while True:
+        await asyncio.sleep(MESSAGES_POLL_INTERVAL_SECONDS)
+        fresh = await _list_messages_fresh(dispute_id)
+        if fresh is None:
+            yield format_sse({"error": "Dispute not found."})
+            return
+        new_messages = [m for m in fresh if m.id > last_id]
+        for m in new_messages:
+            yield format_sse({"type": "message", "message": DisputeMessageRead.model_validate(m).model_dump(mode="json")})
+        if new_messages:
+            last_id = new_messages[-1].id
+
+
+@router.get("/sse/{dispute_id}/messages")
+async def dispute_messages_sse(dispute_id: int) -> StreamingResponse:
+    return StreamingResponse(
+        _dispute_messages_sse_events(dispute_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # --- Evidence -------------------------------------------------------------

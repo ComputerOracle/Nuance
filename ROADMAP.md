@@ -656,23 +656,23 @@ Appeals are explicit client actions, not just a passive waiting window: `client.
 - [x] `app/db.py::init_db()` now branches on dialect: SQLite (local dev/test) keeps its zero-config `create_all` + column-patch convenience; Postgres does nothing — Alembic is the real source of truth there, and running `create_all` against it too would create tables with no `alembic_version` row, silently desyncing the two systems.
 - [ ] `scripts/migrate_sqlite_to_postgres.py` (existing demo data) — not done; no real Postgres environment existed yet to migrate data *into*, and this repo's SQLite data is disposable dev/test seed data, not something worth a data-migration script yet.
 
-### 5.2 Real-Time Architecture — Redis pub/sub done 2026-09-07; SSE/dispute-messages not started
+### 5.2 Real-Time Architecture — ✅ done 2026-09-08
 
 - [x] `app/services/realtime.py` — Redis pub/sub (`redis.asyncio`) behind the consensus WS channel (`routers/consensus.py`), replacing the per-connection DB-polling loop that couldn't actually reach a WS connection accepted by a *different* `uvicorn --workers N` process (see that file's own docstring for why "polling" was never really a shared channel to begin with). Degrades gracefully: an unreachable Redis (confirmed via a live test — no Redis running, real `Connection refused`) logs a warning once and falls back to the original polling loop unchanged, exactly like every other optional integration in this codebase.
 - [x] `services/consensus.py::run_consensus` publishes after every stage commit (QUEUED, ANALYZING, DONE); `routers/consensus.py`'s WS handler subscribes *before* reading current state (closes the race between "read current state" and "start listening").
-- [ ] Dispute-message live updates (`/ws/disputes/{id}/messages`) — not started; `sendDisputeMessage` still needs a manual refetch.
-- [ ] SSE fallback transport — not started; the WS channel's own fallback (plain HTTP polling, unchanged from before this prompt) covers the same "WS blocked" case today, just without SSE's lower overhead.
+- [x] Dispute-message live updates — `routers/disputes.py`'s new `dispute_messages_ws`/`dispute_messages_sse`, `realtime.publish_dispute_message`/`subscribe_dispute_messages` (the channel plumbing existed already; nothing called it until now), and `send_message` publishing right after commit. Frontend: `components/app/use-dispute-messages.ts` replaces dispute-detail-view.tsx's old 3s `setInterval` poll with the same WS→SSE→polling chain consensus already had, deduping optimistic sends against the authoritative push by message id. Covered by `backend/tests/test_realtime_sse_ws.py`.
+- [x] SSE fallback transport — `GET /consensus/sse/{job_id}` and `GET /disputes/sse/{dispute_id}/messages` (`realtime.format_sse`), inserted as a middle tier in both `use-consensus-polling.ts` and `use-dispute-messages.ts`: WS → SSE → plain polling. `error` payloads deliberately stay on the bare/unnamed SSE event (a real `EventSource`'s own native connection-failure event shares that exact name, so a named `event: error` would be indistinguishable from a transport drop); only consensus's terminal `done` state gets a named event, since a dispute's chat has no equivalent "finished" state to signal.
 
-### 5.3 Test Suite Expansion
+### 5.3 Test Suite Expansion — E2E + CI done 2026-09-08; contract/load layers not started
 
 | Layer | Tooling | New coverage |
 |---|---|---|
-| GenVM contracts | `gltest` (GenLayer's simulator harness) | `submit_deliverable` approve/dispute paths, `verify_external_claim` against a mocked page |
-| Backend load | `locust` or `k6` | Concurrent `POST /escrows/{id}/deliverable` under load — validates rate limiting & idempotency keys from §3.3 actually hold |
-| Backend integration | `pytest` (extend existing suite) | Governance quorum/finalize edge cases, validator/agent stat recomputation correctness |
-| E2E | Playwright (Cypress is also fine — pick one, don't run both) | Full escrow lifecycle: connect a mocked injected wallet → create escrow → submit deliverable → watch consensus resolve → release funds |
+| GenVM contracts | `gltest` (GenLayer's simulator harness) | Not started — `submit_deliverable` approve/dispute paths, `verify_external_claim` against a mocked page |
+| Backend load | `locust` or `k6` | Not started — concurrent `POST /escrows/{id}/deliverable` under load, validating rate limiting & idempotency keys from §3.3 actually hold |
+| Backend integration | `pytest` (extend existing suite) | Ongoing, alongside every feature landed since — 148 tests total as of this pass, not a dedicated push |
+| E2E | Playwright | ✅ `playwright.config.ts` + `e2e/` — full escrow lifecycle against the **real** frontend (`next build`/`start`) and **real** backend (throwaway SQLite, no LLM keys → services/consensus.py's deterministic offline heuristic, no billed calls): mocked EIP-6963 wallet (`e2e/mock-wallet.ts`, real personal_sign via a Node-side viem signer) → connect → create escrow → submit deliverable → watch consensus resolve over the real WS channel → release payment. Runs against a system-installed Chrome (`channel: "chrome"`) rather than Playwright's own bundled download — this sandbox's egress allowlist blocked `cdn.playwright.dev`; a GitHub Actions runner ships Chrome already, so this works unchanged in CI. |
 
-- [ ] CI: run the existing 24 pytest tests + new suites on every PR; block merge on failure (none of this exists as CI today — only local `pytest` runs).
+- [x] CI: `.github/workflows/ci.yml`'s new `e2e` job runs `npx playwright test` on every push/PR, alongside the existing `backend-tests`/`migrations`/`frontend` jobs — blocks merge on failure like the others.
 
 ### 5.4 Security Hardening — ✅ done 2026-09-07
 
@@ -682,29 +682,32 @@ Appeals are explicit client actions, not just a passive waiting window: `client.
 - **Validators (`routers/validators.py`) checked, needs nothing here** — `GET /validators` is a pure read-only aggregation over `ConsensusJob` history with no write endpoint of any kind; there's no read-then-mutate race to close because nothing mutates.
 - [x] Dependency/secret scanning in CI (`.github/workflows/security.yml`): `pip-audit`, `npm audit --audit-level=high`, and `gitleaks/gitleaks-action@v2`, on push/PR and a weekly schedule (a dependency can grow a new CVE with zero code changes). Not just added and left red: `pip-audit` immediately found 9 real vulnerabilities across `pydantic-settings`, `python-dotenv`, and a transitive `starlette` (via `fastapi`) — all fixed in this same pass (`fastapi` 0.121.2 → 0.134.0, the minimum version whose own `Requires-Dist` drops its `starlette` ceiling below 1.0.0 at all — confirmed against every intermediate release's real wheel metadata, not guessed; `starlette` pinned explicitly at 1.6.0; `pydantic-settings` → 2.14.2; `python-dotenv` → 1.2.2). All 97 backend tests still pass unchanged; `pip-audit` now reports zero known vulnerabilities.
 
-### 5.5 Analytics Foundation
+### 5.5 Analytics Foundation — endpoint + view done 2026-09-08; materialization not started
 
-- [ ] New `routers/analytics.py`: `GET /analytics/overview` (TVL in open escrows, dispute resolution median time, validator accuracy leaderboard, prediction market volume) backing a new `AnalyticsView`.
-- [ ] Materialized/aggregated tables refreshed on a cron (reuse the sweep pattern from governance finalize) rather than computing aggregates on every request.
+- [x] `routers/analytics.py`: `GET /analytics/overview` — TVL (sum of every *not-yet-released* milestone amount on a non-cancelled escrow, not just "every escrow that exists" — a paid-out or cancelled escrow has nothing left locked), dispute resolution median time (`statistics.median` in Python, not a DB-side percentile — SQLite has none, and this stays portable across both backends per app/db.py's own split), validator accuracy leaderboard (reuses `routers/validators.py::_validator_stats` directly), and prediction market volume (converted from milli-GEN to GEN). Backs the new `AnalyticsView` (`components/app/views/analytics-view.tsx`), wired into the sidebar nav. Covered by `backend/tests/test_analytics.py`, including an empty-db case (no divide-by-zero / no `statistics.median([])` crash).
+- [ ] Materialized/aggregated tables refreshed on a cron (reuse the sweep pattern from governance finalize) — not done; this endpoint computes live on every request instead (same approach `routers/validators.py`/`routers/agents.py` already took), fine at this app's current data volume but flagged, not silently skipped, as something to revisit before real load.
 
 **Definition of done for Part 3:** the app runs on Postgres with a real migration history, consensus and dispute updates push instead of poll, CI blocks regressions across contract/load/integration/E2E layers, and the three security items above have shipped mitigations, not just a written acknowledgment.
 
-**Status as of 2026-09-07:** §5.1 (Postgres/Alembic) and §5.4 (all three security gaps + dependency/secret scanning) are done, with real Postgres/CI/live-exploit verification, not just code written. §5.2 is partial — the consensus WS channel is Redis-backed and verified; dispute-message live updates and an SSE fallback are not started. §5.3 (test suite expansion) and §5.5 (analytics) are untouched — this pass was scoped to the migration/real-time/security items specifically, not the whole of Part 3.
+**Status as of 2026-09-08:** §5.1, §5.2, §5.4, and §5.5's endpoint/view are done, each with real live/test verification, not just code written. §5.3's E2E row and its CI wiring are done the same way (a real Playwright run against the real app, not a mocked shortcut — see that section's own detail). What's left, all deliberate scope cuts rather than silent gaps: §5.1's SQLite→Postgres data-migration script (no real Postgres environment with data worth migrating existed yet), §5.3's contract-simulator (`gltest`) and load-testing (`locust`/`k6`) layers, and §5.5's cron-refreshed materialized aggregates (the endpoint computes live instead, fine at current data volume). **Part 3's definition of done is otherwise met**: Postgres + real migration history, consensus *and* dispute updates push over WS/SSE instead of poll, CI blocks regressions across migration/backend/frontend/E2E layers, and all three security items shipped real mitigations.
 
 ---
 
 ## 6. Part 4 — Ecosystem Expansion, Autonomous Agents & Mainnet Readiness
 
-### 6.1 Autonomous Agent Participation
+### 6.1 Autonomous Agent Participation — Real Agent Directory drill-down done 2026-09-09; API keys/webhooks not started
 
 Nuance's own "Agent Directory" concept implies non-human counterparties should be able to act without a browser wallet flow.
 
+- [x] **Real Agent Directory — trust scores and transaction drill-down, not seed data.** The aggregate `trust_score` (`routers/agents.py::_agent_stats`) was already computed live from `ConsensusJob` history, not seed data — that part of this item's own description predates this pass. What was actually missing, and is what this pass added: `GET /agents/{wallet_address}/history` (`AgentCaseRead`) — every individual judged case (milestone or dispute) behind one wallet's score, with a real `escrow_id`/`dispute_id` link back to the actual row. `AgentsView` rows are now clickable, opening a new `AgentDetailView` (`components/app/views/agent-detail-view.tsx`) that lists that history and links each case back to its escrow/dispute detail view. Covered by `backend/tests/test_agent_history.py`.
 - [ ] `POST /auth/api-keys` (JWT-authed) issues a scoped API key per wallet: `{key_id, secret, scopes: ["escrow:create","bet:place","evidence:submit"]}`.
 - [ ] `apiFetch` in `lib/api.ts`-equivalent server SDKs authenticate via `X-Api-Key` instead of a bearer JWT, verified the same way (maps back to a `wallet_address`, same permission checks).
 - [ ] Webhooks: `POST /webhooks` registers a callback URL invoked on `consensus.completed`/`dispute.resolved`/`prediction.resolved` — so an autonomous agent doesn't need to poll `use-consensus-polling.ts`'s equivalent itself.
 - [ ] Per-key rate limits distinct from per-wallet UI limits (agents are expected to be higher-throughput but more automatable-abuse-prone).
 
-### 6.2 Multi-Token Collateral
+### 6.2 Multi-Token Collateral — not started (blocks the Build Plan's "Multi-asset selectors" item below)
+
+> The Build Plan's Emma/Product track lists "Multi-asset selectors in the Create Escrow and Place Bet flows" — checked here for real: no `Asset` model exists anywhere in this codebase yet (confirmed via a direct search, 2026-09-09), so there is nothing but `GEN` for a selector to actually offer. Building one now would mean either a cosmetic single-option dropdown (misleading — implies choice that doesn't exist) or a client-side-only asset list with no backend to back it (worse — silently ignores whatever isn't GEN). Deliberately not built this pass; it's real frontend work once this section's `Asset` model below exists, not before.
 
 - [ ] Generalize `Escrow.total: Decimal` into an `(amount: Decimal, asset_id: FK)` pair:
 
@@ -721,17 +724,19 @@ class Asset(Base):
 - [ ] Support native `GEN` (Bradbury testnet's currency, already known to `genlayer-chain.ts`) plus a testnet ERC-20 stablecoin (e.g. testnet USDC) for predictable-value escrows.
 - [ ] Prediction market payouts and escrow releases both read `Asset.decimals` rather than assuming 2-decimal USD-like amounts (today's `Numeric(12,2)` `Money` type is USD-shaped and won't hold an 18-decimal GEN amount correctly).
 
-### 6.3 Mainnet Readiness Checklist
+### 6.3 Mainnet Readiness Checklist — docs site, runbook, and backend error tracking done 2026-09-09
 
 - [ ] Independent security audit of both the FastAPI backend and the GenVM contracts (Part 2) — non-negotiable before any non-testnet fund custody.
 - [ ] Gas/GEN cost modeling for contract calls under realistic load (validator equivalence-principle calls are inherently more expensive than a plain state write — budget for it).
 - [ ] Governance-controlled treasury via a multi-sig (or the governance contract itself once `execute_proposal` handles real fund movement, see §3.1).
-- [ ] Monitoring/alerting: Sentry (backend errors + frontend), Grafana/Prometheus (API latency, consensus job queue depth, LLM provider error rates from §3.3's fallback chain).
-- [ ] Incident-response runbook: what happens when a `ConsensusJob` hangs, when a GenVM appeal overturns a Finalized state the indexer already mirrored, when an LLM provider is fully down.
+- [x] **Monitoring/alerting — backend half.** `app/observability.py::init_sentry` — `sentry-sdk[fastapi]`, wired into `main.py` before the app is built, gated by a new `SENTRY_DSN` setting (unset -> true no-op, same shape as every other optional integration in this app: Redis, the LLM providers, Twitter ingestion). Set `SENTRY_DSN` in whatever environment wants error tracking and it's live with no further code changes. Covered by `backend/tests/test_observability.py`. **Frontend half (`@sentry/nextjs`) and Grafana/Prometheus are not done** — see RUNBOOK.md's own closing checklist for why the frontend half specifically was left for whoever actually has a Sentry project to configure it against.
+- [x] **Incident-response runbook** — `RUNBOOK.md` (repo root). Covers the specific failure modes this section originally named (a stuck `ConsensusJob`, an LLM outage, a hypothetical post-Finalized GenVM appeal reversal) plus three more found live during this codebase's own build history (Redis outage, the chain indexer's subprocess-per-cycle failure mode, and the wrong-sender `fund_escrow` GEN-loss bug) — each grounded in what the actual code does under that failure, with file/line references, not generic on-call boilerplate.
 - [ ] Public developer SDK: an OpenAPI-generated TypeScript client (`@nuance/sdk`) and Python client (`nuance-sdk` on PyPI) wrapping the same REST surface `lib/api.ts` already defines, so external integrators (including the autonomous agents from §6.1) don't hand-roll `fetch` calls.
-- [ ] Public docs site (versioned API reference + contract addresses per network) ahead of any mainnet announcement.
+- [x] **Public docs site** — `app/docs/page.tsx` (`components/docs-content.tsx`), linked from the marketing site's own nav. API reference is fetched live from this deployment's own `/openapi.json` (FastAPI generates it automatically) rather than hand-written — can't drift from the real API. Contract-addresses table only lists the two genuinely global/permanent deployed contracts (`NuanceDisputeCourt`, `NuanceGovernance`) — `NuanceEscrow`/`NuancePredictionMarket` are deployed fresh per agreement (no single canonical address to show; the page says so explicitly rather than showing a misleading one), and `NuanceValidators`/`NuanceAgentDirectory` are labeled "deployed, not yet load-bearing" (both directories are still computed from `ConsensusJob` history, not read from these contracts — see §4.4.2/4.4.3). "Versioned" today means the API's own `info.version` (`0.1.0`) — there's no v1/v2 scheme yet since this app only targets one pre-mainnet network so far.
 
 **Definition of done for Part 4:** an external, non-Nuance-authored agent can create an escrow, get judged by consensus, and receive a payout entirely through the API/SDK with no browser involved; the app supports more than one settlement asset; a named security firm has signed off before mainnet.
+
+**Status as of 2026-09-09:** §6.1's Real Agent Directory drill-down and §6.3's docs site / runbook / backend-Sentry are done, each verified live (not just written) — see each bullet above for how. Everything else in Part 4 — §6.1's API keys/webhooks, all of §6.2 (blocking the Build Plan's multi-asset-selector item — deliberately not faked, see that section's own note), the security audit, gas modeling, treasury multi-sig, frontend Sentry, Grafana/Prometheus, the public SDK — is untouched. This pass was scoped to what the Build Plan's Emma/Product track actually asked for and what was realistically buildable/verifiable without a live production environment or a real Sentry/audit engagement, not the whole of Part 4.
 
 ---
 

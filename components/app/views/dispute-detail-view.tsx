@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispute, DisputeEvidence, DisputeMessage, DisputeVerdict } from "@/components/app/types";
 import { ConsensusPanel, type ConsensusVerdict } from "@/components/app/consensus-panel";
 import { ChainStatusBadge } from "@/components/app/chain-status-badge";
 import { formatAddress } from "@/components/app/status";
+import { useDisputeMessages } from "@/components/app/use-dispute-messages";
 import { LEGACY_OFFCHAIN } from "@/lib/chain-status";
 import * as api from "@/lib/api";
 
@@ -36,7 +37,20 @@ export function DisputeDetailView({
   onSubmitEvidence: () => void;
   submittingEvidence?: boolean;
 }) {
-  const [messages, setMessages] = useState<DisputeMessage[]>([]);
+  // WS -> SSE -> polling, replacing the old 3s setInterval — see
+  // use-dispute-messages.ts's own docstring (ROADMAP.md Part 3 5.2).
+  const { messages: apiMessages, addOptimistic } = useDisputeMessages(dispute.id);
+  const messages: DisputeMessage[] = useMemo(
+    () =>
+      apiMessages.map((m) => ({
+        id: m.id,
+        disputeId: m.dispute_id,
+        senderAddress: m.sender_address,
+        content: m.content,
+        createdAt: m.created_at,
+      })),
+    [apiMessages]
+  );
   const [evidenceList, setEvidenceList] = useState<DisputeEvidence[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [sendingMsg, setSendingMsg] = useState(false);
@@ -47,37 +61,6 @@ export function DisputeDetailView({
   // contract's add_evidence only takes a URL), even before its
   // onChainDisputeId has resolved.
   const isOnChainFiled = (dispute.chainStatus ?? LEGACY_OFFCHAIN) !== LEGACY_OFFCHAIN;
-
-  // Poll messages every 3s
-  useEffect(() => {
-    let cancelled = false;
-
-    const fetchMessages = async () => {
-      try {
-        const data = await api.getDisputeMessages(dispute.id);
-        if (!cancelled) {
-          setMessages(
-            data.map((m) => ({
-              id: m.id,
-              disputeId: m.dispute_id,
-              senderAddress: m.sender_address,
-              content: m.content,
-              createdAt: m.created_at,
-            }))
-          );
-        }
-      } catch {
-        // Fallback silently during polling
-      }
-    };
-
-    fetchMessages();
-    const interval = setInterval(fetchMessages, 3000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [dispute.id]);
 
   // Poll evidence every 4s
   useEffect(() => {
@@ -123,16 +106,11 @@ export function DisputeDetailView({
     setErrorBanner(null);
     try {
       const res = await api.sendDisputeMessage(dispute.id, chatInput.trim());
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: res.id,
-          disputeId: res.dispute_id,
-          senderAddress: res.sender_address,
-          content: res.content,
-          createdAt: res.created_at,
-        },
-      ]);
+      // Immediate feedback rather than waiting on the realtime round trip —
+      // the authoritative push that follows (routers/disputes.py's
+      // send_message publishes right after commit) is deduped by id, so
+      // this doesn't double up once it arrives.
+      addOptimistic(res);
       setChatInput("");
     } catch (err) {
       setErrorBanner(

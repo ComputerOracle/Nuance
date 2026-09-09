@@ -360,6 +360,38 @@ export interface ApiAgentStat {
   trust_score: number;
 }
 
+// GET /agents/{wallet_address}/history (ROADMAP.md Part 4's Real Agent
+// Directory "transaction drill-down") — one entry per judged case behind
+// an agent's aggregate trust_score above.
+export interface ApiAgentCase {
+  consensus_job_id: number;
+  subject_type: "milestone" | "dispute";
+  subject_id: number;
+  escrow_id: number;
+  dispute_id: number | null;
+  title: string;
+  verdict_label: string | null;
+  verdict_approved: boolean | null;
+  verdict_confidence: number | null;
+  verdict_reasoning: string | null;
+  completed_at: string | null;
+}
+
+// GET /analytics/overview (ROADMAP.md Part 3 5.5) — every *_gen field
+// arrives as a JSON string (FastAPI serializes Decimal that way), not a
+// number, same reasoning callers already handle for Escrow.total/
+// Prediction amounts elsewhere in this file.
+export interface ApiAnalyticsOverview {
+  tvl_open_escrows_gen: string;
+  open_escrow_count: number;
+  dispute_resolution_median_hours: number | null;
+  resolved_dispute_count: number;
+  prediction_market_volume_gen: string;
+  prediction_market_count: number;
+  validator_leaderboard: ApiValidatorStat[];
+  generated_at: string;
+}
+
 export interface ApiNonceResponse {
   nonce: string;
   message: string;
@@ -710,6 +742,14 @@ export async function getValidators(): Promise<ApiValidatorStat[]> {
 
 export async function getAgents(): Promise<ApiAgentStat[]> {
   return apiFetch<ApiAgentStat[]>("/agents");
+}
+
+export async function getAgentHistory(walletAddress: string): Promise<ApiAgentCase[]> {
+  return apiFetch<ApiAgentCase[]>(`/agents/${walletAddress}/history`);
+}
+
+export async function getAnalyticsOverview(): Promise<ApiAnalyticsOverview> {
+  return apiFetch<ApiAnalyticsOverview>("/analytics/overview");
 }
 
 
