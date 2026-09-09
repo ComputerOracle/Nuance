@@ -19,7 +19,18 @@ from app.config import get_settings
 from app.db import dispose_engine, init_db
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.routers import agents, auth, consensus, disputes, escrows, governance, predictions, validators
+from app.routers import (
+    agents,
+    api_keys,
+    auth,
+    consensus,
+    disputes,
+    escrows,
+    governance,
+    predictions,
+    validators,
+    webhooks,
+)
 from app.services.genlayer_indexer import run_forever as run_chain_indexer
 
 settings = get_settings()
@@ -91,6 +102,8 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(api_keys.router)
+app.include_router(webhooks.router)
 app.include_router(escrows.router)
 app.include_router(disputes.router)
 app.include_router(consensus.router)

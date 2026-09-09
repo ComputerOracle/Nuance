@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
 
 from app.db import AsyncSessionLocal  # noqa: E402
-from app.enums import StatusKey  # noqa: E402
+from app.enums import ConsensusSubjectType, StatusKey  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import ConsensusJob, Dispute, Escrow, Milestone, User  # noqa: E402
 
@@ -87,9 +87,24 @@ async def _create_dispute(claimant: str, respondent: str) -> int:
 
 
 async def _consensus_job_count_for_dispute(dispute_id: int) -> int:
+    # FIXED: subject_id alone isn't enough — it's a polymorphic column
+    # shared between MILESTONE- and DISPUTE-type jobs (see ConsensusJob's
+    # own docstring), so an unrelated milestone job from a completely
+    # different test whose id happens to equal this dispute's id would
+    # get counted too. Only ever hit in practice once enough tests ran
+    # before this one in the same shared test db (see conftest.py/every
+    # test file's own os.environ.setdefault convention — one db for the
+    # whole suite, not one per file) for the two autoincrement sequences
+    # to coincide; filtering by subject_type is the actual fix, not a
+    # workaround for a specific test-ordering coincidence.
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            select(func.count()).select_from(ConsensusJob).where(ConsensusJob.subject_id == dispute_id)
+            select(func.count())
+            .select_from(ConsensusJob)
+            .where(
+                ConsensusJob.subject_id == dispute_id,
+                ConsensusJob.subject_type == ConsensusSubjectType.DISPUTE,
+            )
         )
         return result.scalar_one()
 

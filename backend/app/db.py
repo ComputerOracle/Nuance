@@ -15,7 +15,19 @@ from app.config import get_settings
 
 settings = get_settings()
 
-engine = create_async_engine(settings.database_url, echo=False)
+# SQLite (dev/tests) only: raise the driver's lock-wait timeout well above
+# its 5s default. Plain file-mode SQLite serializes writers behind one
+# global lock with no queueing beyond that timeout, and this app's test
+# suite runs ~150 tests worth of concurrent-session consensus/webhook code
+# against one shared on-disk db (see every test file's own
+# os.environ.setdefault("DATABASE_URL", ...) convention) — under full-suite
+# load that occasionally pushes a writer past 5s and surfaces as a flaky
+# "database is locked" OperationalError with no code-level bug behind it.
+# Postgres (prod) has its own real MVCC concurrency and ignores this kwarg
+# name entirely, so it's applied conditionally rather than unconditionally.
+_connect_args = {"timeout": 30} if settings.database_url.startswith("sqlite") else {}
+
+engine = create_async_engine(settings.database_url, echo=False, connect_args=_connect_args)
 
 # expire_on_commit=False: read-model responses are built from ORM objects
 # right after commit (e.g. returning the created Escrow) — with the default
@@ -75,6 +87,15 @@ _SQLITE_COLUMN_PATCHES: dict[str, list[tuple[str, str]]] = {
         ("contract_address", "TEXT"),
         ("funded_tx_hash", "TEXT"),
         ("cancelled_tx_hash", "TEXT"),
+        # ROADMAP.md Part 4 6.2 — DEFAULT 1, not NULL: asset_id is NOT NULL
+        # in the model (every escrow has exactly one settlement asset), so
+        # every pre-existing row needs a real value the instant this
+        # column appears, not a backfill step. 1 is _seed_assets()'s
+        # guaranteed native-GEN row id — the correct interpretation for
+        # every escrow created before this feature existed, which were
+        # always GEN-denominated even though nothing recorded that
+        # explicitly.
+        ("asset_id", "INTEGER DEFAULT 1"),
     ],
     "milestones": [
         ("on_chain_index", "INTEGER"),
@@ -103,6 +124,24 @@ async def _patch_missing_sqlite_columns(conn) -> None:
                 await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
 
 
+# ROADMAP.md Part 4 6.2 — id=1 is guaranteed GEN by explicit id, not
+# insertion order: Escrow.asset_id's own server_default='1' (and this
+# file's escrows.asset_id sqlite patch above) both hard-code that a bare
+# "1" means native GEN, so this must be the row that actually gets id 1,
+# not "whichever asset happened to be inserted first". `INSERT OR IGNORE`
+# makes re-running this on every startup a no-op once seeded, same
+# idempotency contract _patch_missing_sqlite_columns already has above.
+async def _seed_assets(conn) -> None:
+    await conn.exec_driver_sql(
+        "INSERT OR IGNORE INTO assets (id, symbol, decimals, contract_address, is_native) "
+        "VALUES (1, 'GEN', 18, NULL, 1)"
+    )
+    await conn.exec_driver_sql(
+        "INSERT OR IGNORE INTO assets (id, symbol, decimals, contract_address, is_native) "
+        "VALUES (2, 'USDC', 6, NULL, 0)"
+    )
+
+
 async def init_db() -> None:
     """SQLite (local dev/test, the default `database_url`): create tables
     that don't exist yet, then patch columns a pre-existing local DB is
@@ -128,6 +167,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _patch_missing_sqlite_columns(conn)
+        await _seed_assets(conn)
 
 
 async def dispose_engine() -> None:

@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     # Max write requests per rolling minute, per wallet address (falls back
     # to remote IP for unauthenticated attempts). See app/middleware/rate_limit.py.
     write_rate_limit_per_minute: int = 10
+    # Same idea, per API key (ROADMAP.md Part 4 6.1) — deliberately its
+    # own, higher setting, not a reuse of write_rate_limit_per_minute: an
+    # autonomous agent is expected to be higher-throughput than one human
+    # clicking buttons, but is also a more automatable abuse surface than
+    # a browser session gated behind a wallet-signature login each time.
+    api_key_write_rate_limit_per_minute: int = 60
 
     # --- used starting the chain-indexer prompt ---
     # NuanceDisputeCourt is a single shared registry, not one-per-row (see

@@ -1,6 +1,6 @@
-"""SQLAlchemy 2.0 async models — User, UserSettings, Escrow, Milestone,
-DeliverableSubmission, ConsensusJob, Dispute, DisputeEvidence, Prediction,
-PredictionPosition.
+"""SQLAlchemy 2.0 async models — User, UserSettings, Asset, Escrow,
+Milestone, DeliverableSubmission, ConsensusJob, Dispute, DisputeEvidence,
+Prediction, PredictionPosition.
 
 Governance's Proposal/Vote live in governance.py instead — see
 app/models/__init__.py for the re-export that makes the split invisible
@@ -18,9 +18,43 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db import Base
 from app.enums import ChainStatus, ConsensusStage, ConsensusSubjectType, StatusKey
 
-# Dollar amounts: 2 decimal places is plenty and keeps serialized values
-# clean ("500.00" rather than the generic Numeric default's "500.0000000000").
-Money = Numeric(12, 2)
+# ROADMAP.md Part 4 6.2 — replaces the old `Money = Numeric(12, 2)` (USD-
+# shaped, 2 decimal places) that Escrow.total/Milestone.amount used before
+# 2026-09-08. 2dp can't hold a native GEN amount (18 decimals) without
+# silent truncation — this widens to accommodate any asset up to 18
+# decimals (Asset.decimals below) with 20 integer digits of headroom.
+# Deliberately still just ONE numeric column, not "store raw base units as
+# an integer" (the more common on-chain pattern): every other model in
+# this codebase already represents amounts as human-scale Decimal
+# ("500.00", not "50000" cents), and asset_id + Asset.decimals is enough
+# to interpret/quantize an amount correctly without changing that
+# convention for every existing reader.
+AssetAmount = Numeric(38, 18)
+
+
+class Asset(Base):
+    """A settlement currency an Escrow's total/milestones are denominated
+    in — see Escrow.asset_id. Seeded with native GEN (Bradbury testnet's
+    currency; is_native=True, contract_address=None, matching how
+    genlayer-js's own native-currency convention works — see contracts/
+    nuance_escrow.py's fund_escrow/gl.message.value) and one testnet
+    ERC-20 stablecoin, per ROADMAP.md 6.2. `symbol` is unique so
+    `POST /escrows` can accept a human-friendly "GEN"/"USDC" instead of
+    requiring callers to already know an asset_id.
+    """
+
+    __tablename__ = "assets"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(unique=True)
+    decimals: Mapped[int]
+    # Null for the native asset (GEN) — there's no separate token contract
+    # to hold, value moves as a plain payable transfer. Set for any
+    # ERC-20-style asset (contracts/nuance_escrow.py doesn't implement
+    # ERC-20 transfers itself yet — see ROADMAP.md 6.2's own scoping note
+    # on what "support" means today vs. a real on-chain transfer path).
+    contract_address: Mapped[str | None] = mapped_column(default=None)
+    is_native: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class User(Base):
@@ -66,7 +100,15 @@ class Escrow(Base):
     creator_address: Mapped[str] = mapped_column(ForeignKey("users.wallet_address"))
     counterparty_address: Mapped[str] = mapped_column(ForeignKey("users.wallet_address"))
     title: Mapped[str]
-    total: Mapped[Decimal] = mapped_column(Money)
+    total: Mapped[Decimal] = mapped_column(AssetAmount)
+    # ROADMAP.md Part 4 6.2 — which Asset this escrow (and every one of its
+    # milestones — see Milestone.amount's own note) is denominated in.
+    # server_default keeps every pre-existing row (and any raw INSERT that
+    # doesn't know about this column yet) pointed at asset_id=1, the
+    # native-GEN row _seed_assets() guarantees exists first — see that
+    # function's own docstring on why 1 specifically, not "whichever row
+    # is_native happens to be."
+    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id"), server_default="1")
     status_key: Mapped[StatusKey] = mapped_column(default=StatusKey.IN_PROGRESS)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     # Which deployed NuanceEscrow instance (contracts/nuance_escrow.py)
@@ -98,6 +140,7 @@ class Escrow(Base):
     counterparty: Mapped["User"] = relationship(
         foreign_keys=[counterparty_address], back_populates="counterparty_escrows"
     )
+    asset: Mapped["Asset"] = relationship()
     milestones: Mapped[list["Milestone"]] = relationship(
         back_populates="escrow",
         order_by="Milestone.order_index",
@@ -115,7 +158,10 @@ class Milestone(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     escrow_id: Mapped[int] = mapped_column(ForeignKey("escrows.id"))
     name: Mapped[str]
-    amount: Mapped[Decimal] = mapped_column(Money)
+    # Denominated in its parent Escrow's asset (Escrow.asset_id) — a
+    # milestone has no asset of its own, every milestone in one escrow
+    # shares the one currency the escrow itself was created in.
+    amount: Mapped[Decimal] = mapped_column(AssetAmount)
     status_key: Mapped[StatusKey] = mapped_column(default=StatusKey.PENDING)
     criteria: Mapped[str] = mapped_column(Text)
     order_index: Mapped[int] = mapped_column(default=0)
@@ -402,5 +448,98 @@ class IdempotencyRecord(Base):
     response_body: Mapped[dict | list | None] = mapped_column(JSON, default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class ApiKey(Base):
+    """A scoped, non-browser credential for autonomous agents — ROADMAP.md
+    Part 4 6.1: "Nuance's own Agent Directory concept implies non-human
+    counterparties should be able to act without a browser wallet flow."
+    Issued via POST /auth/api-keys (JWT-authed) and authenticated on every
+    subsequent request via the X-Api-Key header (see app/dependencies.py's
+    get_current_user_or_api_key). Maps back to the same User a browser
+    session would — an API key is a second way to *prove you are* a given
+    wallet, not a separate identity/permission system, so every existing
+    "only the escrow creator can..." check keeps working completely
+    unchanged for a key-authenticated request.
+
+    Only `secret_hash` (sha256) is ever stored — the raw secret is
+    returned exactly once, in POST /auth/api-keys's own response, the
+    same "shown once, never again" convention every comparable platform
+    uses (Stripe restricted keys, GitHub PATs, ...): a hash can't be
+    reversed to show the original value again later, even to its own
+    owner, so losing it means issuing a new key, not "looking it up".
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # Public identifier — safe to log, appears in the key itself
+    # ("nuance_live_<key_id>_<secret>") so a request's own X-Api-Key header
+    # is enough to look up which row to check the secret against, without
+    # hashing every stored key to find a match.
+    key_id: Mapped[str] = mapped_column(unique=True)
+    secret_hash: Mapped[str]
+    wallet_address: Mapped[str] = mapped_column(ForeignKey("users.wallet_address"))
+    # e.g. ["escrow:create", "bet:place", "evidence:submit"] — checked by
+    # app/dependencies.py's require_scope; not enforced at the DB layer,
+    # same "DB stores the shape, the router layer enforces the rule"
+    # split every other permission check in this codebase already uses.
+    scopes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Caller-supplied, purely for the owner's own bookkeeping (GET
+    # /auth/api-keys listing "prod bot" vs "test key") — never checked by
+    # anything.
+    label: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Revocation is a soft delete (set this, don't drop the row) — keeps
+    # the row around as an audit trail of a key that existed and who it
+    # belonged to, same reasoning Dispute/ConsensusJob rows are never
+    # deleted either.
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    user: Mapped["User"] = relationship()
+
+
+class Webhook(Base):
+    """A callback URL an agent registers to be notified of consensus/
+    dispute/prediction completion events instead of polling GET
+    /consensus/{id} (or its WS equivalent) itself — ROADMAP.md Part 4 6.1.
+    Delivered by services/webhooks.py at the same points services/
+    realtime.py's Redis publish already fires from (consensus DONE,
+    dispute enforce, prediction resolve) — a webhook and a live WS
+    subscriber both learn about the same event from the same call site,
+    just over a different transport.
+
+    `secret` signs each delivery (see services/webhooks.py's
+    _sign_payload) so the receiving endpoint can verify a payload
+    actually came from Nuance and wasn't forged by a third party who
+    guessed/found the callback URL — the same HMAC-signature convention
+    Stripe/GitHub webhooks use. Unlike ApiKey.secret_hash, this is stored
+    *plain*, not hashed — a webhook secret has to stay usable server-side
+    to keep signing every future delivery, whereas an API key secret only
+    ever needs to be *compared against*, never reproduced.
+    """
+
+    __tablename__ = "webhooks"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    wallet_address: Mapped[str] = mapped_column(ForeignKey("users.wallet_address"))
+    url: Mapped[str] = mapped_column(Text)
+    # e.g. ["consensus.completed", "dispute.resolved", "prediction.resolved"]
+    event_types: Mapped[list[str]] = mapped_column(JSON, default=list)
+    secret: Mapped[str]
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    last_delivered_at: Mapped[datetime | None] = mapped_column(default=None)
+    # The HTTP status the receiving endpoint returned on the most recent
+    # delivery attempt, or a small negative sentinel for a failure that
+    # never got an HTTP response at all (timeout, DNS, connection refused)
+    # — see services/webhooks.py's DELIVERY_TIMEOUT_STATUS/DELIVERY_ERROR_STATUS.
+    # Purely observability (GET /webhooks shows "is this callback healthy")
+    # — a failing webhook is never retried indefinitely or auto-disabled;
+    # see that module's own docstring on why.
+    last_delivery_status: Mapped[int | None] = mapped_column(default=None)
+
+    user: Mapped["User"] = relationship()
 
 

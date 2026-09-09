@@ -65,6 +65,50 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// Bradbury's shared public RPC node (chains.testnetBradbury's one hardcoded
+// rpcUrls entry — see genlayer-js's chains/testnetBradbury.ts) occasionally
+// drops a request outright rather than returning a JSON-RPC error — surfaces
+// here as viem's HttpRequestError wrapping a plain "fetch failed" (a bare
+// undici network failure: timeout, reset connection, momentary DNS hiccup —
+// confirmed live 2026-09-09: the identical call against the identical
+// address failed once with this exact message, then succeeded 5/5 times
+// moments later with no code change in between). That's a node-side blip,
+// not a wrong address/method/args — retrying the *same* request a couple
+// times, briefly, clears it far more often than not. A genuine per-item
+// error (bad address, undefined method, a real genvm execution failure)
+// comes back with a completely different message and should fail fast
+// instead of wasting 3 attempts on something retrying can never fix — so
+// only this specific network-failure signature is retried, not every error.
+const RETRYABLE_ERROR_PATTERN = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up/i;
+const MAX_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 400;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt === MAX_ATTEMPTS || !RETRYABLE_ERROR_PATTERN.test(errorMessage(err))) {
+        throw err;
+      }
+      // Linear backoff (400ms, 800ms) — long enough for a momentary node
+      // hiccup to clear, short enough that even every item in a batch
+      // hitting this worst case stays well under the indexer's own
+      // between-cycle interval (settings.genlayer_indexer_poll_seconds).
+      await sleep(RETRY_BASE_DELAY_MS * attempt);
+    }
+  }
+  // Unreachable (the loop above always either returns or throws), but keeps
+  // TypeScript happy about every code path returning/throwing.
+  throw lastErr;
+}
+
 // Same field-priority logic as deploy.ts's isAcceptedOrFinalized() (see
 // that file's third-round note): the camelCase `statusName` field the
 // .d.ts declares was empty on a real live receipt; the real object
@@ -106,12 +150,14 @@ async function main() {
   const reads: Record<string, { ok: true; result: unknown } | { ok: false; error: string }> = {};
   for (const r of request.reads ?? []) {
     try {
-      const result = await client.readContract({
-        address: r.address as `0x${string}`,
-        functionName: r.functionName,
-        args: (r.args ?? []) as never,
-        jsonSafeReturn: true,
-      });
+      const result = await withRetry(() =>
+        client.readContract({
+          address: r.address as `0x${string}`,
+          functionName: r.functionName,
+          args: (r.args ?? []) as never,
+          jsonSafeReturn: true,
+        })
+      );
       reads[r.id] = { ok: true, result };
     } catch (err) {
       reads[r.id] = { ok: false, error: errorMessage(err) };
@@ -135,7 +181,7 @@ async function main() {
   > = {};
   for (const hash of request.transactions ?? []) {
     try {
-      const tx = await client.getTransaction({ hash: hash as TransactionHash });
+      const tx = await withRetry(() => client.getTransaction({ hash: hash as TransactionHash }));
       const record = tx as unknown as Record<string, unknown>;
       const statusName = extractStatusName(record);
       const resultName = extractResultName(record);

@@ -2,7 +2,12 @@
 write routes — max `settings.write_rate_limit_per_minute` requests per
 rolling minute, per wallet address (see
 app.middleware.write_routes.is_protected_write_route for the exact route
-set, shared with idempotency.py).
+set, shared with idempotency.py). An X-Api-Key-authenticated request
+(ROADMAP.md Part 4 6.1) instead buckets per key_id, at its own, higher
+`settings.api_key_write_rate_limit_per_minute` — checked before the
+wallet path, so a request presenting both an API key and a JWT is rate-
+limited as the API key (matching app.dependencies.require_user_with_
+scope's own precedence: X-Api-Key checked first, exclusively, if present).
 
 A plain custom middleware rather than slowapi: slowapi's `@limiter.limit`
 decorator needs a `Request` parameter threaded through every protected
@@ -29,7 +34,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from app.config import get_settings
-from app.middleware.write_routes import extract_wallet_address, is_protected_write_route
+from app.middleware.write_routes import (
+    extract_api_key_id,
+    extract_wallet_address,
+    is_protected_write_route,
+)
 
 _WINDOW_SECONDS = 60.0
 
@@ -52,14 +61,21 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not is_protected_write_route(request.method, request.url.path):
             return await call_next(request)
 
-        wallet = extract_wallet_address(request)
-        # Unauthenticated attempts on these routes 401 out immediately
-        # anyway, but bucketing them by IP still caps trivial hammering of
-        # that 401 path itself rather than leaving it unlimited.
-        client_host = request.client.host if request.client else "unknown"
-        bucket_key = wallet or f"anon:{client_host}"
+        api_key_id = extract_api_key_id(request)
+        if api_key_id is not None:
+            bucket_key = f"apikey:{api_key_id}"
+            limit = get_settings().api_key_write_rate_limit_per_minute
+            limit_message = f"max {limit} write requests per minute per API key."
+        else:
+            wallet = extract_wallet_address(request)
+            # Unauthenticated attempts on these routes 401 out immediately
+            # anyway, but bucketing them by IP still caps trivial hammering
+            # of that 401 path itself rather than leaving it unlimited.
+            client_host = request.client.host if request.client else "unknown"
+            bucket_key = wallet or f"anon:{client_host}"
+            limit = get_settings().write_rate_limit_per_minute
+            limit_message = f"max {limit} write requests per minute per wallet."
 
-        limit = get_settings().write_rate_limit_per_minute
         refill_rate = limit / _WINDOW_SECONDS
         now = time.monotonic()
 
@@ -77,10 +93,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 retry_after = max(1, round((1.0 - bucket.tokens) / refill_rate))
                 return JSONResponse(
                     status_code=429,
-                    content={
-                        "detail": f"Rate limit exceeded: max {limit} write requests per "
-                        "minute per wallet."
-                    },
+                    content={"detail": f"Rate limit exceeded: {limit_message}"},
                     headers={"Retry-After": str(retry_after)},
                 )
             bucket.tokens -= 1.0

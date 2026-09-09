@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_user_with_scope
 from app.models import Prediction, PredictionPosition, User
 from app.schemas import OnChainBetAck, PredictionBetCreate, PredictionPositionRead, PredictionRead
 
@@ -105,7 +105,9 @@ async def place_bet(
     prediction_id: int,
     payload: PredictionBetCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # ROADMAP.md Part 4 6.1 — see routers/escrows.py::create_escrow's own
+    # note on require_user_with_scope.
+    current_user: User = Depends(require_user_with_scope("bet:place")),
 ) -> Prediction:
     prediction = await _get_prediction_for_update_or_404(prediction_id, db)
 

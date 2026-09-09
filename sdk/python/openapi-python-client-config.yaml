@@ -1,0 +1,9 @@
+# Config for `openapi-python-client` — see ../generate.sh, the single place
+# both this and the TypeScript client are regenerated from one OpenAPI spec
+# (ROADMAP.md Part 4 6.3). project_name_override/package_name_override keep
+# the generated import path stable (`from nuance_client import ...`)
+# regardless of anything about the OpenAPI doc's own `info.title` — pinning
+# these here means a future title change in backend/app/main.py never
+# silently renames the installed package underneath every SDK consumer.
+project_name_override: nuance-client
+package_name_override: nuance_client

@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from app.schemas.core import (
     AgentStatRead,
+    ApiKeyCreate,
+    ApiKeyIssueResponse,
+    ApiKeyRead,
+    AssetRead,
     ConsensusJobRead,
     ConsensusStatus,
     ConsensusVerdict,
@@ -44,6 +48,9 @@ from app.schemas.core import (
     ValidatorResult,
     ValidatorStatRead,
     VerifyRequest,
+    WebhookCreate,
+    WebhookCreateResponse,
+    WebhookRead,
 )
 from app.schemas.governance import (
     ProposalCreate,
@@ -55,6 +62,10 @@ from app.schemas.governance import (
 
 __all__ = [
     "AgentStatRead",
+    "ApiKeyCreate",
+    "ApiKeyIssueResponse",
+    "ApiKeyRead",
+    "AssetRead",
     "ConsensusJobRead",
     "ConsensusStatus",
     "ConsensusVerdict",
@@ -95,4 +106,7 @@ __all__ = [
     "VerifyRequest",
     "VoteCreate",
     "VoteRead",
+    "WebhookCreate",
+    "WebhookCreateResponse",
+    "WebhookRead",
 ]

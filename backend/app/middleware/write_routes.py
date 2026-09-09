@@ -10,7 +10,7 @@ import re
 
 from fastapi import Request
 
-from app.security import TokenError, decode_access_token
+from app.security import TokenError, decode_access_token, parse_api_key
 
 # (method, path pattern) for every write route both middlewares protect —
 # every write that either spends LLM-provider tokens (triggers a consensus
@@ -50,3 +50,29 @@ def extract_wallet_address(request: Request) -> str | None:
         return decode_access_token(token)
     except TokenError:
         return None
+
+
+def extract_api_key_id(request: Request) -> str | None:
+    """Best-effort, DB-free parse of the X-Api-Key header — same spirit
+    as extract_wallet_address above (middleware-layer bucketing only,
+    never an auth decision by itself; app.dependencies.require_user_with_
+    scope is what actually validates the secret half and enforces scope).
+    Returns the public key_id half only (never the secret), which is all
+    rate_limit.py needs to bucket per-key (ROADMAP.md Part 4 6.1's "per-
+    key rate limits distinct from per-wallet UI limits").
+
+    Known gap, flagged rather than silently left: idempotency.py still
+    keys exclusively off extract_wallet_address, so an API-key-
+    authenticated request currently skips idempotency protection entirely
+    (same "no decodable bearer token -> pass through untouched" path a
+    request with no Authorization header at all takes) — closing that
+    needs a real DB lookup (key_id -> wallet_address) this deliberately
+    cheap, DB-free helper doesn't do. Rate limiting doesn't have the same
+    problem since it only needs the key_id itself as a bucket key, not
+    the wallet behind it.
+    """
+    header = request.headers.get("x-api-key")
+    if not header:
+        return None
+    parsed = parse_api_key(header)
+    return parsed[0] if parsed else None

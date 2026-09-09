@@ -123,6 +123,19 @@ class MilestoneRead(BaseModel):
     released_at: datetime | None = None
 
 
+# --- Asset (ROADMAP.md Part 4 6.2) ---------------------------------------
+
+
+class AssetRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    symbol: str
+    decimals: int
+    contract_address: str | None = None
+    is_native: bool
+
+
 # --- Escrow -------------------------------------------------------------
 
 
@@ -133,6 +146,13 @@ class EscrowCreate(BaseModel):
     counterparty_address: str
     total: Decimal = Field(gt=0)
     criteria: str | None = Field(default=None, max_length=2000)
+    # Which Asset this escrow is denominated in — a human-friendly symbol
+    # ("GEN", "USDC"), not a raw asset_id a caller would otherwise have to
+    # already know. Defaults to "GEN" so every existing caller (frontend,
+    # tests, any script written before this field existed) keeps working
+    # unchanged — omitting this is not an error, it's "the same behavior
+    # as before multi-asset support existed."
+    asset_symbol: str = Field(default="GEN", max_length=20)
 
     _normalize_counterparty = field_validator("counterparty_address")(_normalize_wallet)
 
@@ -140,6 +160,14 @@ class EscrowCreate(BaseModel):
     @classmethod
     def default_criteria(cls, v: str | None) -> str | None:
         return v or None
+
+    @field_validator("asset_symbol")
+    @classmethod
+    def _normalize_asset_symbol(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not v:
+            raise ValueError("asset_symbol can't be blank.")
+        return v
 
 
 class EscrowRead(BaseModel):
@@ -150,6 +178,7 @@ class EscrowRead(BaseModel):
     counterparty_address: str
     title: str
     total: Decimal
+    asset: AssetRead
     status_key: StatusKey
     created_at: datetime
     milestones: list[MilestoneRead] = []
@@ -625,6 +654,116 @@ class AgentStatRead(BaseModel):
     category: str
     cases_judged: int
     trust_score: int
+
+
+# --- API keys (ROADMAP.md Part 4 6.1) --------------------------------------
+#
+# Every scope this app currently recognizes — routers/api_keys.py's
+# require_scope rejects any scope not in this list at issuance time
+# (typo'd/made-up scopes fail loudly, not silently grant nothing) and
+# checks a request's key carries the one a protected route declares.
+API_KEY_SCOPES = frozenset({"escrow:create", "bet:place", "evidence:submit", "vote:cast"})
+
+
+class ApiKeyCreate(BaseModel):
+    label: str | None = Field(default=None, max_length=100)
+    scopes: list[str] = Field(min_length=1)
+
+    @field_validator("scopes")
+    @classmethod
+    def _validate_scopes(cls, v: list[str]) -> list[str]:
+        unknown = sorted(set(v) - API_KEY_SCOPES)
+        if unknown:
+            raise ValueError(
+                f"Unknown scope(s): {', '.join(unknown)}. Valid scopes: "
+                f"{', '.join(sorted(API_KEY_SCOPES))}."
+            )
+        return sorted(set(v))
+
+
+class ApiKeyRead(BaseModel):
+    """What GET /auth/api-keys lists — deliberately never includes the
+    secret (not even hashed) or enough of key_id to reconstruct a working
+    key; see ApiKeyIssueResponse for the one time the real key is ever
+    shown."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    key_id: str
+    label: str | None = None
+    scopes: list[str]
+    created_at: datetime
+    last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
+class ApiKeyIssueResponse(BaseModel):
+    """POST /auth/api-keys's response — the ONLY time `api_key` (the full
+    "nuance_live_<key_id>_<secret>" credential) is ever returned. See
+    models.core.ApiKey's own docstring on why: only a hash of the secret
+    half is stored, so there's no "look it up again later" path — losing
+    this means issuing a new key."""
+
+    id: int
+    key_id: str
+    api_key: str
+    label: str | None = None
+    scopes: list[str]
+    created_at: datetime
+
+
+# --- Webhooks (ROADMAP.md Part 4 6.1) --------------------------------------
+
+WEBHOOK_EVENT_TYPES = frozenset({"consensus.completed", "dispute.resolved", "prediction.resolved"})
+
+
+class WebhookCreate(BaseModel):
+    url: str = Field(min_length=1, max_length=2000)
+    event_types: list[str] = Field(min_length=1)
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, v: str) -> str:
+        v = v.strip()
+        if not (v.startswith("https://") or v.startswith("http://")):
+            raise ValueError("url must start with http:// or https://.")
+        return v
+
+    @field_validator("event_types")
+    @classmethod
+    def _validate_event_types(cls, v: list[str]) -> list[str]:
+        unknown = sorted(set(v) - WEBHOOK_EVENT_TYPES)
+        if unknown:
+            raise ValueError(
+                f"Unknown event_type(s): {', '.join(unknown)}. Valid types: "
+                f"{', '.join(sorted(WEBHOOK_EVENT_TYPES))}."
+            )
+        return sorted(set(v))
+
+
+class WebhookRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    url: str
+    event_types: list[str]
+    is_active: bool
+    created_at: datetime
+    last_delivered_at: datetime | None = None
+    last_delivery_status: int | None = None
+
+
+class WebhookCreateResponse(WebhookRead):
+    """POST /webhooks's response — the only time `secret` is ever
+    returned; see models.core.Webhook's own docstring on why this one
+    (unlike an ApiKey's secret) can't just be hashed: it has to stay
+    usable server-side to keep signing every future delivery. Callers
+    that lose it must delete and re-register the webhook to get a new one
+    (there's no "rotate secret" endpoint yet — out of scope for this
+    pass)."""
+
+    secret: str
 
 
 

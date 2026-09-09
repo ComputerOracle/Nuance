@@ -46,3 +46,10 @@ next-env.d.ts
 # still leaves __pycache__ behind)
 __pycache__/
 *.pyc
+
+# sdk/ (ROADMAP.md Part 4 6.3) — src/generated/ and nuance_client/ ARE
+# checked in (see sdk/README.md: consumers shouldn't need a codegen step),
+# but node_modules and compiled TS output are ordinary build artifacts,
+# same as the frontend's own /node_modules and /.next above.
+sdk/typescript/node_modules/
+sdk/typescript/dist/

@@ -66,6 +66,7 @@ from app.services.prompt_safety import (
     scan_for_injection,
 )
 from app.services.realtime import publish_consensus_update
+from app.services.webhooks import schedule_notify as schedule_webhook_notify
 
 logger = logging.getLogger(__name__)
 
@@ -679,6 +680,13 @@ async def run_consensus(
             job.completed_at = datetime.now(timezone.utc)
             await db.commit()
             await publish_consensus_update(job.id, _publishable_status(job))
+            # Fire-and-forget (services/webhooks.py's own contract) — a
+            # subscriber's callback being slow/down must never delay or
+            # fail the consensus job itself. Same completion point Redis's
+            # publish above fires from, just a different transport.
+            schedule_webhook_notify(
+                "consensus.completed", {"job_id": job.id, **_publishable_status(job)}
+            )
     except Exception:  # noqa: BLE001
         logger.exception(
             "run_consensus crashed for subject_type=%s subject_id=%s", subject_type, subject_id

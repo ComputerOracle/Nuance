@@ -38,6 +38,7 @@ from app.config import get_settings
 from app.models import Prediction
 from app.services.payout import calculate_prediction_payouts
 from app.services.prompt_safety import PROMPT_INJECTION_DEFENSE, fence_user_content, scan_for_injection
+from app.services.webhooks import schedule_notify
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -315,4 +316,16 @@ async def resolve_prediction_market(
         .where(Prediction.id == prediction_id)
         .options(selectinload(Prediction.positions))
     )
-    return reloaded.scalar_one()
+    resolved = reloaded.scalar_one()
+
+    # Fire-and-forget (services/webhooks.py's own contract) — never delays
+    # or fails this response.
+    schedule_notify(
+        "prediction.resolved",
+        {
+            "prediction_id": resolved.id,
+            "outcome": resolved.outcome,
+            "resolution_reasoning": resolved.resolution_reasoning,
+        },
+    )
+    return resolved

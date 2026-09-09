@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_user_with_scope
 from app.enums import ConsensusStage, ConsensusSubjectType, StatusKey
 from app.models import ConsensusJob, Dispute, DisputeEvidence, DisputeMessage, User
 from app.schemas import (
@@ -24,6 +24,7 @@ from app.schemas import (
     OnChainEvidenceAck,
 )
 from app.services.consensus import run_consensus
+from app.services.webhooks import schedule_notify as schedule_webhook_notify
 
 router = APIRouter(prefix="/disputes", tags=["disputes"])
 
@@ -146,7 +147,9 @@ async def submit_evidence(
     payload: DisputeEvidenceCreate,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # ROADMAP.md Part 4 6.1 — see routers/escrows.py::create_escrow's own
+    # note on require_user_with_scope.
+    current_user: User = Depends(require_user_with_scope("evidence:submit")),
 ) -> DisputeEvidenceRead:
     dispute = await _get_dispute_or_404(dispute_id, db)
     evidence = DisputeEvidence(
@@ -263,4 +266,17 @@ async def enforce_ruling(
 
     await db.commit()
     await db.refresh(dispute, attribute_names=["evidence", "messages"])
+
+    # Fire-and-forget (services/webhooks.py's own contract) — never delays
+    # or fails this response.
+    schedule_webhook_notify(
+        "dispute.resolved",
+        {
+            "dispute_id": dispute.id,
+            "escrow_id": dispute.escrow_id,
+            "status_key": dispute.status_key.value,
+            "ruling": dispute.ruling,
+            "enforced_by": dispute.enforced_by,
+        },
+    )
     return dispute

@@ -10,6 +10,8 @@ as before the split.
 from __future__ import annotations
 
 from app.models.core import (
+    ApiKey,
+    Asset,
     ConsensusJob,
     DeliverableSubmission,
     Dispute,
@@ -23,10 +25,13 @@ from app.models.core import (
     PredictionPosition,
     User,
     UserSettings,
+    Webhook,
 )
 from app.models.governance import Proposal, Vote
 
 __all__ = [
+    "ApiKey",
+    "Asset",
     "ConsensusJob",
     "DeliverableSubmission",
     "Dispute",
@@ -42,4 +47,5 @@ __all__ = [
     "User",
     "UserSettings",
     "Vote",
+    "Webhook",
 ]

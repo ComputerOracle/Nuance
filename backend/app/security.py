@@ -1,4 +1,5 @@
-"""JWT session tokens + personal_sign (EIP-191) signature recovery.
+"""JWT session tokens, personal_sign (EIP-191) signature recovery, and API
+key generation/verification (ROADMAP.md Part 4 6.1).
 
 Pure helpers with no DB/FastAPI dependency — app/dependencies.py and
 app/routers/auth.py compose these into the actual request flow.
@@ -6,6 +7,7 @@ app/routers/auth.py compose these into the actual request flow.
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -18,6 +20,51 @@ from app.config import get_settings
 settings = get_settings()
 
 JWT_ALGORITHM = "HS256"
+
+# --- API keys -------------------------------------------------------------
+#
+# Format: "nuance_live_<key_id>_<secret>" — the "live" segment exists so a
+# future testnet/sandbox key type can use "nuance_test_..." without a
+# breaking format change, same convention Stripe's "sk_live_"/"sk_test_"
+# keys use. key_id is the public lookup half (stored plain, indexed,
+# unique — see models.core.ApiKey), secret is the half that's actually
+# checked and only ever stored hashed.
+API_KEY_PREFIX = "nuance_live"
+
+
+def generate_api_key() -> tuple[str, str, str]:
+    """Returns (full_key, key_id, secret_hash) — full_key is what's shown
+    to the caller exactly once (schemas.ApiKeyIssueResponse); key_id and
+    secret_hash are what actually gets stored (models.core.ApiKey)."""
+    key_id = secrets.token_hex(8)
+    secret = secrets.token_hex(24)
+    full_key = f"{API_KEY_PREFIX}_{key_id}_{secret}"
+    return full_key, key_id, hash_api_key_secret(secret)
+
+
+def hash_api_key_secret(secret: str) -> str:
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+def generate_webhook_secret() -> str:
+    """A long, unguessable HMAC key for services/webhooks.py's delivery
+    signing — no key_id/prefix structure of its own (unlike an API key,
+    nothing ever needs to *look up* a webhook by its secret), just needs
+    to be hard to guess."""
+    return secrets.token_hex(24)
+
+
+def parse_api_key(full_key: str) -> tuple[str, str] | None:
+    """Splits a presented X-Api-Key header value into (key_id, secret) —
+    None if it doesn't even match the expected format, so a caller can
+    fail fast without a DB lookup on an obviously-malformed value."""
+    parts = full_key.split("_")
+    if len(parts) != 4 or f"{parts[0]}_{parts[1]}" != API_KEY_PREFIX:
+        return None
+    _, _, key_id, secret = parts
+    if not key_id or not secret:
+        return None
+    return key_id, secret
 
 # How long a server-issued nonce stays valid for signing, independent of
 # the JWT's own expiry (jwt_expires_minutes) issued once it's redeemed.

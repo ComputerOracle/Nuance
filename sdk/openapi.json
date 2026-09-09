@@ -1,0 +1,4359 @@
+{
+  "components": {
+    "schemas": {
+      "AgentStatRead": {
+        "properties": {
+          "cases_judged": {
+            "title": "Cases Judged",
+            "type": "integer"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "trust_score": {
+            "title": "Trust Score",
+            "type": "integer"
+          },
+          "wallet_address": {
+            "title": "Wallet Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "wallet_address",
+          "category",
+          "cases_judged",
+          "trust_score"
+        ],
+        "title": "AgentStatRead",
+        "type": "object"
+      },
+      "ApiKeyCreate": {
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scopes"
+        ],
+        "title": "ApiKeyCreate",
+        "type": "object"
+      },
+      "ApiKeyIssueResponse": {
+        "description": "POST /auth/api-keys's response \u2014 the ONLY time `api_key` (the full\n\"nuance_live_<key_id>_<secret>\" credential) is ever returned. See\nmodels.core.ApiKey's own docstring on why: only a hash of the secret\nhalf is stored, so there's no \"look it up again later\" path \u2014 losing\nthis means issuing a new key.",
+        "properties": {
+          "api_key": {
+            "title": "Api Key",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "key_id": {
+            "title": "Key Id",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "key_id",
+          "api_key",
+          "scopes",
+          "created_at"
+        ],
+        "title": "ApiKeyIssueResponse",
+        "type": "object"
+      },
+      "ApiKeyRead": {
+        "description": "What GET /auth/api-keys lists \u2014 deliberately never includes the\nsecret (not even hashed) or enough of key_id to reconstruct a working\nkey; see ApiKeyIssueResponse for the one time the real key is ever\nshown.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "key_id": {
+            "title": "Key Id",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "key_id",
+          "scopes",
+          "created_at"
+        ],
+        "title": "ApiKeyRead",
+        "type": "object"
+      },
+      "AssetRead": {
+        "properties": {
+          "contract_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Address"
+          },
+          "decimals": {
+            "title": "Decimals",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "is_native": {
+            "title": "Is Native",
+            "type": "boolean"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "symbol",
+          "decimals",
+          "is_native"
+        ],
+        "title": "AssetRead",
+        "type": "object"
+      },
+      "ChainStatus": {
+        "description": "Mirrors lib/chain-status.ts's ChainStatus (LEGACY_OFFCHAIN +\nChainStatusBucket) value-for-value \u2014 same reason StatusKey above\nmirrors types.ts: that file already collapses GenLayer's real 14-value\nTransactionStatus into this 4-bucket + legacy shape (via the SDK's own\nisDecidedState(), not a hand-copied list \u2014 see that file's header),\nand duplicating a *different* vocabulary here would let the two\ndrift. scripts/genlayer-read.ts computes the bucket (it has\ngenlayer-js loaded); services/genlayer_indexer.py only ever writes\none of these five strings into a row's chain_status column.\n\nEvery Milestone/Dispute/Prediction row defaults to LEGACY_OFFCHAIN and\nstays there until it's actually linked on-chain (Escrow.contract_address\n/ Prediction.contract_address / Dispute.on_chain_dispute_id set) \u2014 see\nROADMAP.md 4.5's deferred \"add this together with the actual cutover\"\nnote; this is that column, added once there's a real indexer to drive\nit rather than speculatively ahead of one.",
+        "enum": [
+          "legacy_offchain",
+          "processing",
+          "decided",
+          "finalized",
+          "canceled"
+        ],
+        "title": "ChainStatus",
+        "type": "string"
+      },
+      "ConsensusStatus": {
+        "properties": {
+          "stage": {
+            "title": "Stage",
+            "type": "integer"
+          },
+          "validator_results": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ValidatorResult"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validator Results"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConsensusVerdict"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "stage"
+        ],
+        "title": "ConsensusStatus",
+        "type": "object"
+      },
+      "ConsensusVerdict": {
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "confidence": {
+            "title": "Confidence",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reasoning": {
+            "title": "Reasoning",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "approved",
+          "confidence",
+          "reasoning"
+        ],
+        "title": "ConsensusVerdict",
+        "type": "object"
+      },
+      "DeliverableSubmissionCreate": {
+        "properties": {
+          "text": {
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "DeliverableSubmissionCreate",
+        "type": "object"
+      },
+      "DeliverableSubmissionRead": {
+        "properties": {
+          "consensus_job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consensus Job Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "milestone_id": {
+            "title": "Milestone Id",
+            "type": "integer"
+          },
+          "submitted_at": {
+            "format": "date-time",
+            "title": "Submitted At",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "wallet": {
+            "title": "Wallet",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "milestone_id",
+          "wallet",
+          "text",
+          "submitted_at"
+        ],
+        "title": "DeliverableSubmissionRead",
+        "type": "object"
+      },
+      "DisputeCreate": {
+        "description": "Body for POST /escrows/{id}/dispute \u2014 escalating a milestone's AI\nverdict to a formal Dispute Court review. `issue` is optional: the\n\"Escalate to Internet Court\" button (components/app/views/\nescrow-detail-view.tsx) fires this with no form of its own, so the\nendpoint fills in a reasonable default from the milestone's most\nrecent ConsensusJob reasoning when omitted \u2014 see routers/escrows.py's\nraise_dispute for that logic. Free-text override kept for any future\ncaller that does want to state its own claim.",
+        "properties": {
+          "issue": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue"
+          }
+        },
+        "title": "DisputeCreate",
+        "type": "object"
+      },
+      "DisputeCreateRead": {
+        "description": "DisputeRead plus the id of the ConsensusJob raise_dispute queues \u2014\nsame reasoning DeliverableSubmissionRead/DisputeEvidenceRead already\ncarry one: the frontend needs a real job id back from the 201 to start\npolling GET /consensus/{id} immediately, not a second round-trip to\nfind it. Not on DisputeRead itself \u2014 GET /disputes/{id} has no single\n\"the\" job id to report once a dispute may have been through several.",
+        "properties": {
+          "adjudication_tx_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adjudication Tx Hash"
+          },
+          "chain_status": {
+            "$ref": "#/components/schemas/ChainStatus",
+            "default": "legacy_offchain"
+          },
+          "consensus_job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consensus Job Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "enforced_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enforced By"
+          },
+          "escrow_id": {
+            "title": "Escrow Id",
+            "type": "integer"
+          },
+          "evidence": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DisputeEvidenceRead"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "issue": {
+            "title": "Issue",
+            "type": "string"
+          },
+          "messages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DisputeMessageRead"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "milestone_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Milestone Id"
+          },
+          "on_chain_dispute_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Chain Dispute Id"
+          },
+          "on_chain_tx_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Chain Tx Hash"
+          },
+          "opened_by_address": {
+            "title": "Opened By Address",
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "ruling": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ruling"
+          },
+          "status_key": {
+            "$ref": "#/components/schemas/StatusKey"
+          }
+        },
+        "required": [
+          "id",
+          "escrow_id",
+          "opened_by_address",
+          "issue",
+          "status_key",
+          "created_at"
+        ],
+        "title": "DisputeCreateRead",
+        "type": "object"
+      },
+      "DisputeEnforceRequest": {
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "ruling": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ruling"
+          }
+        },
+        "required": [
+          "approved"
+        ],
+        "title": "DisputeEnforceRequest",
+        "type": "object"
+      },
+      "DisputeEvidenceCreate": {
+        "properties": {
+          "description": {
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "link": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Link"
+          }
+        },
+        "required": [
+          "description"
+        ],
+        "title": "DisputeEvidenceCreate",
+        "type": "object"
+      },
+      "DisputeEvidenceRead": {
+        "properties": {
+          "consensus_job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consensus Job Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "dispute_id": {
+            "title": "Dispute Id",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Link"
+          },
+          "submitter_address": {
+            "title": "Submitter Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "dispute_id",
+          "submitter_address",
+          "description",
+          "created_at"
+        ],
+        "title": "DisputeEvidenceRead",
+        "type": "object"
+      },
+      "DisputeMessageCreate": {
+        "properties": {
+          "content": {
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "DisputeMessageCreate",
+        "type": "object"
+      },
+      "DisputeMessageRead": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dispute_id": {
+            "title": "Dispute Id",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "sender_address": {
+            "title": "Sender Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "dispute_id",
+          "sender_address",
+          "content",
+          "created_at"
+        ],
+        "title": "DisputeMessageRead",
+        "type": "object"
+      },
+      "DisputeRead": {
+        "properties": {
+          "adjudication_tx_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adjudication Tx Hash"
+          },
+          "chain_status": {
+            "$ref": "#/components/schemas/ChainStatus",
+            "default": "legacy_offchain"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "enforced_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enforced By"
+          },
+          "escrow_id": {
+            "title": "Escrow Id",
+            "type": "integer"
+          },
+          "evidence": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DisputeEvidenceRead"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "issue": {
+            "title": "Issue",
+            "type": "string"
+          },
+          "messages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DisputeMessageRead"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "milestone_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Milestone Id"
+          },
+          "on_chain_dispute_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Chain Dispute Id"
+          },
+          "on_chain_tx_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Chain Tx Hash"
+          },
+          "opened_by_address": {
+            "title": "Opened By Address",
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "ruling": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ruling"
+          },
+          "status_key": {
+            "$ref": "#/components/schemas/StatusKey"
+          }
+        },
+        "required": [
+          "id",
+          "escrow_id",
+          "opened_by_address",
+          "issue",
+          "status_key",
+          "created_at"
+        ],
+        "title": "DisputeRead",
+        "type": "object"
+      },
+      "EscrowCreate": {
+        "properties": {
+          "asset_symbol": {
+            "default": "GEN",
+            "maxLength": 20,
+            "title": "Asset Symbol",
+            "type": "string"
+          },
+          "counterparty_address": {
+            "title": "Counterparty Address",
+            "type": "string"
+          },
+          "criteria": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Criteria"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "title",
+          "counterparty_address",
+          "total"
+        ],
+        "title": "EscrowCreate",
+        "type": "object"
+      },
+      "EscrowRead": {
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/AssetRead"
+          },
+          "cancelled_tx_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled Tx Hash"
+          },
+          "contract_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Address"
+          },
+          "counterparty_address": {
+            "title": "Counterparty Address",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "creator_address": {
+            "title": "Creator Address",
+            "type": "string"
+          },
+          "funded_tx_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funded Tx Hash"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "milestones": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MilestoneRead"
+            },
+            "title": "Milestones",
+            "type": "array"
+          },
+          "status_key": {
+            "$ref": "#/components/schemas/StatusKey"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "total": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "creator_address",
+          "counterparty_address",
+          "title",
+          "total",
+          "asset",
+          "status_key",
+          "created_at"
+        ],
+        "title": "EscrowRead",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "MilestoneRead": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "chain_status": {
+            "$ref": "#/components/schemas/ChainStatus",
+            "default": "legacy_offchain"
+          },
+          "criteria": {
+            "title": "Criteria",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "on_chain_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Chain Index"
+          },
+          "on_chain_tx_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Chain Tx Hash"
+          },
+          "order_index": {
+            "title": "Order Index",
+            "type": "integer"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning"
+          },
+          "released_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Released At"
+          },
+          "status_key": {
+            "$ref": "#/components/schemas/StatusKey"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "amount",
+          "status_key",
+          "criteria",
+          "order_index"
+        ],
+        "title": "MilestoneRead",
+        "type": "object"
+      },
+      "NonceRequest": {
+        "properties": {
+          "wallet_address": {
+            "title": "Wallet Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "wallet_address"
+        ],
+        "title": "NonceRequest",
+        "type": "object"
+      },
+      "NonceResponse": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "nonce": {
+            "title": "Nonce",
+            "type": "string"
+          }
+        },
+        "required": [
+          "nonce",
+          "message"
+        ],
+        "title": "NonceResponse",
+        "type": "object"
+      },
+      "OnChainBetAck": {
+        "description": "Body for POST /predictions/{id}/bet/on-chain \u2014 the frontend\nreporting a tx hash it already got back from signing and sending\nNuancePredictionMarket.bet itself (see components/app/\ngenlayer-write-client.ts's betOnChain). Unlike a regular write ack,\nthis ALSO carries side/amount: the real stake already lives in the\ncontract's own storage, but this app still mirrors it into a\nPredictionPosition row immediately (same reasoning\nOnChainSubmissionAck's docstring gives for milestones) so the existing\n\"my positions\" UI keeps working without waiting on an indexer cycle\nthat doesn't sync individual bettors' stakes at all today.",
+        "properties": {
+          "amount": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1000000.0,
+            "title": "Amount",
+            "type": "integer"
+          },
+          "side": {
+            "title": "Side",
+            "type": "string"
+          },
+          "tx_hash": {
+            "title": "Tx Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tx_hash",
+          "side",
+          "amount"
+        ],
+        "title": "OnChainBetAck",
+        "type": "object"
+      },
+      "OnChainCancelAck": {
+        "description": "Body for POST /escrows/{id}/cancel/on-chain \u2014 the frontend\nreporting a tx hash it already got back from signing and sending a\nreal NuanceEscrow.cancel_escrow transaction (components/app/\ngenlayer-write-client.ts's cancelEscrowOnChain).\n\nUnlike OnChainFundAck/OnChainSubmissionAck, this DOES immediately\nflip status_key to StatusKey.CANCELLED \u2014 same trust level as\nraise_dispute_on_chain's own ack already uses (create the local\nrecord from what the caller reports, rather than waiting on an\nindexer read). Safe here for the same reason: cancel_escrow's real\nenforcement lives entirely on the contract itself \u2014 submit_\ndeliverable/fund_escrow/release_milestone all check the contract's\nown `status` field directly, never this app's DB. A caller falsely\nclaiming a cancellation that never actually happened on-chain can\nonly produce a stale/wrong *local* status badge, never let anyone\nbypass what the contract actually enforces.",
+        "properties": {
+          "tx_hash": {
+            "title": "Tx Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tx_hash"
+        ],
+        "title": "OnChainCancelAck",
+        "type": "object"
+      },
+      "OnChainDisputeAck": {
+        "description": "Body for POST /escrows/{id}/dispute/on-chain \u2014 the frontend\nreporting a tx hash it already got back from signing and sending\n`NuanceDisputeCourt.file_dispute` itself (see components/app/\ngenlayer-write-client.ts). Unlike OnChainSubmissionAck (which updates\nan existing Milestone), this one CREATES the local Dispute row\nimmediately \u2014 file_dispute assigns the dispute's id on-chain, which\nisn't known yet at ack time. See services/genlayer_indexer.py's\nresolve_pending_dispute_ids for how on_chain_dispute_id gets filled in\nonce the transaction actually lands. `issue` mirrors DisputeCreate's\nown optional-with-a-server-side-default behavior, and MUST match the\n`claim_statement` argument the frontend actually passed to\nfile_dispute \u2014 the indexer matches on exact text equality, not fuzzy\nmatching.",
+        "properties": {
+          "issue": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue"
+          },
+          "tx_hash": {
+            "title": "Tx Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tx_hash"
+        ],
+        "title": "OnChainDisputeAck",
+        "type": "object"
+      },
+      "OnChainEvidenceAck": {
+        "description": "Body for POST /disputes/{id}/evidence/on-chain \u2014 the frontend\nreporting a tx hash it already got back from signing and sending a\nreal NuanceDisputeCourt.add_evidence transaction (components/app/\ngenlayer-write-client.ts's addEvidenceOnChain). Unlike the off-chain\nsubmit_evidence, this does NOT queue a ConsensusJob \u2014 the real\njudgment happens via adjudicate_dispute on the contract itself\n(triggered automatically by services/genlayer_indexer.py, or\nmanually). `evidence_url` is required (unlike the off-chain path's\noptional `link`) because the contract's own add_evidence only ever\ntakes a URL \u2014 there's nowhere for free-text-only evidence to go\non-chain (see that contract method's own docstring).",
+        "properties": {
+          "evidence_url": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Evidence Url",
+            "type": "string"
+          },
+          "tx_hash": {
+            "title": "Tx Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tx_hash",
+          "evidence_url"
+        ],
+        "title": "OnChainEvidenceAck",
+        "type": "object"
+      },
+      "OnChainFundAck": {
+        "description": "Body for POST /escrows/{id}/fund/on-chain \u2014 the frontend reporting\na tx hash it already got back from signing and sending a real,\n*payable* NuanceEscrow.fund_escrow transaction (components/app/\ngenlayer-write-client.ts's fundEscrowOnChain) \u2014 real GEN actually left\nthe creator's wallet and now sits in the deployed contract's balance.\nSame \"not a trust boundary\" reasoning as OnChainSubmissionAck: this\nonly remembers that a fund_escrow call was sent, for UI purposes\n(hide the \"Fund Escrow\" action once it has); the contract's own\nfunded_amount (checked by release_milestone before any payout) is the\nreal source of truth regardless of what this endpoint is told.",
+        "properties": {
+          "tx_hash": {
+            "title": "Tx Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tx_hash"
+        ],
+        "title": "OnChainFundAck",
+        "type": "object"
+      },
+      "OnChainSubmissionAck": {
+        "description": "Body for POST /escrows/{id}/deliverable/on-chain \u2014 the frontend\nreporting a tx hash it already got back from signing and sending\n`NuanceEscrow.submit_deliverable` itself (see components/app/\ngenlayer-write-client.ts). This endpoint only remembers the hash for\nservices/genlayer_indexer.py to poll; it is NOT a trust boundary for\nthe verdict \u2014 status_key/deliverable text only ever change once the\nindexer reads the real result back from the contract's own get_milestone\nview. A caller reporting a bogus hash can make the indexer log a failed\nlookup; it can never fake an approval this way.",
+        "properties": {
+          "tx_hash": {
+            "title": "Tx Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tx_hash"
+        ],
+        "title": "OnChainSubmissionAck",
+        "type": "object"
+      },
+      "PredictionBetCreate": {
+        "properties": {
+          "amount": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1000000.0,
+            "title": "Amount",
+            "type": "integer"
+          },
+          "side": {
+            "title": "Side",
+            "type": "string"
+          }
+        },
+        "required": [
+          "side",
+          "amount"
+        ],
+        "title": "PredictionBetCreate",
+        "type": "object"
+      },
+      "PredictionPositionRead": {
+        "properties": {
+          "amount": {
+            "title": "Amount",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "payout": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 0.0,
+            "title": "Payout"
+          },
+          "prediction_id": {
+            "title": "Prediction Id",
+            "type": "integer"
+          },
+          "side": {
+            "title": "Side",
+            "type": "string"
+          },
+          "status": {
+            "default": "PENDING",
+            "title": "Status",
+            "type": "string"
+          },
+          "wallet_address": {
+            "title": "Wallet Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "prediction_id",
+          "wallet_address",
+          "side",
+          "amount",
+          "created_at"
+        ],
+        "title": "PredictionPositionRead",
+        "type": "object"
+      },
+      "PredictionRead": {
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "chain_status": {
+            "$ref": "#/components/schemas/ChainStatus",
+            "default": "legacy_offchain"
+          },
+          "contract_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Address"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "positions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PredictionPositionRead"
+            },
+            "title": "Positions",
+            "type": "array"
+          },
+          "resolution_date": {
+            "format": "date-time",
+            "title": "Resolution Date",
+            "type": "string"
+          },
+          "resolution_reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Reasoning"
+          },
+          "resolution_source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Source Url"
+          },
+          "resolution_trigger_tx_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Trigger Tx Hash"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "status_key": {
+            "title": "Status Key",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "volume": {
+            "title": "Volume",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "category",
+          "resolution_date",
+          "volume",
+          "status_key",
+          "created_at"
+        ],
+        "title": "PredictionRead",
+        "type": "object"
+      },
+      "ProposalCreate": {
+        "properties": {
+          "category": {
+            "default": "General",
+            "maxLength": 60,
+            "title": "Category",
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "pass_threshold": {
+            "default": 50,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Pass Threshold",
+            "type": "integer"
+          },
+          "quorum_threshold": {
+            "default": 20,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Quorum Threshold",
+            "type": "integer"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "voting_period_days": {
+            "default": 7,
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Voting Period Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "title",
+          "description"
+        ],
+        "title": "ProposalCreate",
+        "type": "object"
+      },
+      "ProposalDetailRead": {
+        "properties": {
+          "abstain_pct": {
+            "title": "Abstain Pct",
+            "type": "number"
+          },
+          "against_pct": {
+            "title": "Against Pct",
+            "type": "number"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "end_time": {
+            "format": "date-time",
+            "title": "End Time",
+            "type": "string"
+          },
+          "executed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executed At"
+          },
+          "executed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executed By"
+          },
+          "for_pct": {
+            "title": "For Pct",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "pass_threshold": {
+            "title": "Pass Threshold",
+            "type": "integer"
+          },
+          "proposer_address": {
+            "title": "Proposer Address",
+            "type": "string"
+          },
+          "quorum_met": {
+            "title": "Quorum Met",
+            "type": "boolean"
+          },
+          "quorum_threshold": {
+            "title": "Quorum Threshold",
+            "type": "integer"
+          },
+          "start_time": {
+            "format": "date-time",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProposalStatus"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "total_abstain": {
+            "title": "Total Abstain",
+            "type": "integer"
+          },
+          "total_against": {
+            "title": "Total Against",
+            "type": "integer"
+          },
+          "total_for": {
+            "title": "Total For",
+            "type": "integer"
+          },
+          "turnout_pct": {
+            "title": "Turnout Pct",
+            "type": "number"
+          },
+          "user_vote": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoteChoice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "votes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/VoteRead"
+            },
+            "title": "Votes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "category",
+          "proposer_address",
+          "status",
+          "start_time",
+          "end_time",
+          "quorum_threshold",
+          "pass_threshold",
+          "total_for",
+          "total_against",
+          "total_abstain",
+          "created_at",
+          "turnout_pct",
+          "for_pct",
+          "against_pct",
+          "abstain_pct",
+          "quorum_met"
+        ],
+        "title": "ProposalDetailRead",
+        "type": "object"
+      },
+      "ProposalRead": {
+        "properties": {
+          "abstain_pct": {
+            "title": "Abstain Pct",
+            "type": "number"
+          },
+          "against_pct": {
+            "title": "Against Pct",
+            "type": "number"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "end_time": {
+            "format": "date-time",
+            "title": "End Time",
+            "type": "string"
+          },
+          "executed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executed At"
+          },
+          "executed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executed By"
+          },
+          "for_pct": {
+            "title": "For Pct",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "pass_threshold": {
+            "title": "Pass Threshold",
+            "type": "integer"
+          },
+          "proposer_address": {
+            "title": "Proposer Address",
+            "type": "string"
+          },
+          "quorum_met": {
+            "title": "Quorum Met",
+            "type": "boolean"
+          },
+          "quorum_threshold": {
+            "title": "Quorum Threshold",
+            "type": "integer"
+          },
+          "start_time": {
+            "format": "date-time",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProposalStatus"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "total_abstain": {
+            "title": "Total Abstain",
+            "type": "integer"
+          },
+          "total_against": {
+            "title": "Total Against",
+            "type": "integer"
+          },
+          "total_for": {
+            "title": "Total For",
+            "type": "integer"
+          },
+          "turnout_pct": {
+            "title": "Turnout Pct",
+            "type": "number"
+          },
+          "user_vote": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoteChoice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "category",
+          "proposer_address",
+          "status",
+          "start_time",
+          "end_time",
+          "quorum_threshold",
+          "pass_threshold",
+          "total_for",
+          "total_against",
+          "total_abstain",
+          "created_at",
+          "turnout_pct",
+          "for_pct",
+          "against_pct",
+          "abstain_pct",
+          "quorum_met"
+        ],
+        "title": "ProposalRead",
+        "type": "object"
+      },
+      "ProposalStatus": {
+        "description": "A governance proposal's lifecycle. finalize() (routers/governance.py)\nis the only thing that moves ACTIVE -> PASSED/REJECTED; EXECUTED is\nreserved for a future action that actually applies a passed proposal's\neffect (see ROADMAP.md Part 1) and isn't set by anything yet.",
+        "enum": [
+          "active",
+          "passed",
+          "rejected",
+          "executed"
+        ],
+        "title": "ProposalStatus",
+        "type": "string"
+      },
+      "StatusKey": {
+        "enum": [
+          "approved",
+          "in_review",
+          "in_progress",
+          "pending",
+          "disputed",
+          "rejected",
+          "cancelled"
+        ],
+        "title": "StatusKey",
+        "type": "string"
+      },
+      "TokenResponse": {
+        "properties": {
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "token_type": {
+            "default": "bearer",
+            "title": "Token Type",
+            "type": "string"
+          },
+          "wallet_address": {
+            "title": "Wallet Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "wallet_address"
+        ],
+        "title": "TokenResponse",
+        "type": "object"
+      },
+      "UserRead": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "settings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserSettingsRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wallet_address": {
+            "title": "Wallet Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "wallet_address",
+          "created_at"
+        ],
+        "title": "UserRead",
+        "type": "object"
+      },
+      "UserSettingsRead": {
+        "properties": {
+          "auto_escalate_on": {
+            "default": false,
+            "title": "Auto Escalate On",
+            "type": "boolean"
+          },
+          "notify_on": {
+            "default": true,
+            "title": "Notify On",
+            "type": "boolean"
+          }
+        },
+        "title": "UserSettingsRead",
+        "type": "object"
+      },
+      "UserSettingsUpdate": {
+        "properties": {
+          "auto_escalate_on": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Escalate On"
+          },
+          "notify_on": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notify On"
+          }
+        },
+        "title": "UserSettingsUpdate",
+        "type": "object"
+      },
+      "UserUpdate": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          }
+        },
+        "title": "UserUpdate",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "ValidatorResult": {
+        "properties": {
+          "confidence": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "reasoning": {
+            "title": "Reasoning",
+            "type": "string"
+          },
+          "vote": {
+            "title": "Vote",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "vote",
+          "confidence",
+          "reasoning"
+        ],
+        "title": "ValidatorResult",
+        "type": "object"
+      },
+      "ValidatorStatRead": {
+        "properties": {
+          "accuracy_pct": {
+            "title": "Accuracy Pct",
+            "type": "number"
+          },
+          "cases_judged": {
+            "title": "Cases Judged",
+            "type": "integer"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "last_active_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Active At"
+          },
+          "last_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Provider"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "cases_judged",
+          "accuracy_pct",
+          "is_active"
+        ],
+        "title": "ValidatorStatRead",
+        "type": "object"
+      },
+      "VerifyRequest": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          },
+          "wallet_address": {
+            "title": "Wallet Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "wallet_address",
+          "message",
+          "signature"
+        ],
+        "title": "VerifyRequest",
+        "type": "object"
+      },
+      "VoteChoice": {
+        "enum": [
+          "for",
+          "against",
+          "abstain"
+        ],
+        "title": "VoteChoice",
+        "type": "string"
+      },
+      "VoteCreate": {
+        "properties": {
+          "choice": {
+            "$ref": "#/components/schemas/VoteChoice"
+          }
+        },
+        "required": [
+          "choice"
+        ],
+        "title": "VoteCreate",
+        "type": "object"
+      },
+      "VoteRead": {
+        "properties": {
+          "choice": {
+            "$ref": "#/components/schemas/VoteChoice"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "proposal_id": {
+            "title": "Proposal Id",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "voter_address": {
+            "title": "Voter Address",
+            "type": "string"
+          },
+          "voting_power": {
+            "title": "Voting Power",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "proposal_id",
+          "voter_address",
+          "choice",
+          "voting_power",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "VoteRead",
+        "type": "object"
+      },
+      "WebhookCreate": {
+        "properties": {
+          "event_types": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Event Types",
+            "type": "array"
+          },
+          "url": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "event_types"
+        ],
+        "title": "WebhookCreate",
+        "type": "object"
+      },
+      "WebhookCreateResponse": {
+        "description": "POST /webhooks's response \u2014 the only time `secret` is ever\nreturned; see models.core.Webhook's own docstring on why this one\n(unlike an ApiKey's secret) can't just be hashed: it has to stay\nusable server-side to keep signing every future delivery. Callers\nthat lose it must delete and re-register the webhook to get a new one\n(there's no \"rotate secret\" endpoint yet \u2014 out of scope for this\npass).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Event Types",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "last_delivered_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Delivered At"
+          },
+          "last_delivery_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Delivery Status"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "event_types",
+          "is_active",
+          "created_at",
+          "secret"
+        ],
+        "title": "WebhookCreateResponse",
+        "type": "object"
+      },
+      "WebhookRead": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Event Types",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "last_delivered_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Delivered At"
+          },
+          "last_delivery_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Delivery Status"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "event_types",
+          "is_active",
+          "created_at"
+        ],
+        "title": "WebhookRead",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Backend for Nuance \u2014 AI-validator consensus for claims traditional smart contracts can't settle.",
+    "title": "Nuance API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/agents": {
+      "get": {
+        "operationId": "list_agents_agents_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentStatRead"
+                  },
+                  "title": "Response List Agents Agents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Agents",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/auth/api-keys": {
+      "get": {
+        "operationId": "list_api_keys_auth_api_keys_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ApiKeyRead"
+                  },
+                  "title": "Response List Api Keys Auth Api Keys Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Api Keys",
+        "tags": [
+          "api-keys"
+        ]
+      },
+      "post": {
+        "operationId": "create_api_key_auth_api_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyIssueResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Api Key",
+        "tags": [
+          "api-keys"
+        ]
+      }
+    },
+    "/auth/api-keys/{api_key_id}": {
+      "delete": {
+        "operationId": "revoke_api_key_auth_api_keys__api_key_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "api_key_id",
+            "required": true,
+            "schema": {
+              "title": "Api Key Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Revoke Api Key",
+        "tags": [
+          "api-keys"
+        ]
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "operationId": "read_me_auth_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Me",
+        "tags": [
+          "auth"
+        ]
+      },
+      "patch": {
+        "operationId": "update_me_auth_me_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Me",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/nonce": {
+      "post": {
+        "description": "Issues a fresh nonce for `wallet_address`, creating the User row on\nfirst sign-in. Re-issuing always overwrites any prior unused nonce \u2014\nonly the most recently issued one is ever valid.",
+        "operationId": "request_nonce_auth_nonce_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NonceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NonceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Nonce",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/settings": {
+      "patch": {
+        "operationId": "update_settings_auth_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSettingsRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Settings",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/verify": {
+      "post": {
+        "description": "Verifies the signed nonce message and, on success, issues a JWT.\nEvery failure mode \u2014 unknown wallet, stale/expired nonce, bad\nsignature, wrong signer \u2014 collapses to the same 401 so the endpoint\ndoesn't leak which check failed to a would-be attacker.",
+        "operationId": "verify_signature_auth_verify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Signature",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/consensus/{job_id}": {
+      "get": {
+        "operationId": "get_consensus_status_consensus__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsensusStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Consensus Status",
+        "tags": [
+          "consensus"
+        ]
+      }
+    },
+    "/disputes": {
+      "get": {
+        "operationId": "list_disputes_disputes_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DisputeRead"
+                  },
+                  "title": "Response List Disputes Disputes Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Disputes",
+        "tags": [
+          "disputes"
+        ]
+      }
+    },
+    "/disputes/{dispute_id}": {
+      "get": {
+        "operationId": "get_dispute_disputes__dispute_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispute_id",
+            "required": true,
+            "schema": {
+              "title": "Dispute Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisputeRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Dispute",
+        "tags": [
+          "disputes"
+        ]
+      }
+    },
+    "/disputes/{dispute_id}/enforce": {
+      "post": {
+        "operationId": "enforce_ruling_disputes__dispute_id__enforce_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispute_id",
+            "required": true,
+            "schema": {
+              "title": "Dispute Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisputeEnforceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisputeRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Enforce Ruling",
+        "tags": [
+          "disputes"
+        ]
+      }
+    },
+    "/disputes/{dispute_id}/evidence": {
+      "get": {
+        "operationId": "list_evidence_disputes__dispute_id__evidence_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispute_id",
+            "required": true,
+            "schema": {
+              "title": "Dispute Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DisputeEvidenceRead"
+                  },
+                  "title": "Response List Evidence Disputes  Dispute Id  Evidence Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Evidence",
+        "tags": [
+          "disputes"
+        ]
+      },
+      "post": {
+        "operationId": "submit_evidence_disputes__dispute_id__evidence_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispute_id",
+            "required": true,
+            "schema": {
+              "title": "Dispute Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Api-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisputeEvidenceCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisputeEvidenceRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Submit Evidence",
+        "tags": [
+          "disputes"
+        ]
+      }
+    },
+    "/disputes/{dispute_id}/evidence/on-chain": {
+      "post": {
+        "description": "The on-chain counterpart to submit_evidence above \u2014 reached once\ncomponents/app/genlayer-write-client.ts's addEvidenceOnChain has\nalready signed and sent a real NuanceDisputeCourt.add_evidence\ntransaction. Added 2026-09-08 to close the actual gap that caused a\nreal bug: before this endpoint existed, submitting evidence for ANY\ndispute \u2014 on-chain or not \u2014 always went through submit_evidence\nabove, which always queues an off-chain ConsensusJob. That silently\nrouted an on-chain-filed dispute's ruling through Nuance's own\noff-chain AI review instead of real GenVM validators, with nothing\nin the UI making the swap visible (found live, see contracts/\nnuance_dispute_court.py's add_evidence docstring for the full\naccount).\n\nUnlike submit_evidence, this does NOT queue a ConsensusJob \u2014 real\njudgment happens via adjudicate_dispute on the contract itself\n(services/genlayer_indexer.py's trigger_pending_adjudications\ntriggers it automatically once the dispute is open and matched).\nStill creates a local DisputeEvidence row purely so the evidence\nshows up in the UI's evidence list \u2014 same \"not a trust boundary\"\nreasoning as every other on-chain ack in this app: nothing here\nverifies the hash is real or that the contract call actually\nsucceeded; only the indexer reading the contract's own ruling back\nis what actually matters.",
+        "operationId": "submit_evidence_on_chain_disputes__dispute_id__evidence_on_chain_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispute_id",
+            "required": true,
+            "schema": {
+              "title": "Dispute Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnChainEvidenceAck"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisputeEvidenceRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Submit Evidence On Chain",
+        "tags": [
+          "disputes"
+        ]
+      }
+    },
+    "/disputes/{dispute_id}/messages": {
+      "get": {
+        "operationId": "list_messages_disputes__dispute_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispute_id",
+            "required": true,
+            "schema": {
+              "title": "Dispute Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DisputeMessageRead"
+                  },
+                  "title": "Response List Messages Disputes  Dispute Id  Messages Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Messages",
+        "tags": [
+          "disputes"
+        ]
+      },
+      "post": {
+        "operationId": "send_message_disputes__dispute_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispute_id",
+            "required": true,
+            "schema": {
+              "title": "Dispute Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisputeMessageCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisputeMessageRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Send Message",
+        "tags": [
+          "disputes"
+        ]
+      }
+    },
+    "/escrows": {
+      "get": {
+        "operationId": "list_escrows_escrows_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "participant_address",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Participant Address"
+            }
+          },
+          {
+            "in": "query",
+            "name": "creator_address",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Creator Address"
+            }
+          },
+          {
+            "in": "query",
+            "name": "counterparty_address",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Counterparty Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EscrowRead"
+                  },
+                  "title": "Response List Escrows Escrows Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Escrows",
+        "tags": [
+          "escrows"
+        ]
+      },
+      "post": {
+        "operationId": "create_escrow_escrows_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Api-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscrowCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscrowRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Escrow",
+        "tags": [
+          "escrows"
+        ]
+      }
+    },
+    "/escrows/{escrow_id}": {
+      "get": {
+        "operationId": "get_escrow_escrows__escrow_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "escrow_id",
+            "required": true,
+            "schema": {
+              "title": "Escrow Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscrowRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Escrow",
+        "tags": [
+          "escrows"
+        ]
+      }
+    },
+    "/escrows/{escrow_id}/cancel/on-chain": {
+      "post": {
+        "description": "Reached once components/app/genlayer-write-client.ts's\ncancelEscrowOnChain has already signed and sent a real\nNuanceEscrow.cancel_escrow transaction \u2014 the contract itself has\nalready refunded whatever was locked back to the creator's wallet by\nthe time this endpoint runs (see that contract method's own\ndocstring). Only the escrow creator may call cancel_escrow on the\ncontract itself, so this endpoint enforces the same restriction.\n\nUnlike fund/deliverable acks, this DOES immediately flip status_key \u2014\nsee OnChainCancelAck's own docstring on why that's safe here\nspecifically (real enforcement lives entirely on the contract; this\nis local bookkeeping only, same trust level raise_dispute_on_chain's\nack already uses elsewhere in this file).",
+        "operationId": "cancel_escrow_on_chain_escrows__escrow_id__cancel_on_chain_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "escrow_id",
+            "required": true,
+            "schema": {
+              "title": "Escrow Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnChainCancelAck"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscrowRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cancel Escrow On Chain",
+        "tags": [
+          "escrows"
+        ]
+      }
+    },
+    "/escrows/{escrow_id}/deliverable": {
+      "post": {
+        "operationId": "submit_deliverable_escrows__escrow_id__deliverable_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "escrow_id",
+            "required": true,
+            "schema": {
+              "title": "Escrow Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliverableSubmissionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliverableSubmissionRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Submit Deliverable",
+        "tags": [
+          "escrows"
+        ]
+      }
+    },
+    "/escrows/{escrow_id}/deliverable/on-chain": {
+      "post": {
+        "description": "The on-chain counterpart to submit_deliverable above \u2014 reached once\ncomponents/app/genlayer-write-client.ts has already signed and sent a\nreal `NuanceEscrow.submit_deliverable` transaction directly to the\nchain (see ROADMAP.md 4.6's verified writeContract pattern). This\nendpoint does NOT run consensus, queue a ConsensusJob, or touch\ndeliverable text/reasoning \u2014 GenVM's own validator committee is\nalready doing that job on the deployed contract. All this does is\nremember the tx hash so services/genlayer_indexer.py has something to\npoll; see OnChainSubmissionAck's own docstring on why that's safe even\nthough nothing here verifies the hash is real.",
+        "operationId": "submit_deliverable_on_chain_escrows__escrow_id__deliverable_on_chain_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "escrow_id",
+            "required": true,
+            "schema": {
+              "title": "Escrow Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnChainSubmissionAck"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MilestoneRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Submit Deliverable On Chain",
+        "tags": [
+          "escrows"
+        ]
+      }
+    },
+    "/escrows/{escrow_id}/dispute": {
+      "post": {
+        "description": "Escalates the escrow's active milestone to a formal Dispute Court\nreview. Not previously implemented anywhere in this backend \u2014 ROADMAP.md\n3.1's Part 1 checklist marks \"GET/POST /disputes (implicit via escrow)\"\ndone, but no such endpoint, implicit or otherwise, actually existed;\nescrow-detail-view.tsx's \"Escalate to Internet Court\" button has been\nunwired since it was written. This is that missing endpoint, escrow-\nscoped to match the \"implicit via escrow\" framing rather than a bare\nPOST /disputes.\n\nEither party to the escrow may open one \u2014 mirrors contracts/\nnuance_dispute_court.py's file_dispute (claimant is whoever calls it;\nthe other party is derivable from the escrow, same as this repo's\nexisting mapDispute on the frontend already does \u2014 no separate\n`respondent` field needed). Creates the Dispute row and an initial\nDisputeEvidence entry together, then queues the same AI-jury review\nsubmit_evidence already runs below \u2014 a claim with no supporting text\nisn't reviewable.",
+        "operationId": "raise_dispute_escrows__escrow_id__dispute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "escrow_id",
+            "required": true,
+            "schema": {
+              "title": "Escrow Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisputeCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisputeCreateRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Raise Dispute",
+        "tags": [
+          "escrows"
+        ]
+      }
+    },
+    "/escrows/{escrow_id}/dispute/on-chain": {
+      "post": {
+        "description": "The on-chain counterpart to raise_dispute above \u2014 reached once\ngenlayer-write-client.ts has already signed and sent a real\nNuanceDisputeCourt.file_dispute transaction directly to the chain.\n\nUnlike submit_deliverable_on_chain (which updates an existing row),\nthis CREATES the Dispute immediately, with on_chain_dispute_id left\nnull \u2014 file_dispute assigns that id on-chain, and there's no cheap way\nto read a regular write call's return value back out of genlayer-js's\nreceipt (see Settings.dispute_id_scan_window's own comment for why).\nservices/genlayer_indexer.py's resolve_pending_dispute_ids fills it in\nasynchronously once the transaction lands, by matching (claimant,\nescrow_address, claim_statement) against the contract's own history \u2014\nsame \"not a trust boundary\" reasoning as OnChainSubmissionAck: nothing\nhere verifies the hash is real, only the indexer reading actual chain\nstate ever changes status_key/ruling.\n\nNo ConsensusJob queued, no run_consensus \u2014 GenVM's own validator\ncommittee is the jury once adjudicate_dispute is actually called\nagainst this contract (a separate action from filing, not wired by\nthis endpoint).",
+        "operationId": "raise_dispute_on_chain_escrows__escrow_id__dispute_on_chain_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "escrow_id",
+            "required": true,
+            "schema": {
+              "title": "Escrow Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnChainDisputeAck"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisputeRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Raise Dispute On Chain",
+        "tags": [
+          "escrows"
+        ]
+      }
+    },
+    "/escrows/{escrow_id}/fund/on-chain": {
+      "post": {
+        "description": "Reached once components/app/genlayer-write-client.ts's\nfundEscrowOnChain has already signed and sent a real, *payable*\nNuanceEscrow.fund_escrow transaction \u2014 real GEN has already left the\ncreator's wallet and now sits in the deployed contract's balance by\nthe time this endpoint runs. Only the escrow creator may call\nfund_escrow on the contract itself (see that method's own source), so\nthis endpoint enforces the same restriction rather than let anyone\nmark an escrow \"funded.\" This does NOT verify the hash is real or\nread back the actual funded_amount \u2014 see OnChainFundAck's own\ndocstring on why that's fine; it's UI bookkeeping (hide the \"Fund\nEscrow\" action), not the source of truth for whether the milestone\ncan actually be released (release_milestone's own on-chain check\nagainst funded_amount is what actually matters).",
+        "operationId": "fund_escrow_on_chain_escrows__escrow_id__fund_on_chain_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "escrow_id",
+            "required": true,
+            "schema": {
+              "title": "Escrow Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnChainFundAck"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscrowRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Fund Escrow On Chain",
+        "tags": [
+          "escrows"
+        ]
+      }
+    },
+    "/escrows/{escrow_id}/release": {
+      "post": {
+        "operationId": "release_milestone_escrows__escrow_id__release_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "escrow_id",
+            "required": true,
+            "schema": {
+              "title": "Escrow Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscrowRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Release Milestone",
+        "tags": [
+          "escrows"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/predictions": {
+      "get": {
+        "description": "Defaults to only `status_key == \"open\"` markets so unreviewed drafts\n(`\"pending_review\"`, see services/market_generator.py) never leak into\nthe public betting feed just because a caller forgot to filter.\n\n`status=None` or `status=\"all\"` (case-insensitive) returns every market\nregardless of status \u2014 e.g. for an internal review queue. Any other\nvalue filters to that exact status, matched case-insensitively since\nstatus_key casing isn't consistent across the codebase today (markets\nare created as lowercase \"open\"/\"pending_review\", but\nservices/prediction_oracle.py resolves them to uppercase \"RESOLVED\").",
+        "operationId": "list_predictions_predictions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "open",
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PredictionRead"
+                  },
+                  "title": "Response List Predictions Predictions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Predictions",
+        "tags": [
+          "predictions"
+        ]
+      }
+    },
+    "/predictions/{prediction_id}": {
+      "get": {
+        "operationId": "get_prediction_predictions__prediction_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prediction_id",
+            "required": true,
+            "schema": {
+              "title": "Prediction Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PredictionRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Prediction",
+        "tags": [
+          "predictions"
+        ]
+      }
+    },
+    "/predictions/{prediction_id}/bet": {
+      "post": {
+        "operationId": "place_bet_predictions__prediction_id__bet_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prediction_id",
+            "required": true,
+            "schema": {
+              "title": "Prediction Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Api-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PredictionBetCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PredictionRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Place Bet",
+        "tags": [
+          "predictions"
+        ]
+      }
+    },
+    "/predictions/{prediction_id}/bet/on-chain": {
+      "post": {
+        "description": "The on-chain counterpart to place_bet above \u2014 reached once\ncomponents/app/genlayer-write-client.ts's betOnChain has already\nsigned and sent a real NuancePredictionMarket.bet transaction directly\nto the chain. Doesn't verify the hash is real (see\nOnChainSubmissionAck's own docstring on why that's fine \u2014 nothing here\nis a trust boundary for the market's actual outcome); this only\nmirrors the stake into a PredictionPosition row so the existing \"my\npositions\" UI keeps working, since services/genlayer_indexer.py's\nview-sync doesn't track individual bettors' on-chain stakes today,\nonly the market's own state/outcome as a whole.",
+        "operationId": "place_bet_on_chain_predictions__prediction_id__bet_on_chain_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prediction_id",
+            "required": true,
+            "schema": {
+              "title": "Prediction Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnChainBetAck"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PredictionRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Place Bet On Chain",
+        "tags": [
+          "predictions"
+        ]
+      }
+    },
+    "/predictions/{prediction_id}/resolve": {
+      "post": {
+        "operationId": "resolve_prediction_predictions__prediction_id__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prediction_id",
+            "required": true,
+            "schema": {
+              "title": "Prediction Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PredictionRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Prediction",
+        "tags": [
+          "predictions"
+        ]
+      }
+    },
+    "/proposals": {
+      "get": {
+        "operationId": "list_proposals_proposals_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProposalRead"
+                  },
+                  "title": "Response List Proposals Proposals Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Proposals",
+        "tags": [
+          "governance"
+        ]
+      },
+      "post": {
+        "operationId": "create_proposal_proposals_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProposalCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Proposal",
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/proposals/{proposal_id}": {
+      "get": {
+        "operationId": "get_proposal_proposals__proposal_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalDetailRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Proposal",
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/proposals/{proposal_id}/execute": {
+      "post": {
+        "description": "Moves a PASSED proposal to EXECUTED \u2014 the formal \"this decision has\nbeen enacted\" marker. Not idempotent like finalize: a proposal can only\nbe executed once, so a second call 400s rather than silently returning\nthe same result, matching disputes.py's enforce_ruling precedent for\nthe same \"who did this and when\" shape (executed_by/executed_at here,\nenforced_by/resolved_at there).\n\nNo real on-chain effect is wired up yet (no treasury transfer, no\nparameter change) \u2014 see ROADMAP.md Part 3; this is deliberately scoped\nto just the status transition until there's a real effect to apply.",
+        "operationId": "execute_proposal_proposals__proposal_id__execute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Execute Proposal",
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/proposals/{proposal_id}/finalize": {
+      "post": {
+        "description": "Idempotent \u2014 an already-finalized proposal is returned as-is rather\nthan re-evaluated, so calling this twice is always safe. Raises 400 if\n`end_time` hasn't arrived yet; a future bulk sweep (ROADMAP.md Part 1's\ncron) should filter to `end_time <= now()` itself before calling this\nper-id rather than relying on the 400 to skip early proposals.",
+        "operationId": "finalize_proposal_proposals__proposal_id__finalize_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finalize Proposal",
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/proposals/{proposal_id}/vote": {
+      "post": {
+        "operationId": "cast_vote_proposals__proposal_id__vote_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Api-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoteCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cast Vote",
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/validators": {
+      "get": {
+        "operationId": "list_validators_validators_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ValidatorStatRead"
+                  },
+                  "title": "Response List Validators Validators Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Validators",
+        "tags": [
+          "validators"
+        ]
+      }
+    },
+    "/webhooks": {
+      "get": {
+        "operationId": "list_webhooks_webhooks_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WebhookRead"
+                  },
+                  "title": "Response List Webhooks Webhooks Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Webhooks",
+        "tags": [
+          "webhooks"
+        ]
+      },
+      "post": {
+        "operationId": "create_webhook_webhooks_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookCreateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Webhook",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
+    "/webhooks/{webhook_id}": {
+      "delete": {
+        "operationId": "delete_webhook_webhooks__webhook_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "webhook_id",
+            "required": true,
+            "schema": {
+              "title": "Webhook Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Webhook",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    }
+  }
+}

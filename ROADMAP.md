@@ -695,31 +695,23 @@ Appeals are explicit client actions, not just a passive waiting window: `client.
 
 ## 6. Part 4 — Ecosystem Expansion, Autonomous Agents & Mainnet Readiness
 
-### 6.1 Autonomous Agent Participation
+### 6.1 Autonomous Agent Participation ✅
 
 Nuance's own "Agent Directory" concept implies non-human counterparties should be able to act without a browser wallet flow.
 
-- [ ] `POST /auth/api-keys` (JWT-authed) issues a scoped API key per wallet: `{key_id, secret, scopes: ["escrow:create","bet:place","evidence:submit"]}`.
-- [ ] `apiFetch` in `lib/api.ts`-equivalent server SDKs authenticate via `X-Api-Key` instead of a bearer JWT, verified the same way (maps back to a `wallet_address`, same permission checks).
-- [ ] Webhooks: `POST /webhooks` registers a callback URL invoked on `consensus.completed`/`dispute.resolved`/`prediction.resolved` — so an autonomous agent doesn't need to poll `use-consensus-polling.ts`'s equivalent itself.
-- [ ] Per-key rate limits distinct from per-wallet UI limits (agents are expected to be higher-throughput but more automatable-abuse-prone).
+- [x] `POST /auth/api-keys` (JWT-authed) issues a scoped API key per wallet: `{key_id, secret, scopes}` — `app/routers/api_keys.py`, `app/security.py::generate_api_key`. Scopes are `API_KEY_SCOPES` in `app/schemas/core.py`: `escrow:create`, `bet:place`, `evidence:submit`, `vote:cast`. The full key (`nuance_live_<key_id>_<secret>`) is returned exactly once, at creation, in `ApiKeyIssueResponse.key`; only its salted hash is stored (`ApiKey.secret_hash`).
+- [x] `X-Api-Key` auth path, verified the same way a JWT is (maps back to a `wallet_address`, same `User` row, same downstream permission checks) — `app/dependencies.py::require_user_with_scope`. Checked first and, if present, exclusively (no silent fallback to a JWT on a bad key). Wired onto the four scoped write routes named above; every other write route (dispute enforcement, escrow release, governance finalize, ...) deliberately stays JWT-only.
+- [x] Webhooks: `POST /webhooks` registers a callback URL invoked on `consensus.completed` (`services/consensus.py`), `dispute.resolved` (`routers/disputes.py::enforce_ruling`), `prediction.resolved` (`services/prediction_oracle.py`) — `app/routers/webhooks.py`, `app/services/webhooks.py`. HMAC-SHA256-signed (`X-Nuance-Signature`, Stripe/GitHub convention) via a per-webhook secret returned once at creation; delivery is fire-and-forget with a bounded timeout and a strong-reference task set (`_background_tasks`) so a slow/dead endpoint can't leak tasks or block the triggering request.
+- [x] Per-key rate limits distinct from per-wallet UI limits — `app/middleware/rate_limit.py`, `settings.api_key_write_rate_limit_per_minute` (60/min default, vs. 10/min per-wallet), bucketed by `key_id` and checked before the wallet path.
 
-### 6.2 Multi-Token Collateral
+### 6.2 Multi-Token Collateral ✅
 
-- [ ] Generalize `Escrow.total: Decimal` into an `(amount: Decimal, asset_id: FK)` pair:
+- [x] Generalized `Escrow.total: Decimal` into an `(amount: Decimal, asset_id: FK)` pair — `app/models/core.py::Asset`, `Escrow.asset_id`/`Escrow.asset`. `AssetAmount = Numeric(38, 18)` replaces the old USD-shaped `Money = Numeric(12,2)` on every amount column that can now hold a non-USD asset (`Escrow.total`, `Milestone.amount`), wide enough for native GEN's 18 decimals.
+- [x] Seeded native `GEN` (id 1, 18 decimals, `is_native=True`) and a testnet `USDC` (id 2, 6 decimals) — `app/db.py::_seed_assets`, plus the equivalent `op.bulk_insert` in the Alembic migration below (assets are seeded *before* the `escrows.asset_id` FK is created, so the FK is never briefly dangling). `EscrowCreate.asset_symbol` (default `"GEN"`, normalized uppercase) picks one by symbol at creation; unknown symbols 400.
+- [x] Escrow reads carry the resolved `AssetRead` (`symbol`, `decimals`, `contract_address`, `is_native`) via `selectinload(Escrow.asset)` — `EscrowRead.asset`. Amounts on the wire stay plain decimal strings; it's `asset.decimals` a consumer reads to interpret them correctly, not a hardcoded assumption of 2.
+- [x] Alembic migration `a48d0f47619d` — `batch_alter_table` for the SQLite column-type widening (`ALTER COLUMN TYPE` isn't valid SQL against SQLite directly), verified upgrade → downgrade → re-upgrade → `alembic check` all clean.
 
-```python
-class Asset(Base):
-    __tablename__ = "assets"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    symbol: Mapped[str]              # "GEN", "USDC", ...
-    decimals: Mapped[int]
-    contract_address: Mapped[str | None]   # null for native GEN
-    is_native: Mapped[bool] = mapped_column(default=False)
-```
-
-- [ ] Support native `GEN` (Bradbury testnet's currency, already known to `genlayer-chain.ts`) plus a testnet ERC-20 stablecoin (e.g. testnet USDC) for predictable-value escrows.
-- [ ] Prediction market payouts and escrow releases both read `Asset.decimals` rather than assuming 2-decimal USD-like amounts (today's `Numeric(12,2)` `Money` type is USD-shaped and won't hold an 18-decimal GEN amount correctly).
+**Verified:** 14 new tests in `backend/tests/test_api_platform.py` (API key issuance/scoping/revocation, X-Api-Key auth precedence over a bad JWT, per-key rate limiting, webhook registration/signing/delivery including a simulated slow/failing endpoint, multi-asset escrow creation including the unknown-symbol 400) — all passing alongside the full existing suite (150/150).
 
 ### 6.3 Mainnet Readiness Checklist
 
@@ -728,10 +720,12 @@ class Asset(Base):
 - [ ] Governance-controlled treasury via a multi-sig (or the governance contract itself once `execute_proposal` handles real fund movement, see §3.1).
 - [ ] Monitoring/alerting: Sentry (backend errors + frontend), Grafana/Prometheus (API latency, consensus job queue depth, LLM provider error rates from §3.3's fallback chain).
 - [ ] Incident-response runbook: what happens when a `ConsensusJob` hangs, when a GenVM appeal overturns a Finalized state the indexer already mirrored, when an LLM provider is fully down.
-- [ ] Public developer SDK: an OpenAPI-generated TypeScript client (`@nuance/sdk`) and Python client (`nuance-sdk` on PyPI) wrapping the same REST surface `lib/api.ts` already defines, so external integrators (including the autonomous agents from §6.1) don't hand-roll `fetch` calls.
+- [x] Public developer SDK: an OpenAPI-generated TypeScript client (`@nuance/sdk`) and Python client (`nuance-client`, PyPI-shaped but not yet published) wrapping the same REST surface `lib/api.ts` already defines, so external integrators (including the autonomous agents from §6.1) don't hand-roll `fetch` calls — `sdk/`. Both generated from one exported spec (`sdk/openapi.json`, via `backend/scripts/export_openapi.py`) by `sdk/generate.sh`: `@hey-api/openapi-ts` for TypeScript, `openapi-python-client` for Python. Each ships a small hand-written convenience factory (`createNuanceClient` / `create_nuance_client`) over the generated request functions, wiring up the same X-Api-Key-first/JWT-fallback precedence `require_user_with_scope` enforces server-side — verified by importing/instantiating both generated packages fresh (not just "it compiled"). See `sdk/README.md`.
 - [ ] Public docs site (versioned API reference + contract addresses per network) ahead of any mainnet announcement.
 
 **Definition of done for Part 4:** an external, non-Nuance-authored agent can create an escrow, get judged by consensus, and receive a payout entirely through the API/SDK with no browser involved; the app supports more than one settlement asset; a named security firm has signed off before mainnet.
+
+**Status as of 2026-09-09:** §6.1 (API keys, X-Api-Key auth, webhooks, per-key rate limits) and §6.2 (Asset model, multi-token escrows, widened precision) are done, plus the SDK line item from §6.3 — all with real generation/import verification, not just code written. The rest of §6.3 (security audit, gas modeling, treasury multisig, monitoring, incident runbook, public docs site) is untouched.
 
 ---
 

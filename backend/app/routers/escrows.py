@@ -17,9 +17,10 @@ from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.db import get_db
-from app.dependencies import get_current_user, get_optional_current_user
+from app.dependencies import get_current_user, get_optional_current_user, require_user_with_scope
 from app.enums import ChainStatus, ConsensusStage, ConsensusSubjectType, StatusKey
 from app.models import (
+    Asset,
     ConsensusJob,
     DeliverableSubmission,
     Dispute,
@@ -54,7 +55,7 @@ DEFAULT_CRITERIA = "Deliverable meets the agreed brief."
 
 async def _get_escrow_or_404(escrow_id: int, db: AsyncSession) -> Escrow:
     result = await db.execute(
-        select(Escrow).where(Escrow.id == escrow_id).options(selectinload(Escrow.milestones))
+        select(Escrow).where(Escrow.id == escrow_id).options(selectinload(Escrow.milestones), selectinload(Escrow.asset))
     )
     escrow = result.scalar_one_or_none()
     if escrow is None:
@@ -77,7 +78,7 @@ async def _get_escrow_for_update_or_404(escrow_id: int, db: AsyncSession) -> Esc
     result = await db.execute(
         select(Escrow)
         .where(Escrow.id == escrow_id)
-        .options(selectinload(Escrow.milestones))
+        .options(selectinload(Escrow.milestones), selectinload(Escrow.asset))
         .with_for_update()
     )
     escrow = result.scalar_one_or_none()
@@ -125,7 +126,7 @@ async def list_escrows(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_optional_current_user),
 ) -> list[Escrow]:
-    query = select(Escrow).options(selectinload(Escrow.milestones)).order_by(Escrow.created_at.desc())
+    query = select(Escrow).options(selectinload(Escrow.milestones), selectinload(Escrow.asset)).order_by(Escrow.created_at.desc())
     if creator_address:
         query = query.where(Escrow.creator_address == creator_address.lower())
     if counterparty_address:
@@ -142,7 +143,11 @@ async def create_escrow(
     payload: EscrowCreate,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # ROADMAP.md Part 4 6.1 — accepts either the normal browser JWT or an
+    # X-Api-Key with the "escrow:create" scope, so a non-browser agent can
+    # create an escrow without ever going through the nonce/personal_sign
+    # flow. See app/dependencies.py::require_user_with_scope.
+    current_user: User = Depends(require_user_with_scope("escrow:create")),
 ) -> Escrow:
     # Ensure counterparty user exists so foreign key is satisfied
     counterparty = await db.get(User, payload.counterparty_address)
@@ -151,11 +156,25 @@ async def create_escrow(
         counterparty.settings = UserSettings(wallet_address=payload.counterparty_address)
         db.add(counterparty)
 
+    # ROADMAP.md Part 4 6.2 — resolved by symbol, not trusted as a raw id:
+    # EscrowCreate.asset_symbol is a caller-friendly "GEN"/"USDC", looked
+    # up against the real Asset row so an unknown/typo'd symbol 400s here
+    # rather than either silently falling back to GEN or letting a bad
+    # foreign key slip through to the database to fail on.
+    asset_result = await db.execute(select(Asset).where(Asset.symbol == payload.asset_symbol))
+    asset = asset_result.scalar_one_or_none()
+    if asset is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown asset '{payload.asset_symbol}'.",
+        )
+
     escrow = Escrow(
         creator_address=current_user.wallet_address,
         counterparty_address=payload.counterparty_address,
         title=payload.title,
         total=payload.total,
+        asset_id=asset.id,
         status_key=StatusKey.IN_PROGRESS,
     )
     escrow.milestones.append(
@@ -170,6 +189,7 @@ async def create_escrow(
     db.add(escrow)
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
+    escrow.asset = asset  # already loaded above — avoids a lazy-load on the response
 
     # The actual Part 2 finish line: every new escrow gets a real deployed
     # NuanceEscrow instance automatically, not just ones manually linked
