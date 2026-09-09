@@ -5,6 +5,65 @@ export type ClientOptions = {
 };
 
 /**
+ * AgentCaseRead
+ *
+ * One judged case in an agent's real history — the "transaction
+ * drill-down" ROADMAP.md Part 4's Real Agent Directory item calls for.
+ * `AgentStatRead` above was already computed from real `ConsensusJob`
+ * rows (not seed data — see routers/agents.py's own docstring); what
+ * was actually missing was any way to see *which* cases a trust score
+ * was built from. `escrow_id` is always present (a dispute's own
+ * `escrow_id`, or the milestone's) so the frontend can link straight
+ * back to the real escrow/dispute detail view.
+ */
+export type AgentCaseRead = {
+    /**
+     * Completed At
+     */
+    completed_at?: string | null;
+    /**
+     * Consensus Job Id
+     */
+    consensus_job_id: number;
+    /**
+     * Dispute Id
+     */
+    dispute_id?: number | null;
+    /**
+     * Escrow Id
+     */
+    escrow_id: number;
+    /**
+     * Subject Id
+     */
+    subject_id: number;
+    /**
+     * Subject Type
+     */
+    subject_type: string;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Verdict Approved
+     */
+    verdict_approved?: boolean | null;
+    /**
+     * Verdict Confidence
+     */
+    verdict_confidence?: number | null;
+    /**
+     * Verdict Label
+     */
+    verdict_label?: string | null;
+    /**
+     * Verdict Reasoning
+     */
+    verdict_reasoning?: string | null;
+};
+
+/**
  * AgentStatRead
  */
 export type AgentStatRead = {
@@ -24,6 +83,44 @@ export type AgentStatRead = {
      * Wallet Address
      */
     wallet_address: string;
+};
+
+/**
+ * AnalyticsOverview
+ */
+export type AnalyticsOverview = {
+    /**
+     * Dispute Resolution Median Hours
+     */
+    dispute_resolution_median_hours: number | null;
+    /**
+     * Generated At
+     */
+    generated_at: string;
+    /**
+     * Open Escrow Count
+     */
+    open_escrow_count: number;
+    /**
+     * Prediction Market Count
+     */
+    prediction_market_count: number;
+    /**
+     * Prediction Market Volume Gen
+     */
+    prediction_market_volume_gen: string;
+    /**
+     * Resolved Dispute Count
+     */
+    resolved_dispute_count: number;
+    /**
+     * Tvl Open Escrows Gen
+     */
+    tvl_open_escrows_gen: string;
+    /**
+     * Validator Leaderboard
+     */
+    validator_leaderboard: Array<ValidatorStatRead>;
 };
 
 /**
@@ -1475,6 +1572,54 @@ export type ListAgentsAgentsGetResponses = {
 
 export type ListAgentsAgentsGetResponse = ListAgentsAgentsGetResponses[keyof ListAgentsAgentsGetResponses];
 
+export type GetAgentHistoryAgentsWalletAddressHistoryGetData = {
+    body?: never;
+    path: {
+        /**
+         * Wallet Address
+         */
+        wallet_address: string;
+    };
+    query?: never;
+    url: '/agents/{wallet_address}/history';
+};
+
+export type GetAgentHistoryAgentsWalletAddressHistoryGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetAgentHistoryAgentsWalletAddressHistoryGetError = GetAgentHistoryAgentsWalletAddressHistoryGetErrors[keyof GetAgentHistoryAgentsWalletAddressHistoryGetErrors];
+
+export type GetAgentHistoryAgentsWalletAddressHistoryGetResponses = {
+    /**
+     * Response Get Agent History Agents  Wallet Address  History Get
+     *
+     * Successful Response
+     */
+    200: Array<AgentCaseRead>;
+};
+
+export type GetAgentHistoryAgentsWalletAddressHistoryGetResponse = GetAgentHistoryAgentsWalletAddressHistoryGetResponses[keyof GetAgentHistoryAgentsWalletAddressHistoryGetResponses];
+
+export type GetAnalyticsOverviewAnalyticsOverviewGetData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/analytics/overview';
+};
+
+export type GetAnalyticsOverviewAnalyticsOverviewGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: AnalyticsOverview;
+};
+
+export type GetAnalyticsOverviewAnalyticsOverviewGetResponse = GetAnalyticsOverviewAnalyticsOverviewGetResponses[keyof GetAnalyticsOverviewAnalyticsOverviewGetResponses];
+
 export type ListApiKeysAuthApiKeysGetData = {
     body?: never;
     path?: never;
@@ -1664,6 +1809,34 @@ export type VerifySignatureAuthVerifyPostResponses = {
 
 export type VerifySignatureAuthVerifyPostResponse = VerifySignatureAuthVerifyPostResponses[keyof VerifySignatureAuthVerifyPostResponses];
 
+export type ConsensusStatusSseConsensusSseJobIdGetData = {
+    body?: never;
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: number;
+    };
+    query?: never;
+    url: '/consensus/sse/{job_id}';
+};
+
+export type ConsensusStatusSseConsensusSseJobIdGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ConsensusStatusSseConsensusSseJobIdGetError = ConsensusStatusSseConsensusSseJobIdGetErrors[keyof ConsensusStatusSseConsensusSseJobIdGetErrors];
+
+export type ConsensusStatusSseConsensusSseJobIdGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
 export type GetConsensusStatusConsensusJobIdGetData = {
     body?: never;
     path: {
@@ -1711,6 +1884,34 @@ export type ListDisputesDisputesGetResponses = {
 };
 
 export type ListDisputesDisputesGetResponse = ListDisputesDisputesGetResponses[keyof ListDisputesDisputesGetResponses];
+
+export type DisputeMessagesSseDisputesSseDisputeIdMessagesGetData = {
+    body?: never;
+    path: {
+        /**
+         * Dispute Id
+         */
+        dispute_id: number;
+    };
+    query?: never;
+    url: '/disputes/sse/{dispute_id}/messages';
+};
+
+export type DisputeMessagesSseDisputesSseDisputeIdMessagesGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DisputeMessagesSseDisputesSseDisputeIdMessagesGetError = DisputeMessagesSseDisputesSseDisputeIdMessagesGetErrors[keyof DisputeMessagesSseDisputesSseDisputeIdMessagesGetErrors];
+
+export type DisputeMessagesSseDisputesSseDisputeIdMessagesGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
 
 export type GetDisputeDisputesDisputeIdGetData = {
     body?: never;

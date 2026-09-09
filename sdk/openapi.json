@@ -1,6 +1,107 @@
 {
   "components": {
     "schemas": {
+      "AgentCaseRead": {
+        "description": "One judged case in an agent's real history \u2014 the \"transaction\ndrill-down\" ROADMAP.md Part 4's Real Agent Directory item calls for.\n`AgentStatRead` above was already computed from real `ConsensusJob`\nrows (not seed data \u2014 see routers/agents.py's own docstring); what\nwas actually missing was any way to see *which* cases a trust score\nwas built from. `escrow_id` is always present (a dispute's own\n`escrow_id`, or the milestone's) so the frontend can link straight\nback to the real escrow/dispute detail view.",
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "consensus_job_id": {
+            "title": "Consensus Job Id",
+            "type": "integer"
+          },
+          "dispute_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispute Id"
+          },
+          "escrow_id": {
+            "title": "Escrow Id",
+            "type": "integer"
+          },
+          "subject_id": {
+            "title": "Subject Id",
+            "type": "integer"
+          },
+          "subject_type": {
+            "title": "Subject Type",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "verdict_approved": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict Approved"
+          },
+          "verdict_confidence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict Confidence"
+          },
+          "verdict_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict Label"
+          },
+          "verdict_reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict Reasoning"
+          }
+        },
+        "required": [
+          "consensus_job_id",
+          "subject_type",
+          "subject_id",
+          "escrow_id",
+          "title"
+        ],
+        "title": "AgentCaseRead",
+        "type": "object"
+      },
       "AgentStatRead": {
         "properties": {
           "cases_judged": {
@@ -27,6 +128,67 @@
           "trust_score"
         ],
         "title": "AgentStatRead",
+        "type": "object"
+      },
+      "AnalyticsOverview": {
+        "properties": {
+          "dispute_resolution_median_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispute Resolution Median Hours"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "open_escrow_count": {
+            "title": "Open Escrow Count",
+            "type": "integer"
+          },
+          "prediction_market_count": {
+            "title": "Prediction Market Count",
+            "type": "integer"
+          },
+          "prediction_market_volume_gen": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Prediction Market Volume Gen",
+            "type": "string"
+          },
+          "resolved_dispute_count": {
+            "title": "Resolved Dispute Count",
+            "type": "integer"
+          },
+          "tvl_open_escrows_gen": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Tvl Open Escrows Gen",
+            "type": "string"
+          },
+          "validator_leaderboard": {
+            "items": {
+              "$ref": "#/components/schemas/ValidatorStatRead"
+            },
+            "title": "Validator Leaderboard",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tvl_open_escrows_gen",
+          "open_escrow_count",
+          "dispute_resolution_median_hours",
+          "resolved_dispute_count",
+          "prediction_market_volume_gen",
+          "prediction_market_count",
+          "validator_leaderboard",
+          "generated_at"
+        ],
+        "title": "AnalyticsOverview",
         "type": "object"
       },
       "ApiKeyCreate": {
@@ -2295,6 +2457,74 @@
         ]
       }
     },
+    "/agents/{wallet_address}/history": {
+      "get": {
+        "description": "Empty list (not 404) for a wallet with no judged cases \u2014 same\nreasoning as every other computed-on-read list endpoint here\n(GET /disputes/{id}/messages, GET /validators): there's no row to\ncheck existence against, this is purely a query over ConsensusJob\nhistory.",
+        "operationId": "get_agent_history_agents__wallet_address__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "wallet_address",
+            "required": true,
+            "schema": {
+              "title": "Wallet Address",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentCaseRead"
+                  },
+                  "title": "Response Get Agent History Agents  Wallet Address  History Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent History",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/analytics/overview": {
+      "get": {
+        "operationId": "get_analytics_overview_analytics_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsOverview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Analytics Overview",
+        "tags": [
+          "analytics"
+        ]
+      }
+    },
     "/auth/api-keys": {
       "get": {
         "operationId": "list_api_keys_auth_api_keys_get",
@@ -2609,6 +2839,47 @@
         ]
       }
     },
+    "/consensus/sse/{job_id}": {
+      "get": {
+        "description": "SSE counterpart to consensus_status_ws \u2014 see this module's own\ndocstring for why it exists (ROADMAP.md Part 3 5.2's fallback tier).\nNo explicit disconnect-polling here: Starlette's StreamingResponse\nalready races the body-streaming task against `listen_for_disconnect`\non the ASGI `receive` channel and cancels the former the moment the\nclient goes away, which is what actually stops _consensus_sse_events's\npoll-fallback `while True` from looping forever after a client\ndisconnects.",
+        "operationId": "consensus_status_sse_consensus_sse__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Consensus Status Sse",
+        "tags": [
+          "consensus"
+        ]
+      }
+    },
     "/consensus/{job_id}": {
       "get": {
         "operationId": "get_consensus_status_consensus__job_id__get",
@@ -2671,6 +2942,46 @@
           }
         },
         "summary": "List Disputes",
+        "tags": [
+          "disputes"
+        ]
+      }
+    },
+    "/disputes/sse/{dispute_id}/messages": {
+      "get": {
+        "operationId": "dispute_messages_sse_disputes_sse__dispute_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispute_id",
+            "required": true,
+            "schema": {
+              "title": "Dispute Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dispute Messages Sse",
         "tags": [
           "disputes"
         ]
