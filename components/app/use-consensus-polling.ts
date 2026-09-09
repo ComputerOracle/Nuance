@@ -4,9 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { getConsensusStatus, type ApiConsensusVerdict, type ApiValidatorResult } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 500;
-// How long to wait for the socket to open before giving up on it and
-// polling instead — a slow/blocked WS shouldn't stall the UI indefinitely.
+// How long to wait for the socket/EventSource to open before giving up on
+// it and falling further down the chain — a slow/blocked transport
+// shouldn't stall the UI indefinitely.
 const WS_CONNECT_TIMEOUT_MS = 1500;
+const SSE_CONNECT_TIMEOUT_MS = 1500;
 // Mirrors backend ConsensusStage.DONE (app/enums.py) — the frontend has no
 // shared enum with the Python backend, so this is pinned by comment instead.
 const DONE_STAGE = 3;
@@ -23,25 +25,40 @@ const IDLE_STATE: ConsensusPollState = {
   verdict: null,
 };
 
+function apiBase(): string {
+  return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8010";
+}
+
 function consensusWsUrl(jobId: string): string {
-  const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8010";
   // http(s) -> ws(s), same host/port as the REST API — matches how
   // API_BASE itself is derived in lib/api.ts.
-  const wsBase = apiBase.replace(/^http/, "ws");
-  return `${wsBase}/consensus/ws/${jobId}`;
+  return `${apiBase().replace(/^http/, "ws")}/consensus/ws/${jobId}`;
+}
+
+function consensusSseUrl(jobId: string): string {
+  return `${apiBase()}/consensus/sse/${jobId}`;
 }
 
 /**
- * Tracks GET/WS /consensus/{job_id} while `jobId` is set, stopping — closing
- * the socket or clearing the poll timer — the moment the job reaches stage 3
- * (DONE), `jobId` goes back to null, or the component unmounts.
+ * Tracks GET/WS/SSE /consensus/{job_id} while `jobId` is set, stopping —
+ * closing the socket/EventSource or clearing the poll timer — the moment
+ * the job reaches stage 3 (DONE), `jobId` goes back to null, or the
+ * component unmounts.
  *
- * Prefers a live WebSocket (backend/app/routers/consensus.py's
- * `consensus_status_ws`, a single connection the backend polls server-side
- * and forwards from) over the old ~500ms HTTP polling loop, but falls back
- * to that same polling automatically if the socket never opens in time, or
- * drops before the job is DONE — a flaky proxy, no WS support on the
- * deployment target, etc. shouldn't leave the panel stuck.
+ * Three tiers, in order (ROADMAP.md Part 3 5.2's SSE fallback item added
+ * the middle one — WS and plain polling both predate it):
+ *   1. WebSocket (backend/app/routers/consensus.py's `consensus_status_ws`)
+ *      — the primary path, one connection the backend polls/subscribes
+ *      server-side and forwards from.
+ *   2. Server-Sent Events (`consensus_status_sse`) — for a network that
+ *      blocks the WS upgrade handshake specifically but passes normal
+ *      HTTP(S) through fine (some corporate proxies do exactly this). A
+ *      live push channel over a plain GET beats falling all the way back
+ *      to polling.
+ *   3. The original ~500ms HTTP polling loop — always available, since
+ *      it's just repeated plain GETs; the fallback beneath both of the
+ *      above if neither transport ever connects or either drops before
+ *      the job is DONE.
  */
 export function useConsensusPolling(jobId: string | null): ConsensusPollState {
   const [state, setState] = useState<ConsensusPollState>(IDLE_STATE);
@@ -64,6 +81,11 @@ export function useConsensusPolling(jobId: string | null): ConsensusPollState {
 
   useEffect(() => {
     if (jobId == null) return;
+    // A const alias, not the raw parameter — TS discards narrowing across
+    // closure boundaries for a mutable parameter, and fallBackToSse below
+    // (a nested function) needs jobId to still read as `string`, not
+    // `string | null`, when it calls consensusSseUrl.
+    const activeJobId = jobId;
 
     // The one place stageRef actually resets — synchronous with this
     // effect starting for the new jobId, before anything below can read
@@ -73,13 +95,27 @@ export function useConsensusPolling(jobId: string | null): ConsensusPollState {
 
     let cancelled = false;
     let pollTimeoutId: ReturnType<typeof setTimeout> | undefined;
-    let connectTimeoutId: ReturnType<typeof setTimeout> | undefined;
+    let wsConnectTimeoutId: ReturnType<typeof setTimeout> | undefined;
+    let sseConnectTimeoutId: ReturnType<typeof setTimeout> | undefined;
     let socket: WebSocket | null = null;
+    let eventSource: EventSource | null = null;
     let polling = false;
+    let sseStarted = false;
+
+    function applyPayload(payload: ConsensusPollState & { error?: string }) {
+      if (cancelled) return;
+      if (payload.error) return; // job not found (yet) — wait for a real tick or the close below
+      stageRef.current = payload.stage;
+      setState({
+        stage: payload.stage,
+        validator_results: payload.validator_results,
+        verdict: payload.verdict,
+      });
+    }
 
     async function pollTick() {
       try {
-        const status = await getConsensusStatus(Number(jobId));
+        const status = await getConsensusStatus(Number(activeJobId));
         if (cancelled) return;
         stageRef.current = status.stage;
         setState({
@@ -105,36 +141,88 @@ export function useConsensusPolling(jobId: string | null): ConsensusPollState {
       void pollTick();
     }
 
+    function fallBackToSse() {
+      if (sseStarted || cancelled || stageRef.current >= DONE_STAGE) return;
+      sseStarted = true;
+
+      try {
+        eventSource = new EventSource(consensusSseUrl(activeJobId));
+      } catch (err) {
+        console.error("Consensus SSE setup failed, polling instead:", err);
+        eventSource = null;
+        fallBackToPolling();
+        return;
+      }
+
+      sseConnectTimeoutId = setTimeout(() => {
+        if (!cancelled && eventSource && eventSource.readyState !== EventSource.OPEN) {
+          eventSource.close();
+          fallBackToPolling();
+        }
+      }, SSE_CONNECT_TIMEOUT_MS);
+
+      eventSource.onopen = () => {
+        if (sseConnectTimeoutId) clearTimeout(sseConnectTimeoutId);
+      };
+
+      // Bare `data:` payloads (regular ticks + the not-found error case)
+      // land here, same shape/handling as the WS `onmessage` above.
+      eventSource.onmessage = (event) => {
+        if (cancelled) return;
+        try {
+          applyPayload(JSON.parse(event.data));
+        } catch (err) {
+          console.error("Bad consensus SSE payload:", err);
+        }
+      };
+
+      // The backend closes the stream itself with a named `done` event
+      // once the job reaches DONE — see routers/consensus.py's own
+      // docstring on why that's a named event specifically (a plain
+      // EventSource has no other way to distinguish "ended on purpose"
+      // from "connection dropped", and would otherwise auto-reconnect).
+      eventSource.addEventListener("done", () => {
+        eventSource?.close();
+      });
+
+      // A real EventSource fires its own native "error" for any
+      // transport-level failure (not a server-sent payload — see
+      // realtime.format_sse's docstring on why the backend never sends a
+      // named `event: error` for exactly this reason). Reconnect attempts
+      // land here too on every drop; once the job is actually DONE, our
+      // own `done` handler above already closed the connection, so this
+      // won't keep firing after that.
+      eventSource.onerror = () => {
+        if (sseConnectTimeoutId) clearTimeout(sseConnectTimeoutId);
+        if (stageRef.current >= DONE_STAGE) return;
+        eventSource?.close();
+        fallBackToPolling();
+      };
+    }
+
     try {
-      socket = new WebSocket(consensusWsUrl(jobId));
+      socket = new WebSocket(consensusWsUrl(activeJobId));
     } catch (err) {
-      console.error("Consensus WS setup failed, polling instead:", err);
-      fallBackToPolling();
+      console.error("Consensus WS setup failed, trying SSE instead:", err);
       socket = null;
+      fallBackToSse();
     }
 
     if (socket) {
-      connectTimeoutId = setTimeout(() => {
+      wsConnectTimeoutId = setTimeout(() => {
         if (!cancelled && socket && socket.readyState !== WebSocket.OPEN) {
           socket.close();
         }
       }, WS_CONNECT_TIMEOUT_MS);
 
       socket.onopen = () => {
-        if (connectTimeoutId) clearTimeout(connectTimeoutId);
+        if (wsConnectTimeoutId) clearTimeout(wsConnectTimeoutId);
       };
 
       socket.onmessage = (event) => {
         if (cancelled) return;
         try {
-          const payload = JSON.parse(event.data) as ConsensusPollState & { error?: string };
-          if (payload.error) return; // job not found (yet) — wait for a real tick or the close below
-          stageRef.current = payload.stage;
-          setState({
-            stage: payload.stage,
-            validator_results: payload.validator_results,
-            verdict: payload.verdict,
-          });
+          applyPayload(JSON.parse(event.data));
         } catch (err) {
           console.error("Bad consensus WS payload:", err);
         }
@@ -142,20 +230,22 @@ export function useConsensusPolling(jobId: string | null): ConsensusPollState {
 
       socket.onerror = () => {
         // onclose always follows in browsers — let that drive the fallback
-        // so there's one place deciding whether to start polling.
+        // so there's one place deciding whether to move to the next tier.
       };
 
       socket.onclose = () => {
-        if (connectTimeoutId) clearTimeout(connectTimeoutId);
-        fallBackToPolling();
+        if (wsConnectTimeoutId) clearTimeout(wsConnectTimeoutId);
+        fallBackToSse();
       };
     }
 
     return () => {
       cancelled = true;
-      if (connectTimeoutId) clearTimeout(connectTimeoutId);
+      if (wsConnectTimeoutId) clearTimeout(wsConnectTimeoutId);
+      if (sseConnectTimeoutId) clearTimeout(sseConnectTimeoutId);
       if (pollTimeoutId) clearTimeout(pollTimeoutId);
       socket?.close();
+      eventSource?.close();
     };
   }, [jobId]);
 

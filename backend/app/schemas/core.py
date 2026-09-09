@@ -627,6 +627,57 @@ class AgentStatRead(BaseModel):
     trust_score: int
 
 
+class AgentCaseRead(BaseModel):
+    """One judged case in an agent's real history — the "transaction
+    drill-down" ROADMAP.md Part 4's Real Agent Directory item calls for.
+    `AgentStatRead` above was already computed from real `ConsensusJob`
+    rows (not seed data — see routers/agents.py's own docstring); what
+    was actually missing was any way to see *which* cases a trust score
+    was built from. `escrow_id` is always present (a dispute's own
+    `escrow_id`, or the milestone's) so the frontend can link straight
+    back to the real escrow/dispute detail view."""
+
+    consensus_job_id: int
+    subject_type: str  # "milestone" | "dispute" — enums.ConsensusSubjectType's value
+    subject_id: int  # milestones.id or disputes.id, matching subject_type
+    escrow_id: int
+    dispute_id: int | None = None
+    title: str  # milestone name, or the dispute's issue text
+    verdict_label: str | None = None
+    verdict_approved: bool | None = None
+    verdict_confidence: int | None = None
+    verdict_reasoning: str | None = None
+    completed_at: datetime | None = None
+
+
+# --- Analytics --------------------------------------------------------------
+#
+# ROADMAP.md Part 3 5.5 — GET /analytics/overview (routers/analytics.py),
+# backing the frontend's AnalyticsView. Computed live from real rows on
+# every request, same as validators/agents above — no materialized/cached
+# table yet (5.5's second checkbox item), a deliberate scope cut given this
+# pass's size, not a silent drop: see routers/analytics.py's own docstring.
+
+
+class AnalyticsOverview(BaseModel):
+    # Sum of every not-yet-released milestone amount on every non-cancelled
+    # escrow — real "value still locked", not just "every escrow that
+    # exists" (a fully-paid-out escrow has nothing left locked in it).
+    tvl_open_escrows_gen: Decimal
+    open_escrow_count: int
+    # None if no dispute has ever been resolved yet — there's no
+    # meaningful median of zero samples.
+    dispute_resolution_median_hours: float | None
+    resolved_dispute_count: int
+    # Position/Prediction.volume is stored in milli-GEN (BET_AMOUNTS_
+    # MILLI_GEN) — converted to GEN here so this response's units match
+    # tvl_open_escrows_gen's.
+    prediction_market_volume_gen: Decimal
+    prediction_market_count: int
+    validator_leaderboard: list[ValidatorStatRead]
+    generated_at: datetime
+
+
 
 
 

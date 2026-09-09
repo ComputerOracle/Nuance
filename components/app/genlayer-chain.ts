@@ -22,6 +22,14 @@ export function blockExplorerTxUrl(txHash: string): string {
   return `${GENLAYER_BRADBURY.blockExplorerUrl}tx/${txHash}`;
 }
 
+// Same `/tx/<hash>` -> `/address/<address>` convention — see ROADMAP.md
+// 4.4's own "Block explorer: .../address/<address>" note (the deployed-
+// contracts table there is where this was first spelled out). Used by
+// app/docs's contract-address reference.
+export function blockExplorerAddressUrl(address: string): string {
+  return `${GENLAYER_BRADBURY.blockExplorerUrl}address/${address}`;
+}
+
 // The exact shape EIP-3085 `wallet_addEthereumChain` expects.
 export const GENLAYER_BRADBURY_ADD_CHAIN_PARAMS = {
   chainId: GENLAYER_BRADBURY.chainIdHex,

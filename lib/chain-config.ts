@@ -32,6 +32,35 @@ export function disputeCourtContractAddress(): `0x${string}` | null {
   return raw ? (raw as `0x${string}`) : null;
 }
 
+/** NuanceGovernance's one deployed address, or null. Same "genuinely
+ * global, not per-row" reasoning as disputeCourtContractAddress above —
+ * see ROADMAP.md 4.4.1's own account of which of the six deployed
+ * contracts are real shared registries vs. per-agreement instances.
+ * Read-only for now (app/docs's contract-address reference) — no
+ * frontend signing wiring against it yet, unlike disputeCourtContractAddress. */
+export function governanceContractAddress(): `0x${string}` | null {
+  const raw = process.env.NEXT_PUBLIC_GOVERNANCE_CONTRACT_ADDRESS?.trim();
+  return raw ? (raw as `0x${string}`) : null;
+}
+
+/** NuanceValidators' deployed address, or null — deployed (ROADMAP.md
+ * 4.4.3) but not load-bearing yet: routers/validators.py computes the
+ * real validator directory by scanning ConsensusJob history, not by
+ * reading this contract. Exposed here purely for app/docs's reference
+ * table, honestly labeled as such — see that page for the caveat. */
+export function validatorsContractAddress(): `0x${string}` | null {
+  const raw = process.env.NEXT_PUBLIC_VALIDATORS_CONTRACT_ADDRESS?.trim();
+  return raw ? (raw as `0x${string}`) : null;
+}
+
+/** Same as validatorsContractAddress, for NuanceAgentDirectory —
+ * deployed, not yet load-bearing (routers/agents.py computes the real
+ * agent directory from ConsensusJob history too). */
+export function agentDirectoryContractAddress(): `0x${string}` | null {
+  const raw = process.env.NEXT_PUBLIC_AGENT_DIRECTORY_CONTRACT_ADDRESS?.trim();
+  return raw ? (raw as `0x${string}`) : null;
+}
+
 /** The deployed NuanceEscrow instance backing a specific escrow, or null
  * if that escrow hasn't been linked to one — the normal state today. Takes
  * the row itself (not an id) so a call site that already has the fetched
