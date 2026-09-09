@@ -24,6 +24,8 @@ export type View =
   | "governance"
   | "validators"
   | "agents"
+  | "agentDetail"
+  | "analytics"
   | "settings";
 
 export interface Milestone {
@@ -200,6 +202,37 @@ export interface AgentDirectoryEntry {
   category: string;
   casesJudged: number;
   trustScore: number;
+}
+
+// GET /agents/{wallet_address}/history — ROADMAP.md Part 4's Real Agent
+// Directory "transaction drill-down".
+export interface AgentCase {
+  consensusJobId: number;
+  subjectType: "milestone" | "dispute";
+  subjectId: number;
+  escrowId: number;
+  disputeId: number | null;
+  title: string;
+  verdictLabel: string | null;
+  verdictApproved: boolean | null;
+  verdictConfidence: number | null;
+  verdictReasoning: string | null;
+  completedAt: string | null;
+}
+
+// GET /analytics/overview (ROADMAP.md Part 3 5.5). `*Gen` fields are
+// numbers here (unlike ApiAnalyticsOverview's strings) — nuance-app.tsx's
+// mapAnalytics parses them once at the API boundary, same reasoning as
+// every other Decimal-as-string field this app maps on read.
+export interface AnalyticsSnapshot {
+  tvlOpenEscrowsGen: number;
+  openEscrowCount: number;
+  disputeResolutionMedianHours: number | null;
+  resolvedDisputeCount: number;
+  predictionMarketVolumeGen: number;
+  predictionMarketCount: number;
+  validatorLeaderboard: ValidatorDirectoryEntry[];
+  generatedAt: string;
 }
 
 export interface EscrowVerdict {

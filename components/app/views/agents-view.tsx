@@ -13,7 +13,15 @@ function addressTag(address: string): string {
   return address.replace(/^0x/i, "").slice(0, 2).toUpperCase();
 }
 
-export function AgentsView({ agents }: { agents: AgentDirectoryEntry[] }) {
+export function AgentsView({
+  agents,
+  onOpenAgent,
+}: {
+  agents: AgentDirectoryEntry[];
+  // ROADMAP.md Part 4's "transaction drill-down" — each row now opens
+  // AgentDetailView's real per-case history instead of being a dead end.
+  onOpenAgent: (walletAddress: string) => void;
+}) {
   return (
     <div style={{ animation: "fadeUp 0.3s ease" }}>
       <div className="font-display text-[30px] font-bold">
@@ -27,7 +35,8 @@ export function AgentsView({ agents }: { agents: AgentDirectoryEntry[] }) {
         {agents.map((a) => (
           <div
             key={a.walletAddress}
-            className="flex items-center justify-between rounded-[14px] border border-border-1 bg-surface-1 p-4"
+            onClick={() => onOpenAgent(a.walletAddress)}
+            className="flex cursor-pointer items-center justify-between rounded-[14px] border border-border-1 bg-surface-1 p-4 transition-colors hover:bg-chip-hover"
           >
             <div className="flex items-center gap-3.5">
               <div className="flex h-9.5 w-9.5 shrink-0 items-center justify-center rounded-[10px] border border-border-6 bg-chip-hover text-[13px] font-bold">

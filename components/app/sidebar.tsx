@@ -17,6 +17,7 @@ const NAV_DEFS: { key: string; label: string; views: View[] }[] = [
   { key: "governance", label: "Governance", views: ["governance"] },
   { key: "validators", label: "Validators", views: ["validators"] },
   { key: "agents", label: "Agent Directory", views: ["agents"] },
+  { key: "analytics", label: "Analytics", views: ["analytics"] },
   { key: "settings", label: "Settings", views: ["settings"] },
 ];
 

@@ -13,6 +13,8 @@ import { DisputeDetailView } from "@/components/app/views/dispute-detail-view";
 import { GovernanceView } from "@/components/app/views/governance-view";
 import { ValidatorsView } from "@/components/app/views/validators-view";
 import { AgentsView } from "@/components/app/views/agents-view";
+import { AgentDetailView } from "@/components/app/views/agent-detail-view";
+import { AnalyticsView } from "@/components/app/views/analytics-view";
 import { SettingsView } from "@/components/app/views/settings-view";
 import { useWalletConnection } from "@/components/app/use-wallet-connection";
 import { useConsensusPolling } from "@/components/app/use-consensus-polling";
@@ -38,7 +40,9 @@ import {
 import * as api from "@/lib/api";
 import type { ApiDispute, ApiEscrow, ApiMilestone } from "@/lib/api";
 import type {
+  AgentCase,
   AgentDirectoryEntry,
+  AnalyticsSnapshot,
   Dispute,
   DisputeVerdict,
   Escrow,
@@ -201,6 +205,40 @@ function mapAgent(a: api.ApiAgentStat): AgentDirectoryEntry {
     category: a.category,
     casesJudged: a.cases_judged,
     trustScore: a.trust_score,
+  };
+}
+
+function mapAgentCase(c: api.ApiAgentCase): AgentCase {
+  return {
+    consensusJobId: c.consensus_job_id,
+    subjectType: c.subject_type,
+    subjectId: c.subject_id,
+    escrowId: c.escrow_id,
+    disputeId: c.dispute_id,
+    title: c.title,
+    verdictLabel: c.verdict_label,
+    verdictApproved: c.verdict_approved,
+    verdictConfidence: c.verdict_confidence,
+    verdictReasoning: c.verdict_reasoning,
+    completedAt: c.completed_at,
+  };
+}
+
+function mapAnalytics(a: api.ApiAnalyticsOverview): AnalyticsSnapshot {
+  return {
+    // Number(...) here, not a bare cast — tvl_open_escrows_gen/
+    // prediction_market_volume_gen arrive as Decimal-as-string (see
+    // ApiAnalyticsOverview's own docstring), same reasoning every other
+    // Money field in this file already gets `Number(e.total)` treatment
+    // (dashboard-view.tsx's totalEscrowed, for one).
+    tvlOpenEscrowsGen: Number(a.tvl_open_escrows_gen),
+    openEscrowCount: a.open_escrow_count,
+    disputeResolutionMedianHours: a.dispute_resolution_median_hours,
+    resolvedDisputeCount: a.resolved_dispute_count,
+    predictionMarketVolumeGen: Number(a.prediction_market_volume_gen),
+    predictionMarketCount: a.prediction_market_count,
+    validatorLeaderboard: a.validator_leaderboard.map(mapValidator),
+    generatedAt: a.generated_at,
   };
 }
 
@@ -450,6 +488,19 @@ export function NuanceApp() {
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [agentsError, setAgentsError] = useState<string | null>(null);
 
+  // Agent drill-down (ROADMAP.md Part 4) — fetched lazily per agent on
+  // open, not as part of loadData's own bulk load: unlike escrows/
+  // disputes/predictions, there's no reason to fetch every agent's full
+  // case history before anyone's actually looked at one.
+  const [selectedAgentAddress, setSelectedAgentAddress] = useState<string | null>(null);
+  const [agentCases, setAgentCases] = useState<AgentCase[]>([]);
+  const [agentCasesLoading, setAgentCasesLoading] = useState(false);
+  const [agentCasesError, setAgentCasesError] = useState<string | null>(null);
+
+  const [analytics, setAnalytics] = useState<AnalyticsSnapshot | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
+
   // Settings ------------------------------------------------------------
   const [notifyOn, setNotifyOn] = useState(true);
   const [autoEscalateOn, setAutoEscalateOn] = useState(false);
@@ -477,6 +528,8 @@ export function NuanceApp() {
     setValidatorsError(null);
     setAgentsLoading(true);
     setAgentsError(null);
+    setAnalyticsLoading(true);
+    setAnalyticsError(null);
 
     let loadedEscrows: Escrow[] = [];
     try {
@@ -555,6 +608,15 @@ export function NuanceApp() {
       setAgentsError(errorText(err, "Failed to load agents from backend."));
     } finally {
       setAgentsLoading(false);
+    }
+
+    try {
+      const apiAnalytics = await api.getAnalyticsOverview();
+      setAnalytics(mapAnalytics(apiAnalytics));
+    } catch (err) {
+      setAnalyticsError(errorText(err, "Failed to load analytics from backend."));
+    } finally {
+      setAnalyticsLoading(false);
     }
   };
 
@@ -727,6 +789,21 @@ export function NuanceApp() {
     setEscrowActionError(null);
     setOnChainSubmitNotice(null);
     setActiveEscrowJobId(escrowJobIds[id] ?? null);
+  }
+  async function openAgentDetail(walletAddress: string) {
+    setView("agentDetail");
+    setSelectedAgentAddress(walletAddress);
+    setAgentCases([]);
+    setAgentCasesError(null);
+    setAgentCasesLoading(true);
+    try {
+      const history = await api.getAgentHistory(walletAddress);
+      setAgentCases(history.map(mapAgentCase));
+    } catch (err) {
+      setAgentCasesError(errorText(err, "Failed to load this agent's case history."));
+    } finally {
+      setAgentCasesLoading(false);
+    }
   }
   async function submitDeliverable() {
     if (!deliverableText.trim() || selectedId == null) return;
@@ -1706,7 +1783,39 @@ export function NuanceApp() {
           ) : agentsError ? (
             <ErrorCard message={agentsError} onRetry={loadData} />
           ) : (
-            <AgentsView agents={agents} />
+            <AgentsView agents={agents} onOpenAgent={openAgentDetail} />
+          ))}
+
+        {view === "agentDetail" &&
+          selectedAgentAddress &&
+          (() => {
+            const agent =
+              agents.find((a) => a.walletAddress === selectedAgentAddress) ?? {
+                walletAddress: selectedAgentAddress,
+                category: "Unknown",
+                casesJudged: agentCases.length,
+                trustScore: 0,
+              };
+            return (
+              <AgentDetailView
+                agent={agent}
+                cases={agentCases}
+                casesLoading={agentCasesLoading}
+                casesError={agentCasesError}
+                onBack={() => setView("agents")}
+                onOpenEscrow={openEscrow}
+                onOpenDispute={openDispute}
+              />
+            );
+          })()}
+
+        {view === "analytics" &&
+          (analyticsLoading ? (
+            <LoadingState label="Loading analytics from backend…" />
+          ) : analyticsError || !analytics ? (
+            <ErrorCard message={analyticsError ?? "No analytics data."} onRetry={loadData} />
+          ) : (
+            <AnalyticsView analytics={analytics} />
           ))}
 
         {view === "settings" && (

@@ -25,6 +25,13 @@ export function SiteHeader() {
               {link.label}
             </a>
           ))}
+          {/* A real route (app/docs/page.tsx), not a same-page anchor
+              like the rest of NAV_LINKS above — kept out of that array
+              rather than teaching it to branch between <a href="#..."> and
+              next/link's <Link>. */}
+          <Link href="/docs" className="text-sm text-fg-muted transition-colors hover:text-fg-hover">
+            Docs
+          </Link>
         </div>
 
         <Link

@@ -19,8 +19,10 @@ from app.config import get_settings
 from app.db import dispose_engine, init_db
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.observability import init_sentry
 from app.routers import (
     agents,
+    analytics,
     api_keys,
     auth,
     consensus,
@@ -35,6 +37,10 @@ from app.services.genlayer_indexer import run_forever as run_chain_indexer
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+# Before the FastAPI app is built below — see init_sentry's own docstring
+# on why. A no-op unless SENTRY_DSN is actually set (ROADMAP.md 6.3).
+init_sentry(settings)
 
 
 @asynccontextmanager
@@ -111,6 +117,7 @@ app.include_router(predictions.router)
 app.include_router(governance.router)
 app.include_router(validators.router)
 app.include_router(agents.router)
+app.include_router(analytics.router)
 
 
 @app.get("/health")

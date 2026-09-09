@@ -170,6 +170,19 @@ class Settings(BaseSettings):
     # full period of this length adds 1 more point, up to the cap above.
     sybil_vote_weight_period_days: int = 7
 
+    # --- used starting the mainnet-readiness prompt (ROADMAP.md 6.3) ---
+    # None -> app/observability.py's init_sentry() is a no-op — same
+    # graceful-degradation shape as every other optional integration in
+    # this app (Redis, the LLM providers, Twitter ingestion): unset in
+    # dev/test, a real DSN only set in whatever environment actually
+    # wants error tracking. See RUNBOOK.md's Monitoring section.
+    sentry_dsn: str | None = None
+    # Fraction of requests to also capture a performance trace for (0.0-
+    # 1.0) — separate from error capture, which always fires regardless
+    # of this value. Low by default so enabling Sentry doesn't quietly
+    # turn into a high-volume/high-cost tracing firehose.
+    sentry_traces_sample_rate: float = 0.1
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

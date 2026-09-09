@@ -51,6 +51,9 @@ asyncpg==0.31.0       # async Postgres driver — env.py runs migrations via
                       # (psycopg2) is needed alongside it
 redis==8.1.0          # redis.asyncio pub/sub behind the consensus WS channel
 
+# --- Part 4 mainnet-readiness prompt (ROADMAP.md 6.3) ---
+sentry-sdk[fastapi]==2.69.1  # app/observability.py — a no-op unless SENTRY_DSN is set
+
 # --- Dev/test ---
 httpx==0.28.1
 pytest==9.1.1
