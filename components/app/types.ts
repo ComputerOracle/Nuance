@@ -54,12 +54,24 @@ export interface Milestone {
   releasedAt?: string | null;
 }
 
+// ROADMAP.md Part 4 6.2 — the settlement currency escrow.total/every
+// milestone's amount is denominated in (a milestone has no asset of its
+// own; every milestone in one escrow shares its parent escrow's).
+export interface Asset {
+  id: number;
+  symbol: string;
+  decimals: number;
+  contractAddress: string | null;
+  isNative: boolean;
+}
+
 export interface Escrow {
   id: number;
   title: string;
   creatorAddress: string;
   counterpartyAddress: string;
   total: number;
+  asset: Asset;
   statusKey: StatusKey;
   milestones: Milestone[];
   // Which deployed NuanceEscrow instance backs this escrow, if any — only

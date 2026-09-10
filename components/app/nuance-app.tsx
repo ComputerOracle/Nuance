@@ -80,6 +80,13 @@ function mapEscrow(e: ApiEscrow): Escrow {
     creatorAddress: e.creator_address,
     counterpartyAddress: e.counterparty_address,
     total: Number(e.total),
+    asset: {
+      id: e.asset.id,
+      symbol: e.asset.symbol,
+      decimals: e.asset.decimals,
+      contractAddress: e.asset.contract_address,
+      isNative: e.asset.is_native,
+    },
     statusKey: e.status_key,
     milestones: e.milestones.map(mapMilestone),
     contractAddress: e.contract_address,
