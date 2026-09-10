@@ -251,7 +251,16 @@ export interface EscrowVerdict {
   approved: boolean;
   disputed: boolean;
   label: string;
-  confidence: number;
+  // Optional — a live off-chain verdict (services/consensus.py's
+  // ConsensusJob.verdict_confidence) and a synthesized on-chain one both
+  // have a real number here, but a *persisted off-chain* milestone
+  // (reopened after the ConsensusJob that judged it has long since
+  // finished being polled — see nuance-app.tsx's escrowVerdict fallback)
+  // has no confidence value to fall back to at all; Milestone never
+  // stores one. Omitted rather than a fabricated number — consensus-
+  // panel.tsx's own ConsensusVerdict.confidence is optional for exactly
+  // this reason already.
+  confidence?: number;
   reasoning: string;
 }
 
