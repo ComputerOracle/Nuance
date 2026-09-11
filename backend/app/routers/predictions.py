@@ -32,6 +32,7 @@ from app.db import get_db
 from app.dependencies import get_current_user, require_user_with_scope
 from app.models import Prediction, PredictionPosition, User
 from app.schemas import OnChainBetAck, PredictionBetCreate, PredictionPositionRead, PredictionRead
+from app.services.consensus import ChainUnavailableError
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
 
@@ -148,6 +149,16 @@ async def place_bet(
     current_user: User = Depends(require_user_with_scope("bet:place")),
 ) -> Prediction:
     prediction = await _get_prediction_for_update_or_404(prediction_id, db)
+    # A linked market's payout math is real, pari-mutuel GEN — an
+    # off-chain PredictionPosition mirrored in here for it would be
+    # notional bookkeeping with no real stake behind it. See
+    # ChainUnavailableError's own docstring.
+    if prediction.contract_address is not None:
+        raise ChainUnavailableError(
+            f"Prediction {prediction_id} is linked to a deployed contract "
+            f"({prediction.contract_address}) — use POST /predictions/{prediction_id}"
+            "/bet/on-chain instead of this off-chain endpoint."
+        )
     _assert_market_open_for_betting(prediction)
 
     position = PredictionPosition(
@@ -229,13 +240,17 @@ async def resolve_prediction(
 ) -> Prediction:
     prediction = await _get_prediction_or_404(prediction_id, db)
 
+    # FIXED 2026-09-11 — was a plain 400; upgraded to ChainUnavailableError
+    # (503) so every off-chain-mock guard in this app (this one,
+    # place_bet above, routers/escrows.py's submit_deliverable/
+    # raise_dispute, routers/disputes.py's submit_evidence) reports the
+    # same way. See that exception's own docstring (services/consensus.py).
     if prediction.contract_address is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This market is linked to a deployed contract — it resolves on-chain "
-            "automatically (services/genlayer_indexer.py's "
-            "trigger_pending_market_resolutions) once its cutoff passes, not through "
-            "this off-chain endpoint.",
+        raise ChainUnavailableError(
+            f"Prediction {prediction_id} is linked to a deployed contract "
+            f"({prediction.contract_address}) — it resolves on-chain automatically "
+            "(services/genlayer_indexer.py's trigger_pending_market_resolutions) once "
+            "its cutoff passes, not through this off-chain endpoint."
         )
 
     if datetime.now(timezone.utc) < _resolution_date_utc(prediction):
