@@ -302,6 +302,41 @@ class OnChainCancelAck(BaseModel):
         return v.lower()
 
 
+class OnChainReleaseAck(BaseModel):
+    """Body for POST /escrows/{id}/release/on-chain — the frontend
+    reporting a tx hash it already got back from signing and sending a
+    real `NuanceEscrow.release_milestone` transaction (components/app/
+    genlayer-write-client.ts's releaseMilestoneOnChain).
+
+    Added 2026-09-11 to close a real fund-safety gap found live: nothing
+    anywhere in this app ever called the deployed contract's
+    release_milestone at all — the "Release Payment" button always hit
+    the legacy off-chain POST /escrows/{id}/release (a pure DB write,
+    zero on-chain effect) regardless of whether the escrow was on-chain
+    and funded. Any milestone approved on a real, funded on-chain escrow
+    had its payout permanently stuck: release_milestone is the only way
+    out once approved (cancel_escrow is contract-gated to "no milestone
+    ever approved" — see that method's own docstring), and nothing called
+    it. This ack is NOT a trust boundary, same reasoning as
+    OnChainSubmissionAck: it only remembers the hash for services/
+    genlayer_indexer.py to poll and mirror back (Milestone.released_at is
+    set once the indexer reads real `released: true` off the contract's
+    own get_milestone, never from this endpoint directly) — a caller
+    reporting a bogus hash can make the indexer log a failed lookup, it
+    can never fake a payout this way."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    tx_hash: str
+
+    @field_validator("tx_hash")
+    @classmethod
+    def _validate_tx_hash(cls, v: str) -> str:
+        if not _TX_HASH_RE.match(v):
+            raise ValueError("tx_hash must be a 0x-prefixed 64-hex-character transaction hash.")
+        return v.lower()
+
+
 # --- Consensus job --------------------------------------------------------
 
 

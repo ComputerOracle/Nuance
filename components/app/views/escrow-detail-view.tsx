@@ -21,6 +21,7 @@ export function EscrowDetailView({
   escalateDisabled = false,
   fundingDisabled = false,
   cancellingDisabled = false,
+  releasingDisabled = false,
   connectedWalletAddress = null,
   milestoneReleased = false,
   existingDisputeId = null,
@@ -51,6 +52,10 @@ export function EscrowDetailView({
   fundingDisabled?: boolean;
   // True while the real cancel_escrow transaction is mid-flight.
   cancellingDisabled?: boolean;
+  // True while the real release_milestone transaction is mid-flight
+  // (on-chain escrows only — the legacy off-chain release has no wallet
+  // round-trip to wait on).
+  releasingDisabled?: boolean;
   // The currently connected wallet, or null if none — used ONLY to hide
   // Fund/Cancel from a wallet that obviously isn't the creator (both are
   // creator-gated contract-side). Added 2026-09-08 after a live test
@@ -107,9 +112,10 @@ export function EscrowDetailView({
           ) : (
             <button
               onClick={onReleasePayment}
-              className="cursor-pointer rounded-lg border-none bg-positive px-4 py-2.5 text-[13px] font-semibold text-positive-fg transition-[filter] hover:brightness-110"
+              disabled={releasingDisabled}
+              className="cursor-pointer rounded-lg border-none bg-positive px-4 py-2.5 text-[13px] font-semibold text-positive-fg transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-60"
             >
-              Release Payment
+              {releasingDisabled ? "Releasing…" : "Release Payment"}
             </button>
           )
         ) : existingDisputeId != null ? (

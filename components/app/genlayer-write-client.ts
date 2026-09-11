@@ -225,6 +225,13 @@ export interface CancelEscrowOnChainArgs {
   contractAddress: `0x${string}`;
 }
 
+export interface ReleaseMilestoneOnChainArgs {
+  walletAddress: string;
+  provider: Eip1193Provider;
+  contractAddress: `0x${string}`;
+  milestoneIndex: number;
+}
+
 /** Signs and sends a real NuancePredictionMarket.bet transaction through
  * the connected wallet. The one *payable* call in this file — bet()
  * requires gl.message.value > 0 on the contract side, unlike every other
@@ -320,6 +327,28 @@ export async function cancelEscrowOnChain(args: CancelEscrowOnChainArgs): Promis
     address: args.contractAddress,
     functionName: "cancel_escrow",
     args: [] as never,
+    value: ZERO_VALUE,
+  });
+
+  return String(txHash);
+}
+
+/** Signs and sends a real NuanceEscrow.release_milestone transaction —
+ * added 2026-09-11, closing a real fund-safety gap: nothing anywhere in
+ * this app called this method before, so a milestone approved on a
+ * funded on-chain escrow had its real GEN payout permanently stuck (see
+ * backend/app/schemas/core.py's OnChainReleaseAck for the full incident
+ * — cancel_escrow can't recover it either, contract-gated to "no
+ * milestone ever approved"). Only the escrow creator may call this, and
+ * only once the milestone is actually approved and funded — both
+ * enforced contract-side, not duplicated here. */
+export async function releaseMilestoneOnChain(args: ReleaseMilestoneOnChainArgs): Promise<string> {
+  const client = createWriteClient(args.walletAddress, args.provider);
+
+  const txHash = await client.writeContract({
+    address: args.contractAddress,
+    functionName: "release_milestone",
+    args: [args.milestoneIndex] as never,
     value: ZERO_VALUE,
   });
 

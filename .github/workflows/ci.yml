@@ -107,11 +107,11 @@ jobs:
           python-version: "3.13"
           cache: "pip"
           cache-dependency-path: backend/requirements.txt
-      # A real backend/venv, matching local dev exactly (see backend/
-      # requirements.txt / README) — playwright.config.ts's backend
-      # webServer command runs `venv/bin/uvicorn` unconditionally, the
-      # same either way, rather than branching CI onto a different
-      # invocation than what a contributor runs locally.
-      - run: python -m venv venv && venv/bin/pip install -r requirements.txt
+      # `.venv`, not `venv` — matches every other venv in this repo
+      # (backend dev setup, sdk/generate.sh) and what playwright.config.ts's
+      # backend webServer command now runs unconditionally, so CI exercises
+      # the exact same invocation a contributor runs locally instead of a
+      # parallel bare `venv` that existed only to satisfy this one command.
+      - run: python -m venv .venv && .venv/bin/pip install -r requirements.txt
         working-directory: backend
       - run: npx playwright test

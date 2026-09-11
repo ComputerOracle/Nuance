@@ -11,11 +11,15 @@ export function GovernanceView({
   walletConnected,
   pendingVoteId,
   onVote,
+  pendingExecuteId,
+  onExecute,
 }: {
   proposals: Proposal[];
   walletConnected: boolean;
   pendingVoteId: number | null;
   onVote: (id: number, choice: "For" | "Against") => void;
+  pendingExecuteId: number | null;
+  onExecute: (id: number) => void;
 }) {
   return (
     <div style={{ animation: "fadeUp 0.3s ease" }}>
@@ -29,6 +33,8 @@ export function GovernanceView({
           const voted = pr.userVote;
           const isPending = pendingVoteId === pr.id;
           const canVote = pr.status === "Active" && !voted && walletConnected && !isPending;
+          const isExecuting = pendingExecuteId === pr.id;
+          const canExecute = pr.rawStatus === "passed" && walletConnected && !isExecuting;
           return (
             <div
               key={pr.id}
@@ -98,6 +104,24 @@ export function GovernanceView({
               )}
               {pr.status === "Active" && !voted && !walletConnected && !isPending && (
                 <div className="mt-3 text-xs text-fg-meta">Connect a wallet to vote.</div>
+              )}
+
+              {canExecute && (
+                <button
+                  onClick={() => onExecute(pr.id)}
+                  className="mt-3.5 w-full cursor-pointer rounded-lg border border-border-6 bg-surface-2 py-2.5 text-[13px] font-semibold text-fg"
+                >
+                  Execute Proposal
+                </button>
+              )}
+              {isExecuting && (
+                <div className="mt-3 text-xs text-fg-meta">Executing…</div>
+              )}
+              {pr.rawStatus === "passed" && !walletConnected && !isExecuting && (
+                <div className="mt-3 text-xs text-fg-meta">Connect a wallet to execute.</div>
+              )}
+              {pr.rawStatus === "executed" && (
+                <div className="mt-3 text-xs text-fg-meta">✓ Executed</div>
               )}
             </div>
           );

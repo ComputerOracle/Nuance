@@ -435,6 +435,22 @@ async def _apply_milestone_view(
     # "pending"/"in_review" on-chain: nothing has been decided yet, leave
     # status_key as whatever it already is.
 
+    # FIXED 2026-09-11 — this view-sync never looked at get_milestone's own
+    # `released` field at all, even though it's been returned by the
+    # contract from day one (see that method's own source). Paired with
+    # nothing ever calling release_milestone in the first place (see
+    # routers/escrows.py::release_milestone_on_chain, the other half of
+    # this fix), an on-chain milestone's real payout had no way to ever be
+    # reflected back into Milestone.released_at — the one field
+    # _releasable_milestone/the frontend's "already released, hide the
+    # button" check actually reads. Mirrors the same idempotent-overwrite
+    # pattern every other field in this function already uses: only ever
+    # sets it, never clears it, and only once (an already-set released_at
+    # is left alone rather than overwritten with a fresh timestamp every
+    # poll cycle).
+    if m.get("released") and milestone.released_at is None:
+        milestone.released_at = datetime.now(timezone.utc)
+
     deliverable_text = m.get("deliverable_text") or ""
     if deliverable_text and not any(s.text == deliverable_text for s in milestone.submissions):
         # Mirrors the DeliverableSubmission a legacy POST /escrows/{id}/

@@ -35,6 +35,7 @@ import {
   claimWinningsOnChain,
   fundEscrowOnChain,
   cancelEscrowOnChain,
+  releaseMilestoneOnChain,
   describeWriteError,
 } from "@/components/app/genlayer-write-client";
 import * as api from "@/lib/api";
@@ -398,6 +399,7 @@ export function NuanceApp() {
   // mid-flight (wallet signing prompt / RPC round-trip) — see fundEscrow
   // below.
   const [isFundingEscrow, setIsFundingEscrow] = useState(false);
+  const [isReleasingPayment, setIsReleasingPayment] = useState(false);
   // True while a real NuanceEscrow.cancel_escrow transaction is
   // mid-flight — see cancelEscrow below.
   const [isCancellingEscrow, setIsCancellingEscrow] = useState(false);
@@ -486,6 +488,8 @@ export function NuanceApp() {
   const [proposalsError, setProposalsError] = useState<string | null>(null);
   const [voteError, setVoteError] = useState<string | null>(null);
   const [pendingVoteId, setPendingVoteId] = useState<number | null>(null);
+  const [executeError, setExecuteError] = useState<string | null>(null);
+  const [pendingExecuteId, setPendingExecuteId] = useState<number | null>(null);
 
   const [validators, setValidators] = useState<ValidatorDirectoryEntry[]>([]);
   const [validatorsLoading, setValidatorsLoading] = useState(true);
@@ -987,10 +991,78 @@ export function NuanceApp() {
       setEscalatePending(false);
     }
   }
+  // FIXED 2026-09-11 — a real fund-safety gap, found tracing the escrow
+  // lifecycle end to end: this always called the legacy off-chain
+  // api.releaseMilestone, regardless of whether the escrow was on-chain
+  // and funded. That endpoint is a pure DB write with zero on-chain
+  // effect (see routers/escrows.py::release_milestone's own docstring) —
+  // for a real, funded on-chain escrow, clicking "Release Payment" set
+  // released_at in this app's DB while the actual GEN stayed locked in
+  // the deployed contract, permanently unreachable (cancel_escrow can't
+  // recover it either, once a milestone's been approved). Same on-chain/
+  // off-chain branch shape as submitDeliverable above, for the same
+  // reason: a fresh, authoritative read of contract_address/on_chain_index
+  // rather than the already-simplified `escrows` state.
   async function releasePayment() {
-    if (selectedId == null) return;
+    if (selectedId == null || isReleasingPayment) return;
     const escrowId = selectedId;
     setEscrowActionError(null);
+
+    let escrowData: api.ApiEscrow;
+    try {
+      escrowData = await api.getEscrow(escrowId);
+    } catch (err) {
+      setEscrowActionError(errorText(err, "Failed to release payment."));
+      return;
+    }
+    const approvedMilestone = escrowData.milestones.find(
+      (m) => m.status_key === "approved" && m.released_at == null
+    );
+    const contractAddress = escrowContractAddress(escrowData);
+
+    if (
+      contractAddress &&
+      approvedMilestone &&
+      approvedMilestone.on_chain_index != null &&
+      wallet.status === "connected" &&
+      wallet.provider
+    ) {
+      if (wallet.address.toLowerCase() !== escrowData.creator_address.toLowerCase()) {
+        setEscrowActionError("Connect the escrow creator's wallet to release payment.");
+        return;
+      }
+      // On-chain path: sign and send NuanceEscrow.release_milestone
+      // directly from this browser via the connected wallet — real GEN
+      // actually leaves the contract's balance once this confirms.
+      // released_at itself is only ever set once services/
+      // genlayer_indexer.py reads the confirmed `released: true` back
+      // from the contract's own get_milestone, not from this ack.
+      setIsReleasingPayment(true);
+      try {
+        const txHash = await releaseMilestoneOnChain({
+          walletAddress: wallet.address,
+          provider: wallet.provider,
+          contractAddress,
+          milestoneIndex: approvedMilestone.on_chain_index,
+        });
+        const updated = mapEscrow(await api.releaseMilestoneOnChainAck(escrowId, txHash));
+        setEscrows((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+        setActiveEscrowJobId(null);
+        setDeliverableText("");
+        setOnChainSubmitNotice(
+          `Release submitted on-chain — tx ${txHash.slice(0, 10)}…${txHash.slice(-6)}. ` +
+            "Funds move once GenLayer confirms this transaction."
+        );
+      } catch (err) {
+        setEscrowActionError(describeWriteError(err));
+      } finally {
+        setIsReleasingPayment(false);
+      }
+      return;
+    }
+
+    // Legacy off-chain path — unchanged: no on-chain collateral exists to
+    // move, this just marks the milestone paid out in our own DB.
     try {
       const updated = mapEscrow(await api.releaseMilestone(escrowId));
       setEscrows((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
@@ -1494,6 +1566,32 @@ export function NuanceApp() {
     }
   }
 
+  // Marks a PASSED proposal EXECUTED — see lib/api.ts::executeProposal's
+  // own comment: a formal status transition + audit trail (executed_by/
+  // executed_at), no real on-chain effect yet. Was completely unreachable
+  // from the UI before this: governance-view.tsx only ever rendered vote
+  // buttons for an Active proposal, so a proposal that actually PASSED had
+  // no way forward at all, same class of dead-end "Escalate to Internet
+  // Court" was found to be for a reopened off-chain-disputed milestone.
+  // No optimistic update (unlike vote()) — this is a rare, one-shot,
+  // low-frequency action, not worth reconciling a guessed intermediate
+  // state against the server's answer for.
+  async function executeProposal(id: number) {
+    const target = proposals.find((p) => p.id === id);
+    if (!target || target.rawStatus !== "passed" || pendingExecuteId != null) return;
+
+    setExecuteError(null);
+    setPendingExecuteId(id);
+    try {
+      const updated = await api.executeProposal(id);
+      setProposals((prev) => prev.map((p) => (p.id === id ? mapProposal(updated) : p)));
+    } catch (err) {
+      setExecuteError(errorText(err, "Failed to execute proposal."));
+    } finally {
+      setPendingExecuteId(null);
+    }
+  }
+
   // Wallet handlers -----------------------------------------------------
   async function selectWallet(provider: Eip1193Provider, name: string) {
     const connected = await wallet.connect(provider, name);
@@ -1674,6 +1772,7 @@ export function NuanceApp() {
                 escalateDisabled={escalatePending}
                 fundingDisabled={isFundingEscrow}
                 cancellingDisabled={isCancellingEscrow}
+                releasingDisabled={isReleasingPayment}
                 connectedWalletAddress={wallet.status === "connected" ? wallet.address : null}
                 milestoneReleased={milestoneAlreadyReleased}
                 existingDisputeId={existingDisputeForEscrow?.id ?? null}
@@ -1776,11 +1875,14 @@ export function NuanceApp() {
           ) : (
             <>
               {voteError && <ErrorBanner message={voteError} />}
+              {executeError && <ErrorBanner message={executeError} />}
               <GovernanceView
                 proposals={proposals}
                 walletConnected={wallet.status === "connected"}
                 pendingVoteId={pendingVoteId}
                 onVote={vote}
+                pendingExecuteId={pendingExecuteId}
+                onExecute={executeProposal}
               />
             </>
           ))}

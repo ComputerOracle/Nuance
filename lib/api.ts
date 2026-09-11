@@ -569,6 +569,22 @@ export async function releaseMilestone(escrowId: number): Promise<ApiEscrow> {
   return apiFetch<ApiEscrow>(`/escrows/${escrowId}/release`, { method: "POST" });
 }
 
+// The on-chain counterpart: called after components/app/
+// genlayer-write-client.ts's releaseMilestoneOnChain has already signed
+// and sent the real, fund-moving transaction. See backend/app/schemas/
+// core.py's OnChainReleaseAck for why this exists — added 2026-09-11 to
+// close a real gap where an on-chain escrow's approved milestone payout
+// had no way to ever actually be released.
+export async function releaseMilestoneOnChainAck(
+  escrowId: number,
+  txHash: string
+): Promise<ApiEscrow> {
+  return apiFetch<ApiEscrow>(`/escrows/${escrowId}/release/on-chain`, {
+    method: "POST",
+    body: JSON.stringify({ tx_hash: txHash }),
+  });
+}
+
 // Escalates the escrow's active milestone to a formal Dispute Court
 // review — the "Escalate to Internet Court" button (escrow-detail-view.tsx)
 // fires this with no `issue` of its own; the backend fills in a default
@@ -744,6 +760,17 @@ export async function castVote(
   return apiFetch<ApiProposal>(`/proposals/${proposalId}/vote`, {
     method: "POST",
     body: JSON.stringify({ choice }),
+  });
+}
+
+// Marks a PASSED proposal EXECUTED — see backend/app/routers/governance.py::
+// execute_proposal's own docstring: no real on-chain effect yet (no treasury
+// transfer, no parameter change), just the formal "this decision has been
+// enacted" status transition + an audit trail (executed_by/executed_at).
+// 400s if the proposal isn't PASSED, or is already EXECUTED.
+export async function executeProposal(proposalId: number): Promise<ApiProposal> {
+  return apiFetch<ApiProposal>(`/proposals/${proposalId}/execute`, {
+    method: "POST",
   });
 }
 

@@ -45,7 +45,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `mkdir -p ${E2E_DB_DIR} && venv/bin/uvicorn app.main:app --port ${BACKEND_PORT}`,
+      command: `mkdir -p ${E2E_DB_DIR} && .venv/bin/uvicorn app.main:app --port ${BACKEND_PORT}`,
       cwd: path.join(__dirname, "backend"),
       port: BACKEND_PORT,
       timeout: 30_000,

@@ -42,6 +42,7 @@ from app.schemas import (
     OnChainCancelAck,
     OnChainDisputeAck,
     OnChainFundAck,
+    OnChainReleaseAck,
     OnChainSubmissionAck,
 )
 from app.services.consensus import run_consensus
@@ -616,11 +617,28 @@ async def release_milestone(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Escrow:
+    """Legacy off-chain release — a pure DB write, no fund movement of any
+    kind (there's nothing to move: an off-chain escrow's "collateral" was
+    never actually locked anywhere on-chain to begin with). REJECTS an
+    escrow linked to a deployed contract (below) — added 2026-09-11 after
+    finding this endpoint was the ONLY thing the frontend's "Release
+    Payment" button ever called, for every escrow, on-chain or not. For a
+    real, funded on-chain escrow that meant clicking it just marked the
+    milestone released_at in this DB with ZERO on-chain effect — the real
+    GEN stayed locked in the contract, permanently unreachable, while the
+    UI showed "Released ✓". See release_milestone_on_chain below, the fix.
+    """
     escrow = await _get_escrow_for_update_or_404(escrow_id, db)
     if current_user.wallet_address != escrow.creator_address:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the escrow creator can release milestone funds.",
+        )
+    if escrow.contract_address is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This escrow is linked to a deployed contract — release the real funds "
+            "via POST /escrows/{id}/release/on-chain instead.",
         )
 
     milestone = _releasable_milestone(escrow)
@@ -632,6 +650,66 @@ async def release_milestone(
         )
 
     milestone.released_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(escrow, attribute_names=["milestones"])
+    return escrow
+
+
+@router.post(
+    "/{escrow_id}/release/on-chain",
+    response_model=EscrowRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def release_milestone_on_chain(
+    escrow_id: int,
+    payload: OnChainReleaseAck,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Escrow:
+    """The on-chain counterpart to release_milestone above — reached once
+    components/app/genlayer-write-client.ts's releaseMilestoneOnChain has
+    already signed and sent a real, fund-moving NuanceEscrow.release_milestone
+    transaction. Closes a real gap: nothing in this app called that method
+    before 2026-09-11 (see OnChainReleaseAck's own docstring for the full
+    incident) — a milestone approved on a funded on-chain escrow had its
+    payout permanently stuck, since cancel_escrow is contract-gated to
+    "no milestone ever approved."
+
+    Same "not a trust boundary" shape as submit_deliverable_on_chain: this
+    only remembers the tx hash for services/genlayer_indexer.py to poll.
+    Milestone.released_at is set ONLY once the indexer reads real
+    `released: true` back from the contract's own get_milestone (see
+    _apply_milestone_view) — never here — so a caller reporting a bogus
+    hash can make the indexer log a failed lookup, never fake a payout.
+    """
+    escrow = await _get_escrow_for_update_or_404(escrow_id, db)
+    if current_user.wallet_address != escrow.creator_address:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the escrow creator can release milestone funds.",
+        )
+    if escrow.contract_address is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This escrow isn't linked to a deployed contract — use the "
+            "off-chain POST /escrows/{id}/release instead.",
+        )
+
+    milestone = _releasable_milestone(escrow)
+    if milestone is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No approved, unreleased milestone to release — either nothing has "
+            "been approved by consensus yet, or it's already been released.",
+        )
+    if milestone.on_chain_index is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This milestone isn't linked to an index inside the deployed contract.",
+        )
+
+    milestone.on_chain_tx_hash = payload.tx_hash
+    milestone.chain_status = ChainStatus.PROCESSING
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
     return escrow
