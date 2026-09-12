@@ -873,6 +873,7 @@ export function NuanceApp() {
           deliverableText,
           deliverableUrl: "",
         });
+        wallet.refreshBalanceAfterTx();
         await api.submitDeliverableOnChainAck(escrowId, txHash);
         setDeliverableText("");
         setOnChainSubmitNotice(
@@ -963,6 +964,7 @@ export function NuanceApp() {
           claimStatement,
           evidenceUrl: "",
         });
+        wallet.refreshBalanceAfterTx();
         const created = await api.raiseDisputeOnChainAck(escrowId, txHash, claimStatement);
         const mapped = mapDispute(created, escrows);
         setDisputes((prev) => [mapped, ...prev]);
@@ -1057,6 +1059,7 @@ export function NuanceApp() {
           contractAddress,
           milestoneIndex: approvedMilestone.on_chain_index,
         });
+        wallet.refreshBalanceAfterTx();
         const updated = mapEscrow(await api.releaseMilestoneOnChainAck(escrowId, txHash));
         setEscrows((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
         setActiveEscrowJobId(null);
@@ -1142,6 +1145,7 @@ export function NuanceApp() {
         contractAddress,
         amountGen: escrowData.total,
       });
+      wallet.refreshBalanceAfterTx();
       const updated = mapEscrow(await api.fundEscrowOnChainAck(escrowId, txHash));
       setEscrows((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
     } catch (err) {
@@ -1199,6 +1203,7 @@ export function NuanceApp() {
         provider: wallet.provider,
         contractAddress,
       });
+      wallet.refreshBalanceAfterTx();
       const updated = mapEscrow(await api.cancelEscrowOnChainAck(escrowId, txHash));
       setEscrows((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
     } catch (err) {
@@ -1283,6 +1288,7 @@ export function NuanceApp() {
           outcome: betSide.toUpperCase() as "YES" | "NO",
           amountMilliGen,
         });
+        wallet.refreshBalanceAfterTx();
         const updatedApi = await api.placeBetOnChainAck(predictionId, txHash, betSide, amountMilliGen);
         const updatedPred = mapPrediction(updatedApi);
         setPredictions((prev) => prev.map((p) => (p.id === updatedPred.id ? updatedPred : p)));
@@ -1353,6 +1359,7 @@ export function NuanceApp() {
           provider: wallet.provider,
           contractAddress,
         });
+        wallet.refreshBalanceAfterTx();
       } catch (err) {
         setBettingError(describeWriteError(err));
       } finally {
@@ -1427,6 +1434,7 @@ export function NuanceApp() {
         provider: wallet.provider,
         contractAddress,
       });
+      wallet.refreshBalanceAfterTx();
       setClaimedPredictionIds((prev) => new Set(prev).add(predictionId));
     } catch (err) {
       setBettingError(describeWriteError(err));
@@ -1520,6 +1528,7 @@ export function NuanceApp() {
           onChainDisputeId: disputeData.on_chain_dispute_id,
           evidenceUrl: evidenceLink.trim(),
         });
+        wallet.refreshBalanceAfterTx();
         await api.submitEvidenceOnChainAck(disputeId, txHash, evidenceLink.trim());
         setEvidenceText("");
         setEvidenceLink("");

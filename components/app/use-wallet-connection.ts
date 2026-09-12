@@ -88,6 +88,37 @@ export function useWalletConnection() {
     }
   }, []);
 
+  // FIXED 2026-09-12 — found live: refreshBalance above only ever ran on
+  // connect/accountsChanged/chainChanged, never after this app's OWN
+  // wallet-signed transactions (fund_escrow, cancel_escrow,
+  // release_milestone, bet, claim_winnings, ...) — every one of those
+  // spends real GEN (gas at minimum; fund_escrow/bet spend the payable
+  // amount itself too), yet the sidebar's balance stayed stale until a
+  // completely unrelated event (switching accounts/networks, or a full
+  // page reload) happened to trigger a refresh. Exported for
+  // nuance-app.tsx to call right after every writeContract call in
+  // genlayer-write-client.ts resolves.
+  //
+  // Two attempts, not one: `writeContract` resolves as soon as the
+  // transaction is *submitted* (a hash), the same "this is a hash, not a
+  // confirmation" distinction scripts/deploy.ts's own header documents at
+  // length — an immediate eth_getBalance("latest") call frequently still
+  // reflects the pre-transaction balance. The delayed follow-up catches
+  // the real change once GenVM's own consensus/mining has actually
+  // landed it; the immediate one costs nothing and covers whatever
+  // fraction of calls do land fast enough. Not a full poll-until-changed
+  // loop — see refreshBalance's own "Balance is cosmetic" comment; this
+  // app's real source of truth for whether a transaction landed is
+  // services/genlayer_indexer.py's own state sync, not this display.
+  const refreshBalanceAfterTx = useCallback(() => {
+    const provider = providerRef.current;
+    if (!provider || !address) return;
+    void refreshBalance(provider, address);
+    window.setTimeout(() => {
+      if (providerRef.current === provider) void refreshBalance(provider, address);
+    }, 5000);
+  }, [address, refreshBalance]);
+
   const teardownListeners = useCallback(() => {
     const provider = providerRef.current;
     const listeners = listenersRef.current;
@@ -247,6 +278,7 @@ export function useWalletConnection() {
     connect,
     disconnect,
     switchNetwork,
+    refreshBalanceAfterTx,
     // The raw EIP-1193 provider backing the current connection, or null
     // when idle/connecting — components/app/genlayer-write-client.ts needs
     // this exact provider instance (not a fresh `window.ethereum` lookup,
