@@ -281,6 +281,18 @@ async def deploy_escrow_contract(escrow_id: int) -> None:
         await db.commit()
         logger.info("Auto-deployed NuanceEscrow for escrow id=%s -> %s", escrow_id, address)
 
+        # FIXED 2026-09-12 — a real gap found live: an already-open escrow
+        # detail view had no way to learn a background deploy had just
+        # finished short of a manual page reload. Inline import — see
+        # app.services.genlayer_indexer's own copy of this exact import
+        # for why it's safe (routers/escrows.py doesn't import this
+        # module, so no cycle), done inline here specifically because
+        # this module (genlayer_deploy) is itself imported *by*
+        # routers/escrows.py — a top-level import back would be circular.
+        from app.routers.escrows import _publish_escrow_snapshot
+
+        await _publish_escrow_snapshot(escrow_id)
+
 
 async def retry_undeployed_escrows() -> None:
     """Called once per services/genlayer_indexer.py poll cycle (gated by

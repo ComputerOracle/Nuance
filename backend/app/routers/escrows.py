@@ -1,4 +1,5 @@
-"""GET/POST /escrows, GET /escrows/{id}, deliverable submission, release.
+"""GET/POST /escrows, GET /escrows/{id} (+ WS/SSE live variants),
+deliverable submission, release.
 
 The AI-validator consensus step that normally follows a deliverable
 submission (see plan.md section 4) lands with the consensus-engine prompt;
@@ -8,15 +9,20 @@ milestone to IN_REVIEW so that prompt has a real row to pick up.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
-from app.db import get_db
+from app.db import AsyncSessionLocal, get_db
 from app.dependencies import get_current_user, get_optional_current_user, require_user_with_scope
 from app.enums import ChainStatus, ConsensusStage, ConsensusSubjectType, StatusKey
 from app.models import (
@@ -47,11 +53,15 @@ from app.schemas import (
 )
 from app.services.consensus import run_consensus
 from app.services.genlayer_deploy import deploy_escrow_contract
+from app.services.realtime import format_sse, publish_escrow_update, subscribe_escrow_updates
 
 router = APIRouter(prefix="/escrows", tags=["escrows"])
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 DEFAULT_CRITERIA = "Deliverable meets the agreed brief."
+
+ESCROW_POLL_INTERVAL_SECONDS = 3.0
 
 
 async def _get_escrow_or_404(escrow_id: int, db: AsyncSession) -> Escrow:
@@ -86,6 +96,140 @@ async def _get_escrow_for_update_or_404(escrow_id: int, db: AsyncSession) -> Esc
     if escrow is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Escrow not found.")
     return escrow
+
+
+async def _get_escrow_snapshot(escrow_id: int) -> dict | None:
+    """Fresh session per call, same reasoning as routers/disputes.py's
+    _list_messages_fresh — a WS/SSE connection's own SQLAlchemy identity
+    map must never keep handing back a stale Escrow across ticks/publishes.
+    None if the escrow doesn't exist (e.g. a bad id in the URL)."""
+    async with AsyncSessionLocal() as db:
+        escrow = (
+            await db.execute(
+                select(Escrow)
+                .where(Escrow.id == escrow_id)
+                .options(selectinload(Escrow.milestones), selectinload(Escrow.asset))
+            )
+        ).scalar_one_or_none()
+        if escrow is None:
+            return None
+        return EscrowRead.model_validate(escrow).model_dump(mode="json")
+
+
+async def _publish_escrow_snapshot(escrow_id: int) -> None:
+    """Called after every commit that changes something an escrow's own
+    detail view shows — see services/realtime.py::publish_escrow_update's
+    own docstring for the full list of call sites and the gap this
+    closes. Best-effort, same as every other publish in this codebase:
+    a Redis hiccup here never fails the write that triggered it, a
+    subscriber just falls back to its own polling tier instead."""
+    snapshot = await _get_escrow_snapshot(escrow_id)
+    if snapshot is not None:
+        await publish_escrow_update(escrow_id, {"type": "escrow", "escrow": snapshot})
+
+
+@router.websocket("/ws/{escrow_id}")
+async def escrow_updates_ws(websocket: WebSocket, escrow_id: int) -> None:
+    """Live counterpart to GET /escrows/{id} — added 2026-09-12 after a
+    real gap found live: an already-open escrow detail view had no way to
+    learn that a background auto-deploy had just linked a contract (or
+    any other server-side change — funding, a milestone's consensus
+    verdict landing, an on-chain sync from services/genlayer_indexer.py)
+    short of a manual page reload. Same structure as routers/disputes.py's
+    dispute_messages_ws: subscribe *before* the initial read (so nothing
+    published in between is missed), Redis pub/sub when reachable, db
+    polling unchanged otherwise. No terminal state here either — an
+    escrow keeps changing for its whole lifetime, so this streams until
+    the client disconnects.
+
+    Unlike dispute messages (an append-only list, diffed by id), an
+    escrow is one mutable record — every tick/publish sends the FULL
+    current snapshot and the client just replaces its local copy, so
+    there's no "new since last time" comparison to get wrong.
+    """
+    await websocket.accept()
+    try:
+        updates = await subscribe_escrow_updates(escrow_id)
+
+        snapshot = await _get_escrow_snapshot(escrow_id)
+        if snapshot is None:
+            await websocket.send_json({"error": "Escrow not found."})
+            await websocket.close(code=1008)
+            return
+        await websocket.send_json({"type": "escrow", "escrow": snapshot})
+
+        if updates is not None:
+            async for payload in updates:
+                await websocket.send_json(payload)
+            return
+
+        # Redis unavailable — poll and only send when the snapshot has
+        # actually changed (a plain string comparison of the serialized
+        # JSON is enough here: there's no incrementing id to diff against
+        # the way dispute messages has, and re-sending an identical
+        # snapshot every tick would be pure waste, not a correctness
+        # issue, but still worth skipping).
+        last_sent = json.dumps(snapshot, sort_keys=True)
+        while True:
+            await asyncio.sleep(ESCROW_POLL_INTERVAL_SECONDS)
+            fresh = await _get_escrow_snapshot(escrow_id)
+            if fresh is None:
+                await websocket.send_json({"error": "Escrow not found."})
+                await websocket.close(code=1008)
+                return
+            serialized = json.dumps(fresh, sort_keys=True)
+            if serialized != last_sent:
+                await websocket.send_json({"type": "escrow", "escrow": fresh})
+                last_sent = serialized
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001 — never let a bad tick crash the server, just drop this connection
+        logger.exception("Escrow updates WS tick failed for escrow %s", escrow_id)
+        try:
+            await websocket.close(code=1011)
+        except RuntimeError:
+            pass  # already closed
+
+
+async def _escrow_updates_sse_events(escrow_id: int) -> AsyncIterator[str]:
+    """SSE counterpart to escrow_updates_ws — see routers/consensus.py's
+    _consensus_sse_events / routers/disputes.py's
+    _dispute_messages_sse_events for why this is factored out as its own
+    generator (directly testable) and ROADMAP.md Part 3 5.2 for why SSE
+    exists as a fallback tier at all."""
+    updates = await subscribe_escrow_updates(escrow_id)
+
+    snapshot = await _get_escrow_snapshot(escrow_id)
+    if snapshot is None:
+        yield format_sse({"error": "Escrow not found."})
+        return
+    yield format_sse({"type": "escrow", "escrow": snapshot})
+
+    if updates is not None:
+        async for payload in updates:
+            yield format_sse(payload)
+        return
+
+    last_sent = json.dumps(snapshot, sort_keys=True)
+    while True:
+        await asyncio.sleep(ESCROW_POLL_INTERVAL_SECONDS)
+        fresh = await _get_escrow_snapshot(escrow_id)
+        if fresh is None:
+            yield format_sse({"error": "Escrow not found."})
+            return
+        serialized = json.dumps(fresh, sort_keys=True)
+        if serialized != last_sent:
+            yield format_sse({"type": "escrow", "escrow": fresh})
+            last_sent = serialized
+
+
+@router.get("/sse/{escrow_id}")
+async def escrow_updates_sse(escrow_id: int) -> StreamingResponse:
+    return StreamingResponse(
+        _escrow_updates_sse_events(escrow_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _active_milestone(escrow: Escrow) -> Milestone | None:
@@ -274,6 +418,7 @@ async def submit_deliverable(
     await db.commit()
     await db.refresh(submission)
     await db.refresh(job)
+    await _publish_escrow_snapshot(escrow_id)
 
     background_tasks.add_task(
         run_consensus, ConsensusSubjectType.MILESTONE, milestone.id, payload.text
@@ -330,6 +475,7 @@ async def fund_escrow_on_chain(
     escrow.funded_tx_hash = payload.tx_hash
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
+    await _publish_escrow_snapshot(escrow_id)
     return escrow
 
 
@@ -379,6 +525,7 @@ async def cancel_escrow_on_chain(
     escrow.cancelled_tx_hash = payload.tx_hash
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
+    await _publish_escrow_snapshot(escrow_id)
     return escrow
 
 
@@ -435,6 +582,7 @@ async def submit_deliverable_on_chain(
 
     await db.commit()
     await db.refresh(milestone)
+    await _publish_escrow_snapshot(escrow_id)
     return milestone
 
 
@@ -675,6 +823,7 @@ async def release_milestone(
     milestone.released_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
+    await _publish_escrow_snapshot(escrow_id)
     return escrow
 
 
@@ -735,5 +884,6 @@ async def release_milestone_on_chain(
     milestone.chain_status = ChainStatus.PROCESSING
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
+    await _publish_escrow_snapshot(escrow_id)
     return escrow
 

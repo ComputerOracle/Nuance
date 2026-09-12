@@ -761,7 +761,7 @@ async def run_consensus(
             verdict = _aggregate(results)
 
             # Apply state mutation to Milestone, Escrow, and Dispute models
-            await _apply_verdict_to_state(
+            affected_escrow_id = await _apply_verdict_to_state(
                 db,
                 subject_type,
                 subject_id,
@@ -779,6 +779,13 @@ async def run_consensus(
             job.completed_at = datetime.now(timezone.utc)
             await db.commit()
             await publish_consensus_update(job.id, _publishable_status(job))
+            if affected_escrow_id is not None:
+                # Imported inline — routers/escrows.py already imports
+                # from this module (run_consensus), so a top-level import
+                # the other way would be circular.
+                from app.routers.escrows import _publish_escrow_snapshot
+
+                await _publish_escrow_snapshot(affected_escrow_id)
             # Fire-and-forget (services/webhooks.py's own contract) — a
             # subscriber's callback being slow/down must never delay or
             # fail the consensus job itself. Same completion point Redis's
@@ -798,9 +805,15 @@ async def _apply_verdict_to_state(
     subject_id: int,
     verdict_approved: bool,
     verdict_reasoning: str,
-) -> None:
+) -> int | None:
     """Mutates the underlying Milestone, Escrow, and Dispute statuses based
-    on the AI consensus verdict."""
+    on the AI consensus verdict. Returns the affected Escrow's id (or
+    None if the subject itself no longer exists) — added 2026-09-12 so
+    every caller (services/consensus.py's own run_consensus,
+    services/genlayer_indexer.py's on-chain view-sync, both call sites
+    below) can publish a fresh escrow snapshot after its own commit (see
+    routers/escrows.py::_publish_escrow_snapshot) without each one
+    re-deriving which escrow this verdict actually touched."""
     if subject_type == ConsensusSubjectType.MILESTONE:
         result = await db.execute(
             select(Milestone)
@@ -809,7 +822,7 @@ async def _apply_verdict_to_state(
         )
         milestone = result.scalar_one_or_none()
         if milestone is None:
-            return
+            return None
 
         milestone.reasoning = verdict_reasoning
 
@@ -833,6 +846,8 @@ async def _apply_verdict_to_state(
             if milestone.escrow:
                 milestone.escrow.status_key = StatusKey.DISPUTED
 
+        return milestone.escrow.id if milestone.escrow else None
+
     elif subject_type == ConsensusSubjectType.DISPUTE:
         result = await db.execute(
             select(Dispute)
@@ -843,7 +858,7 @@ async def _apply_verdict_to_state(
         )
         dispute = result.scalar_one_or_none()
         if dispute is None:
-            return
+            return None
 
         dispute.ruling = verdict_reasoning
         dispute.resolved_at = datetime.now(timezone.utc)
@@ -873,3 +888,7 @@ async def _apply_verdict_to_state(
                 all_approved = all(m.status_key == StatusKey.APPROVED for m in escrow.milestones)
                 if all_approved:
                     escrow.status_key = StatusKey.APPROVED
+
+        return escrow.id if escrow else None
+
+    return None

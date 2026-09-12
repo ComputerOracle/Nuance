@@ -141,6 +141,27 @@ async def subscribe_consensus_updates(job_id: int) -> AsyncIterator[dict[str, An
     return await subscribe_updates(f"consensus:{job_id}")
 
 
+async def publish_escrow_update(escrow_id: int, payload: dict[str, Any]) -> None:
+    """Called from every place that changes something an escrow's own
+    detail view shows (services/genlayer_deploy.py::deploy_escrow_contract
+    once auto-deploy links a contract, routers/escrows.py's fund/cancel/
+    release/submit acks, services/consensus.py's _apply_verdict_to_state,
+    services/genlayer_indexer.py's on-chain view-sync) — added 2026-09-12
+    after a real gap found live: an already-open escrow detail view had
+    no way to learn that a background auto-deploy had finished (or any
+    other server-side change) short of a manual page reload. Unlike
+    publish_dispute_message's append-only messages, an escrow's state is
+    one mutable record, not a growing list — every publish carries the
+    FULL current EscrowRead snapshot (see routers/escrows.py's
+    _get_escrow_snapshot), and a subscriber just replaces its local copy
+    wholesale rather than reconciling a delta."""
+    await publish_update(f"escrow:{escrow_id}", payload)
+
+
+async def subscribe_escrow_updates(escrow_id: int) -> AsyncIterator[dict[str, Any]] | None:
+    return await subscribe_updates(f"escrow:{escrow_id}")
+
+
 async def publish_dispute_message(dispute_id: int, payload: dict[str, Any]) -> None:
     """Called from routers/disputes.py's send_message, right after commit
     — added 2026-09-08 (ROADMAP.md Part 3 5.5's "live dispute-message

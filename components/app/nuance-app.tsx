@@ -18,6 +18,7 @@ import { AnalyticsView } from "@/components/app/views/analytics-view";
 import { SettingsView } from "@/components/app/views/settings-view";
 import { useWalletConnection } from "@/components/app/use-wallet-connection";
 import { useConsensusPolling } from "@/components/app/use-consensus-polling";
+import { useEscrowUpdates } from "@/components/app/use-escrow-updates";
 import { activeMilestoneIndex, formatAddress } from "@/components/app/status";
 import type { Eip1193Provider } from "@/components/app/eip1193";
 import {
@@ -524,6 +525,27 @@ export function NuanceApp() {
   // backend rather than a local timer chain.
   const escrowConsensus = useConsensusPolling(activeEscrowJobId);
   const disputeConsensus = useConsensusPolling(activeDisputeJobId);
+
+  // FIXED 2026-09-12 — a real gap found live: the open escrow detail
+  // view had no way to learn a background auto-deploy had just linked a
+  // contract (or any other server-side change) short of a manual page
+  // reload. selectedId is already null whenever no escrow is open (see
+  // goDashboard), so this hook connects/disconnects on exactly the same
+  // lifecycle escrowConsensus above does.
+  const liveSelectedEscrow = useEscrowUpdates(selectedId);
+  useEffect(() => {
+    if (!liveSelectedEscrow) return;
+    const mapped = mapEscrow(liveSelectedEscrow);
+    // queueMicrotask — same reasoning loadData's own effects use
+    // elsewhere in this file: react-hooks/set-state-in-effect (CI-gated)
+    // flags a direct synchronous setState call in an effect body, even
+    // with nothing else async involved. A true microtask defers just
+    // past the synchronous phase, not a setTimeout(…, 0) macrotask, so
+    // there's no perceptible delay before the update actually applies.
+    queueMicrotask(() => {
+      setEscrows((prev) => prev.map((e) => (e.id === mapped.id ? mapped : e)));
+    });
+  }, [liveSelectedEscrow]);
 
   // Initial data load — loads escrows, disputes, and predictions from backend.
   const loadData = async () => {

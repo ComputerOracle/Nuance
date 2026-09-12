@@ -92,6 +92,13 @@ from app.services import genlayer_deploy, genlayer_rpc, genlayer_write
 # hand-copied version of it that could drift.
 from app.services.consensus import _apply_verdict_to_state
 
+# routers/escrows.py doesn't import this module (genlayer_indexer), so this
+# is a safe one-directional edge, not a cycle — see _publish_escrow_snapshot's
+# own docstring for why this file needs it: an on-chain view-sync tick
+# changes exactly the same escrow-visible fields a live-open detail view
+# subscribes to (routers/escrows.py's escrow_updates_ws/sse).
+from app.routers.escrows import _publish_escrow_snapshot
+
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
@@ -679,6 +686,17 @@ async def run_once(db: AsyncSession) -> None:
     reads = _build_read_batch(escrows, disputes, predictions)
     read_results, tx_results = await genlayer_rpc.read_and_check(reads, list(tx_hashes.keys()))
 
+    # Every escrow this cycle actually touched — published once, after the
+    # single commit at the end of this function, rather than mid-cycle
+    # (routers/escrows.py::escrow_updates_ws/sse subscribers must only ever
+    # see committed state; publishing before commit could hand a fresh
+    # session's read a row that then rolls back). Unconditional per row
+    # touched, not a precise "did this field actually change" check — this
+    # cycle only ever processes already-linked rows (bounded, not a hot
+    # path), so the cost of an occasional redundant publish is trivial
+    # next to the complexity of tracking every individual field flip.
+    touched_escrow_ids: set[int] = set()
+
     for tx_hash, (kind, row_id) in tx_hashes.items():
         tx_result = tx_results.get(tx_hash)
         if tx_result is None:
@@ -686,6 +704,8 @@ async def run_once(db: AsyncSession) -> None:
         row = _find_row(kind, row_id, escrows, disputes, predictions)
         if row is not None:
             _apply_transaction_status(row, tx_result)
+            if isinstance(row, (Milestone, Dispute)):
+                touched_escrow_ids.add(row.escrow_id)
 
     # View-state resync for every linked row, not only ones with a pending
     # tx this process itself submitted — covers state that changed via a
@@ -698,10 +718,12 @@ async def run_once(db: AsyncSession) -> None:
             result = read_results.get(f"milestone:{milestone.id}")
             if result is not None:
                 await _apply_milestone_view(db, milestone, escrow, result)
+                touched_escrow_ids.add(escrow.id)
     for dispute in disputes:
         result = read_results.get(f"dispute:{dispute.id}")
         if result is not None:
             await _apply_dispute_view(db, dispute, result)
+            touched_escrow_ids.add(dispute.escrow_id)
 
     # After the view-sync above, so a dispute _apply_dispute_view just
     # resolved this same cycle (autoflushed, so status_key already
@@ -720,6 +742,9 @@ async def run_once(db: AsyncSession) -> None:
     await trigger_pending_market_resolutions(predictions)
 
     await db.commit()
+
+    for escrow_id in touched_escrow_ids:
+        await _publish_escrow_snapshot(escrow_id)
 
 
 async def run_forever(interval_seconds: int | None = None) -> None:
