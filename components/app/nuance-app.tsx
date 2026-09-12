@@ -6,6 +6,7 @@ import { WalletModal } from "@/components/app/wallet-modal";
 import { DashboardView } from "@/components/app/views/dashboard-view";
 import { EscrowDetailView } from "@/components/app/views/escrow-detail-view";
 import { CreateEscrowView } from "@/components/app/views/create-escrow-view";
+import { CreateMarketView } from "@/components/app/views/create-market-view";
 import { PredictionsView } from "@/components/app/views/predictions-view";
 import { PredictionDetailView } from "@/components/app/views/prediction-detail-view";
 import { DisputesView } from "@/components/app/views/disputes-view";
@@ -430,6 +431,23 @@ export function NuanceApp() {
   const [formAmount, setFormAmount] = useState("");
   const [formCriteria, setFormCriteria] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
+
+  // Create-market form (2026-09-12 rebrand) — separate state from the
+  // escrow create-form above on purpose, same reasoning every other
+  // action in this file gets its own error/pending state rather than
+  // sharing one: the two forms can be mid-fill independently, and a
+  // failure in one must never surface on the other's screen.
+  const [formMarketTitle, setFormMarketTitle] = useState("");
+  const [formMarketCategory, setFormMarketCategory] = useState("");
+  const [formMarketResolutionDate, setFormMarketResolutionDate] = useState("");
+  const [formMarketResolutionSourceUrl, setFormMarketResolutionSourceUrl] = useState("");
+  const [formMarketDescription, setFormMarketDescription] = useState("");
+  const [createMarketError, setCreateMarketError] = useState<string | null>(null);
+  // Shown on the predictions list after a successful create — the new
+  // market itself won't appear there yet (starts "pending_review",
+  // hidden until deploy_prediction_contract actually links it), so
+  // without this the list would look like nothing happened.
+  const [createMarketNotice, setCreateMarketNotice] = useState<string | null>(null);
 
   // Prediction markets ------------------------------------------------------
   const [predictions, setPredictions] = useState<Prediction[]>([]);
@@ -1183,6 +1201,49 @@ export function NuanceApp() {
     setBetSide(null);
     setBettingError(null);
   }
+  function goCreateMarket() {
+    setView("createMarket");
+    setCreateMarketError(null);
+    setCreateMarketNotice(null);
+    setFormMarketTitle("");
+    setFormMarketCategory("");
+    setFormMarketResolutionDate("");
+    setFormMarketResolutionSourceUrl("");
+    setFormMarketDescription("");
+  }
+  async function submitCreateMarket() {
+    if (
+      !formMarketTitle.trim() ||
+      !formMarketCategory.trim() ||
+      !formMarketResolutionDate ||
+      !formMarketResolutionSourceUrl.trim() ||
+      !formMarketDescription.trim()
+    ) {
+      return;
+    }
+    setCreateMarketError(null);
+    try {
+      // <input type="datetime-local"> has no timezone of its own — new
+      // Date(...) on that exact string interprets it in the browser's
+      // local zone, and .toISOString() below converts that to a real UTC
+      // instant, matching what PredictionCreate's resolution_date expects.
+      const resolutionDateIso = new Date(formMarketResolutionDate).toISOString();
+      await api.createPrediction({
+        title: formMarketTitle,
+        description: formMarketDescription,
+        category: formMarketCategory,
+        resolution_date: resolutionDateIso,
+        resolution_source_url: formMarketResolutionSourceUrl,
+      });
+      setCreateMarketNotice(
+        "Market created — deploying on-chain now (usually a few minutes). " +
+          "It'll appear here once the GenVM contract is live."
+      );
+      setView("predictions");
+    } catch (err) {
+      setCreateMarketError(errorText(err, "Failed to create market."));
+    }
+  }
   function openPrediction(id: number) {
     setView("predictionDetail");
     setSelectedPredictionId(id);
@@ -1778,13 +1839,41 @@ export function NuanceApp() {
             </>
           ))}
 
+        {view === "createMarket" &&
+          (wallet.status !== "connected" ? (
+            <WalletAuthGuard onConnect={() => setShowWalletModal(true)} />
+          ) : (
+            <>
+              {createMarketError && <ErrorBanner message={createMarketError} />}
+              <CreateMarketView
+                formTitle={formMarketTitle}
+                formCategory={formMarketCategory}
+                formResolutionDate={formMarketResolutionDate}
+                formResolutionSourceUrl={formMarketResolutionSourceUrl}
+                formDescription={formMarketDescription}
+                onTitleChange={setFormMarketTitle}
+                onCategoryChange={setFormMarketCategory}
+                onResolutionDateChange={setFormMarketResolutionDate}
+                onResolutionSourceUrlChange={setFormMarketResolutionSourceUrl}
+                onDescriptionChange={setFormMarketDescription}
+                onCancel={goPredictions}
+                onSubmit={submitCreateMarket}
+              />
+            </>
+          ))}
+
         {view === "predictions" &&
           (predictionsLoading ? (
             <LoadingState label="Loading prediction markets from backend…" />
           ) : predictionsError ? (
             <ErrorCard message={predictionsError} onRetry={loadData} />
           ) : (
-            <PredictionsView predictions={predictions} onOpen={openPrediction} />
+            <PredictionsView
+              predictions={predictions}
+              onOpen={openPrediction}
+              onOpenCreate={goCreateMarket}
+              notice={createMarketNotice}
+            />
           ))}
 
         {view === "predictionDetail" && selectedPrediction && (

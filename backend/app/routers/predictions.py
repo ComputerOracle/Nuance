@@ -23,16 +23,24 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import get_settings
 from app.db import get_db
 from app.dependencies import get_current_user, require_user_with_scope
 from app.models import Prediction, PredictionPosition, User
-from app.schemas import OnChainBetAck, PredictionBetCreate, PredictionPositionRead, PredictionRead
+from app.schemas import (
+    OnChainBetAck,
+    PredictionBetCreate,
+    PredictionCreate,
+    PredictionPositionRead,
+    PredictionRead,
+)
 from app.services.consensus import ChainUnavailableError
+from app.services.genlayer_deploy import deploy_prediction_contract
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
 
@@ -133,6 +141,59 @@ async def get_prediction(
     prediction_id: int, db: AsyncSession = Depends(get_db)
 ) -> Prediction:
     return await _get_prediction_or_404(prediction_id, db)
+
+
+@router.post("", response_model=PredictionRead, status_code=status.HTTP_201_CREATED)
+async def create_prediction(
+    payload: PredictionCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Prediction:
+    """A real person authoring a real market — see PredictionCreate's own
+    docstring for why this replaces services/market_generator.py's
+    tweet-scraping pipeline as the actual way markets get made (2026-09-12
+    rebrand). Every market created here is on-chain-only by design: it
+    starts "pending_review" (the existing status list_predictions already
+    hides by default — see that endpoint's own docstring), invisible and
+    unbettable, and only flips to "open" once deploy_prediction_contract
+    actually links a real NuancePredictionMarket instance — see that
+    function's own new note on the pending_review->open transition. A
+    failed deploy just leaves the market pending_review forever rather
+    than silently falling back to an off-chain, non-custodial market
+    nobody actually asked for.
+
+    Gated on settings.auto_deploy_prediction_contracts — same flag
+    routers/escrows.py's create_escrow already uses, same reasoning: real
+    testnet gas per call, and (found the hard way, 2026-09-12) it's also
+    what makes this endpoint safe to test at all. This function is called
+    unconditionally-if-reached, so an unmocked POST /predictions in a test
+    would otherwise fire a REAL Bradbury deploy from the deployer's own
+    key — confirmed live: two real NuancePredictionMarket contracts got
+    deployed this way when a test file's monkeypatch targeted
+    genlayer_deploy.deploy_prediction_contract instead of this module's
+    own imported reference to it, which is what background_tasks.add_task
+    actually calls. Gating on the setting closes this for good: conftest.py's
+    existing _disable_prediction_auto_deploy_by_default fixture already
+    forces this flag off for every test, with no per-test-file mocking
+    required — the same protection create_escrow already had.
+    """
+    prediction = Prediction(
+        title=payload.title,
+        description=payload.description,
+        category=payload.category,
+        resolution_date=payload.resolution_date,
+        resolution_source_url=payload.resolution_source_url,
+        status_key="pending_review",
+    )
+    db.add(prediction)
+    await db.commit()
+    await db.refresh(prediction, attribute_names=["positions"])
+
+    if get_settings().auto_deploy_prediction_contracts:
+        background_tasks.add_task(deploy_prediction_contract, prediction.id)
+
+    return prediction
 
 
 @router.post(
