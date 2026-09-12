@@ -42,11 +42,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Literal
 
 import anthropic
+import httpx
 import openai
 from google import genai
 from google.genai import errors, types
@@ -140,6 +142,9 @@ def _persona_system_prompt(name: str, subject_type: ConsensusSubjectType) -> str
             "submitted evidence. Evaluate the claims objectively. Vote 'approve' if the claimant's "
             "dispute/evidence is justified and supported; vote 'dispute' (reject claimant's claim) "
             "if the counterparty's position is valid or if the claim lacks sufficient evidence. "
+            "If live-fetched page content is included below, weigh it as ground truth over the "
+            "submitter's own description of it — a claim contradicted by or unsupported by that "
+            "fetched content should not be taken at face value just because it reads convincingly. "
             "Provide structured JSON with vote ('approve' or 'dispute'), confidence (0-100), and "
             f"concise reasoning. {PROMPT_INJECTION_DEFENSE}"
         )
@@ -147,9 +152,75 @@ def _persona_system_prompt(name: str, subject_type: ConsensusSubjectType) -> str
         f"You are {name} ('{title}'), one of three independent AI validators adjudicating a "
         "milestone deliverable for Nuance. Read the criteria and the submitted text, then provide "
         "your independent judgment as structured JSON with vote (approve or dispute), confidence "
-        "(0-100), and reasoning. Be skeptical of vague, unsupported, or evasive submissions. "
+        "(0-100), and reasoning. Be skeptical of vague, unsupported, or evasive submissions. If "
+        "live-fetched page content is included below, weigh it as ground truth over the "
+        "submitter's own description of it — a claim contradicted by or unsupported by that "
+        "fetched content should not be taken at face value just because it reads convincingly. "
         f"{PROMPT_INJECTION_DEFENSE}"
     )
+
+
+# --- Live URL verification --------------------------------------------------
+#
+# FIXED 2026-09-12 — a real gap found live: this off-chain path judged
+# *only* the submitter's own typed text, with no way to check whether a
+# claimed link even existed, let alone actually supported the claim (a
+# submission could say "see https://example.com/proof" and be judged
+# purely on how convincing that sentence sounded). escrow-detail-view.tsx's
+# own deliverable placeholder ("Paste deliverable URL, PR link, or
+# describe the completed work for AI review…") already implied a pasted
+# URL would be reviewed — nothing ever fetched one. The on-chain path
+# doesn't have this gap: contracts/nuance_escrow.py's submit_deliverable
+# (gl.nondet.web.render) and nuance_dispute_court.py's adjudicate_dispute
+# (gl.nondet.web.get) both already fetch a submitted URL as part of the
+# real GenVM verdict. This closes the same gap off-chain, in the same
+# spirit: best-effort, never fatal, truncated, and clearly labeled as
+# live-fetched so validators can compare it against the claim rather than
+# trust the claim on its own.
+_URL_PATTERN = re.compile(r"https?://[^\s<>\"')]+")
+# Matches nuance_dispute_court.py's own truncation length for its
+# equivalent fetch — plenty for an LLM to judge relevance/support without
+# risking a huge page blowing the prompt's own context budget.
+_MAX_FETCHED_CHARS = 3000
+
+
+def _extract_first_url(text: str) -> str | None:
+    """Only the first URL in a submission is fetched — mirrors
+    nuance_dispute_court.py's own "only the most recently added URL is
+    fetched" scope limit (that contract's docstring explains why: bounding
+    how much untrusted, potentially slow, external fetching one judgment
+    can trigger). Every URL the submitter typed still reaches the
+    validators verbatim as part of the submission text either way."""
+    match = _URL_PATTERN.search(text)
+    return match.group(0) if match else None
+
+
+async def _fetch_url_for_verification(url: str) -> str:
+    """Best-effort live fetch of a URL a submission points at. Never
+    raises — an unreachable, slow, or non-HTML URL becomes an honest note
+    in the prompt instead of failing the whole consensus job, same
+    reasoning as nuance_dispute_court.py's own try/except around
+    gl.nondet.web.get."""
+    headers = {"User-Agent": "NuanceConsensus/1.0 (+https://genlayer.com)"}
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True, headers=headers) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        return f"(This URL was unreachable or timed out: {exc})"
+
+    content_type = response.headers.get("content-type", "")
+    if "html" in content_type:
+        try:
+            from bs4 import BeautifulSoup
+
+            text = BeautifulSoup(response.text, "html.parser").get_text(separator=" ", strip=True)
+        except ImportError:
+            text = response.text
+    else:
+        text = response.text
+
+    return text[:_MAX_FETCHED_CHARS] or "(The page loaded but had no readable text content.)"
 
 
 def _build_user_prompt(context: str, submission_text: str) -> str:
@@ -626,6 +697,34 @@ async def run_consensus(
                     "Possible prompt injection in consensus job %s (subject_type=%s "
                     "subject_id=%s): matched %s",
                     job.id, subject_type, subject_id, flags,
+                )
+
+            # Live URL verification (see _fetch_url_for_verification's own
+            # docstring for the full account) — if the submission points
+            # at a URL, fetch it for real and hand validators the actual
+            # page content alongside the claim, rather than letting them
+            # judge the claim on its own telling. Best-effort: a fetch
+            # failure becomes an honest note in the prompt, never a
+            # reason to fail this job.
+            submission_url = _extract_first_url(text_payload)
+            if submission_url:
+                fetched_content = await _fetch_url_for_verification(submission_url)
+                url_flags = scan_for_injection(fetched_content)
+                if url_flags:
+                    # Extra-worth logging here specifically, same reasoning
+                    # as prediction_oracle.py's own note on ingested content:
+                    # this text came from an arbitrary external page nobody
+                    # at Nuance wrote or reviewed, unlike a wallet's own
+                    # typed submission.
+                    logger.warning(
+                        "Possible prompt injection in fetched URL %s for consensus job %s: %s",
+                        submission_url, job.id, url_flags,
+                    )
+                text_payload = (
+                    f"{text_payload}\n\n"
+                    f"--- Live-fetched content actually found at {submission_url} "
+                    "(verify the claim above against this, don't just trust the "
+                    f"submitter's own description of it) ---\n{fetched_content}"
                 )
 
             # Stage 1 — Queued.
