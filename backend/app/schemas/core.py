@@ -198,6 +198,15 @@ class EscrowRead(BaseModel):
     # off-chain escrow, or an on-chain one the indexer hasn't synced yet
     # (funded_tx_hash can be set while this is still null, briefly).
     funded_amount: Decimal | None = None
+    # The contract's real native GEN balance, read directly via
+    # eth_getBalance — see Escrow.contract_balance's own docstring on why
+    # this exists as a separate field from funded_amount above: the
+    # confirmed, currently-open GenLayer platform bug
+    # (genlayerlabs/genvm-manager#20) that leaves emit_transfer's outbound
+    # value stuck at the contract even after the contract's own bookkeeping
+    # says "refunded"/"paid out." Null until the indexer's first balance
+    # read for this contract lands.
+    contract_balance: Decimal | None = None
     # Set once a real cancel_escrow() transaction has been sent and
     # acknowledged — see Escrow.cancelled_tx_hash's own docstring.
     cancelled_tx_hash: str | None = None

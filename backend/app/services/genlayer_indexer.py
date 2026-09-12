@@ -312,6 +312,26 @@ def _build_read_batch(
                 "args": [],
             }
         )
+        # FIXED 2026-09-12 — a real, serious gap found live: a cancelled
+        # escrow's refund never reached the creator's wallet, even though
+        # get_escrow's own funded_amount had already dropped to 0. Turned
+        # out to be a confirmed, currently-open GenLayer platform bug
+        # (genlayerlabs/genvm-manager#20) — emit_transfer's outbound value
+        # is recorded in the receipt but never actually delivered on-chain
+        # — so the contract's own bookkeeping can say "refunded"/"paid
+        # out" while the GEN is still sitting at the contract's address.
+        # "__native_balance__" is genlayer-read.ts's sentinel for a plain
+        # eth_getBalance against this same address, folded into the same
+        # batch/round-trip rather than a second subprocess call — see
+        # Escrow.contract_balance's own docstring for the full account.
+        reads.append(
+            {
+                "id": f"balance:{escrow.id}",
+                "address": escrow.contract_address,
+                "functionName": "__native_balance__",
+                "args": [],
+            }
+        )
         for milestone in escrow.milestones:
             if milestone.on_chain_index is None:
                 continue
@@ -476,6 +496,24 @@ async def _apply_escrow_view(escrow: Escrow, result: genlayer_rpc.ReadResult) ->
     if raw_amount is None:
         return
     escrow.funded_amount = _wei_to_gen(int(raw_amount))
+
+
+def _apply_escrow_balance(escrow: Escrow, result: genlayer_rpc.ReadResult) -> None:
+    """The real, ground-truth check `_apply_escrow_view` above can't
+    provide on its own — see Escrow.contract_balance's own docstring.
+    `result["result"]` here is a plain wei string from genlayer-read.ts's
+    "__native_balance__" sentinel (a real eth_getBalance), not anything
+    the contract itself reports about its own state, unlike every other
+    _apply_*_view function in this file."""
+    if not result.get("ok"):
+        logger.warning(
+            "native balance check failed for escrow id=%s: %s", escrow.id, result.get("error")
+        )
+        return
+    raw_balance = result.get("result")
+    if raw_balance is None:
+        return
+    escrow.contract_balance = _wei_to_gen(int(raw_balance))
 
 
 async def _apply_milestone_view(
@@ -767,6 +805,25 @@ async def quick_sync_escrow(
                 if after != before and not first_sync_still_zero:
                     changed = True
 
+            # Same real-balance check run_once's own sweep does — see
+            # _apply_escrow_balance's own docstring. Included in quick_sync
+            # too so a cancel/release ack's fast poll can actually notice,
+            # within its own ~24s window, that the platform bug above left
+            # this escrow's refund/payout still sitting at the contract
+            # instead of only ever reporting the (possibly misleading)
+            # funded_amount transition as "done."
+            balance_result = read_results.get(f"balance:{escrow.id}")
+            if balance_result is not None:
+                balance_before = escrow.contract_balance
+                _apply_escrow_balance(escrow, balance_result)
+                balance_after = escrow.contract_balance
+                first_balance_sync_still_zero = balance_before is None and balance_after in (
+                    None,
+                    Decimal("0"),
+                )
+                if balance_after != balance_before and not first_balance_sync_still_zero:
+                    changed = True
+
             for milestone in escrow.milestones:
                 if milestone.on_chain_index is None:
                     continue
@@ -863,6 +920,10 @@ async def run_once(db: AsyncSession) -> None:
         escrow_result = read_results.get(f"escrow:{escrow.id}")
         if escrow_result is not None:
             await _apply_escrow_view(escrow, escrow_result)
+            touched_escrow_ids.add(escrow.id)
+        balance_result = read_results.get(f"balance:{escrow.id}")
+        if balance_result is not None:
+            _apply_escrow_balance(escrow, balance_result)
             touched_escrow_ids.add(escrow.id)
         for milestone in escrow.milestones:
             if milestone.on_chain_index is None:

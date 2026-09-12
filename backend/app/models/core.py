@@ -144,6 +144,33 @@ class Escrow(Base):
     # on-chain ack in this app already documents). Null for an off-chain
     # escrow, or an on-chain one the indexer hasn't synced yet.
     funded_amount: Mapped[Decimal | None] = mapped_column(AssetAmount, default=None)
+    # FIXED 2026-09-12 — a real, serious gap found live: after a genuine
+    # on-chain cancel_escrow, the creator reported the refunded GEN never
+    # actually reached their wallet. Investigated with a direct
+    # eth_getBalance against the deployed contract (not just get_escrow) —
+    # the full "refunded" amount was still sitting at the contract's own
+    # address, and the creator's wallet balance hadn't moved at all.
+    # Root cause is NOT this app's contract code: `funded_amount` above
+    # (self.funded_amount in contracts/nuance_escrow.py) is a plain
+    # in-contract bookkeeping field the contract zeroes out unconditionally
+    # the moment cancel_escrow/release_milestone runs — it flips to 0
+    # whether or not the emit_transfer() call it's paired with actually
+    # delivers the value. That delivery is a confirmed, currently-open
+    # GenLayer platform bug (genlayerlabs/genvm-manager#20): outbound
+    # async messages (emit_transfer, cross-contract emit(), deploy_contract)
+    # are recorded in the triggering transaction's receipt but never
+    # actually executed on-chain, on both Asimov and Bradbury testnets, as
+    # of 2026-09-12. `funded_amount` alone can therefore say "refunded"/
+    # "paid out" while the GEN never moved — this column is the one honest
+    # check on top of it: the escrow contract's real native balance, read
+    # directly via eth_getBalance (scripts/genlayer-read.ts's
+    # "__native_balance__" sentinel), never inferred from the contract's
+    # own self-reported state. routers/escrows.py and the frontend use the
+    # gap between this and funded_amount/milestone approvals to tell a
+    # genuinely-settled payout from one still stuck behind the platform
+    # bug, instead of repeating the contract's own optimistic bookkeeping.
+    # Null until the indexer's first balance read for this contract lands.
+    contract_balance: Mapped[Decimal | None] = mapped_column(AssetAmount, default=None)
     # The tx hash of the creator's NuanceEscrow.cancel_escrow call, once
     # sent — set alongside status_key flipping to StatusKey.CANCELLED in
     # routers/escrows.py's cancel_escrow_on_chain ack. Null means never

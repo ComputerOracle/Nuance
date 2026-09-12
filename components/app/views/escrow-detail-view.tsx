@@ -187,17 +187,23 @@ export function EscrowDetailView({
   // recorded a hash" — shown to everyone viewing, not creator-gated,
   // since the counterparty benefits from seeing real funds are locked
   // too.
-  // FIXED 2026-09-12 (again) — found live: a cancelled, previously-funded
-  // escrow's OWN backend data was already fully correct (funded_amount
-  // synced to 0 the moment the real on-chain refund landed — confirmed
-  // directly in the database) — this was a pure display bug. Neither
-  // flag below checked escrow.statusKey at all, so once cancel_escrow's
-  // real refund dropped fundedAmount back to 0, isConfirmedFunded
-  // naturally went false again and isFundingPendingConfirmation came
-  // back TRUE — showing "waiting for on-chain confirmation" for an
-  // escrow that was already fully done, as if the refund itself were
-  // the thing still pending. A cancelled escrow has nothing left to
-  // wait for; it needs its own card (below), not either of these two.
+  // FIXED 2026-09-12 (second pass) — the first fix here was itself wrong
+  // in a way only a real on-chain balance check caught: it assumed a
+  // cancelled escrow's funded_amount settling back to 0 meant "the real
+  // refund landed." Reported live again — the creator's wallet never
+  // actually received the GEN. A direct eth_getBalance against the
+  // deployed contract (services/genlayer_indexer.py's contract_balance
+  // sync) proved the money was still sitting at the contract's own
+  // address: funded_amount is just in-contract bookkeeping that
+  // cancel_escrow/release_milestone zero out unconditionally, whether or
+  // not their paired emit_transfer() actually delivers the value — and it
+  // currently doesn't, on any Bradbury/Asimov contract: a confirmed,
+  // open GenLayer platform bug (genlayerlabs/genvm-manager#20) where
+  // outbound async messages are recorded in the triggering transaction's
+  // receipt but never actually executed on-chain. Not something more
+  // app-level code can fix — see the "stuck" card below, which says so
+  // honestly instead of repeating the contract's own optimistic
+  // bookkeeping as if it were confirmed delivery.
   const isCancelledOnChain = escrow.statusKey === "cancelled" && Boolean(escrow.contractAddress);
   const isConfirmedFunded =
     Boolean(escrow.contractAddress) && !isCancelledOnChain && (escrow.fundedAmount ?? 0) > 0;
@@ -210,6 +216,29 @@ export function EscrowDetailView({
     !isCancelledOnChain &&
     Boolean(escrow.fundedTxHash) &&
     !isConfirmedFunded;
+
+  // The one check in this view actually run against the chain's real
+  // state instead of the contract's own self-report — see
+  // Escrow.contract_balance's own docstring (models/core.py) for the full
+  // account. `fundedAmount` is what the contract CLAIMS is left locked
+  // right now (0 after a full cancel, or reduced by each released
+  // milestone); `contractBalance` is what eth_getBalance says is
+  // ACTUALLY there. A real gap between them — more sitting at the
+  // contract than the contract itself thinks should be — only happens
+  // when an emit_transfer the contract already recorded as done never
+  // actually delivered. A tiny epsilon absorbs float rounding from the
+  // Decimal->Number conversion upstream, not a real balance difference.
+  const _STUCK_EPSILON = 1e-9;
+  const isPayoutStuck =
+    escrow.contractBalance != null &&
+    escrow.fundedAmount != null &&
+    escrow.contractBalance - escrow.fundedAmount > _STUCK_EPSILON;
+  const hasEverBeenFunded = Boolean(escrow.fundedTxHash);
+  const isRefundVerifying =
+    isCancelledOnChain && hasEverBeenFunded && escrow.contractBalance == null;
+  const isRefundConfirmed =
+    isCancelledOnChain && hasEverBeenFunded && !isRefundVerifying && !isPayoutStuck;
+  const isRefundStuck = isCancelledOnChain && hasEverBeenFunded && isPayoutStuck;
 
   // Client-side pre-check only, matching cancel_escrow's own on-chain
   // condition (see that method's docstring on why a deadline gate isn't
@@ -315,26 +344,77 @@ export function EscrowDetailView({
         </div>
       )}
 
-      {/* FIXED 2026-09-12 (again) — the actual bug reported live: a real
-          cancel_escrow refund landed on-chain (the contract itself
-          returns everything locked, the same transaction that flips its
-          own status to "cancelled" — see contracts/nuance_escrow.py's
-          own cancel_escrow docstring), fundedAmount synced back to 0
-          exactly as it should, and the escrow detail view showed
-          "waiting for on-chain confirmation" instead of confirming
-          anything — because nothing here previously distinguished
-          "never funded, still pending" fundedAmount=0 from "was funded,
-          now refunded" fundedAmount=0. Only shown when a fund
-          transaction was actually sent — an escrow cancelled before
-          ever being funded has nothing to have refunded. */}
-      {isCancelledOnChain && escrow.fundedTxHash && (
+      {/* Same real-balance check as the cancel/refund cards below, applied
+          to a released milestone's payout instead — release_milestone
+          zeroes its own share of funded_amount and calls the identical
+          emit_transfer() cancel_escrow does, so it's blocked by the same
+          currently-open GenLayer platform bug (genlayerlabs/
+          genvm-manager#20) whenever it fires. Shown regardless of overall
+          escrow status since a milestone can be released mid-escrow. */}
+      {!isCancelledOnChain && isPayoutStuck && (
+        <div className="mt-5 rounded-xl border border-negative/30 bg-negative/10 p-4.5">
+          <div className="text-[13px] font-semibold text-negative-text">
+            ⚠ A milestone payout hasn&rsquo;t been delivered yet
+          </div>
+          <div className="mt-1 text-xs text-fg-meta">
+            The contract recorded a release, but a currently-open GenLayer network issue is
+            blocking outbound transfers from Intelligent Contracts (tracked publicly as
+            genlayerlabs/genvm-manager#20) — the counterparty&rsquo;s GEN is still sitting at the
+            contract&rsquo;s address for now, not lost.
+          </div>
+        </div>
+      )}
+
+      {/* Only shown when a fund transaction was actually sent — an escrow
+          cancelled before ever being funded has nothing to refund, verify,
+          or get stuck. Three real states, not one optimistic one — see
+          isRefundVerifying/isRefundConfirmed/isRefundStuck above. */}
+      {isRefundVerifying && (
+        <div className="mt-5 rounded-xl border border-review/30 bg-review/10 p-4.5">
+          <div className="text-[13px] font-semibold text-review-text">
+            Cancelled on-chain — verifying refund…
+          </div>
+          <div className="mt-1 text-xs text-fg-meta">
+            Checking the contract&rsquo;s real balance directly, not just its own status field.
+          </div>
+        </div>
+      )}
+
+      {isRefundConfirmed && (
         <div className="mt-5 rounded-xl border border-positive/30 bg-positive/10 p-4.5">
           <div className="text-[13px] font-semibold text-positive-text">
             ✓ Cancelled — {escrow.total.toLocaleString()} {escrow.asset.symbol} refunded to your
             wallet
           </div>
           <div className="mt-1 text-xs text-fg-meta">
-            The contract returned everything locked as part of the same cancellation transaction.
+            Verified against the contract&rsquo;s real on-chain balance (eth_getBalance), not just its
+            own self-reported status.
+          </div>
+        </div>
+      )}
+
+      {/* FOUND 2026-09-12, investigating a live report that a "refunded"
+          escrow's GEN never reached the wallet: this is a confirmed,
+          currently-open GenLayer platform bug, not a Nuance bug —
+          emit_transfer's outbound value is recorded in the transaction's
+          receipt but never actually executed on-chain (see
+          genlayerlabs/genvm-manager#20). The contract genuinely tried to
+          send it back; the network hasn't delivered it. No app-level fix
+          exists yet — this says so honestly instead of claiming the money
+          moved. */}
+      {isRefundStuck && (
+        <div className="mt-5 rounded-xl border border-negative/30 bg-negative/10 p-4.5">
+          <div className="text-[13px] font-semibold text-negative-text">
+            ⚠ Cancelled on-chain — refund not yet delivered
+          </div>
+          <div className="mt-1 text-xs text-fg-meta">
+            The contract recorded the cancellation and tried to send back{" "}
+            {escrow.contractBalance?.toLocaleString()} {escrow.asset.symbol}, but a currently-open
+            GenLayer network issue is blocking outbound transfers from Intelligent Contracts
+            (tracked publicly as genlayerlabs/genvm-manager#20) — this isn&rsquo;t something Nuance
+            can fix on its own. Your GEN is still provably at the escrow contract&rsquo;s address (
+            <span className="font-brand-mono">{formatAddress(escrow.contractAddress ?? "")}</span>
+            ) and will be re-checked automatically once the network delivers it.
           </div>
         </div>
       )}

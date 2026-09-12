@@ -88,6 +88,14 @@ export interface Escrow {
   // actually confirmed it against the deployed contract, even if
   // fundedTxHash is already set.
   fundedAmount?: number | null;
+  // The contract's real native GEN balance, read directly via
+  // eth_getBalance — see lib/api.ts's ApiEscrow.contract_balance on why
+  // this is checked separately from fundedAmount: a confirmed,
+  // currently-open GenLayer platform bug (genlayerlabs/genvm-manager#20)
+  // can leave fundedAmount reporting "refunded"/"paid out" while the GEN
+  // never actually left the contract. Null until the indexer's first
+  // balance read lands.
+  contractBalance?: number | null;
   // Set once a real cancel_escrow transaction has been sent and
   // acknowledged. See lib/api.ts's ApiEscrow.cancelled_tx_hash.
   cancelledTxHash?: string | null;

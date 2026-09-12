@@ -94,6 +94,7 @@ function mapEscrow(e: ApiEscrow): Escrow {
     contractAddress: e.contract_address,
     fundedTxHash: e.funded_tx_hash,
     fundedAmount: e.funded_amount == null ? null : Number(e.funded_amount),
+    contractBalance: e.contract_balance == null ? null : Number(e.contract_balance),
     cancelledTxHash: e.cancelled_tx_hash,
   };
 }

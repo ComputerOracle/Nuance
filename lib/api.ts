@@ -198,6 +198,15 @@ export interface ApiEscrow {
   // briefly, right after a fund transaction is sent but before the next
   // indexer poll cycle confirms it.
   funded_amount: string | null;
+  // The contract's real native GEN balance (decimal string), read
+  // directly via eth_getBalance — see models/core.py's
+  // Escrow.contract_balance for why this exists separately from
+  // funded_amount above: a confirmed, currently-open GenLayer platform
+  // bug (genlayerlabs/genvm-manager#20) leaves emit_transfer's outbound
+  // value stuck at the contract even after the contract's own bookkeeping
+  // (funded_amount) says "refunded"/"paid out." Null until the indexer's
+  // first balance read for this contract lands.
+  contract_balance: string | null;
   // Set once a real cancel_escrow() transaction has been sent and
   // acknowledged — see models/core.py's Escrow.cancelled_tx_hash.
   cancelled_tx_hash: string | null;

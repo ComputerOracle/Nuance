@@ -98,6 +98,7 @@ _SQLITE_COLUMN_PATCHES: dict[str, list[tuple[str, str]]] = {
         ("asset_id", "INTEGER DEFAULT 1"),
         ("deploy_attempted_at", "TIMESTAMP"),
         ("funded_amount", "NUMERIC(38, 18)"),
+        ("contract_balance", "NUMERIC(38, 18)"),
     ],
     "milestones": [
         ("on_chain_index", "INTEGER"),

@@ -158,14 +158,33 @@ async function main() {
   const reads: Record<string, { ok: true; result: unknown } | { ok: false; error: string }> = {};
   for (const r of request.reads ?? []) {
     try {
-      const result = await withRetry(() =>
-        client.readContract({
-          address: r.address as `0x${string}`,
-          functionName: r.functionName,
-          args: (r.args ?? []) as never,
-          jsonSafeReturn: true,
-        })
-      );
+      // "__native_balance__" is not a real contract method — a sentinel
+      // backend/app/services/genlayer_indexer.py uses to fold a plain
+      // eth_getBalance into the same read batch/subprocess round-trip as
+      // every other read, rather than a second subprocess call per cycle.
+      // Added 2026-09-12 investigating a real, live report: a cancelled
+      // escrow's refund never reached the creator's wallet. A direct
+      // eth_getBalance against the deployed contract (this exact call)
+      // proved the GEN was still sitting at the contract's own address —
+      // confirmed as a currently-open GenLayer platform bug
+      // (genlayerlabs/genvm-manager#20: emit_transfer's outbound message
+      // is recorded in the receipt but never actually executed on-chain)
+      // — see Escrow.contract_balance's own docstring for the full account.
+      // This is genuinely the contract's real balance (client.getBalance
+      // wraps eth_getBalance directly), not the contract's own self-
+      // reported internal bookkeeping field — that distinction is the
+      // entire point of this sentinel existing.
+      const result =
+        r.functionName === "__native_balance__"
+          ? String(await withRetry(() => client.getBalance({ address: r.address as `0x${string}` })))
+          : await withRetry(() =>
+              client.readContract({
+                address: r.address as `0x${string}`,
+                functionName: r.functionName,
+                args: (r.args ?? []) as never,
+                jsonSafeReturn: true,
+              })
+            );
       reads[r.id] = { ok: true, result };
     } catch (err) {
       reads[r.id] = { ok: false, error: errorMessage(err) };
