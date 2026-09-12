@@ -19,8 +19,24 @@ export function DashboardView({
   // out of scope here; this just keeps the existing GEN-labeled tile
   // honest about its own unit, same fix backend/app/routers/analytics.py
   // and services/genlayer_deploy.py both needed for the same reason.
+  //
+  // FIXED 2026-09-12 — found live: this summed EVERY matching escrow's
+  // `total` with no regard for status_key, so a cancelled escrow's real,
+  // already-refunded GEN kept counting toward "Total Escrowed" forever
+  // (confirmed live: two cancelled escrows worth 2+5 GEN were still
+  // being added to two real 2 GEN in-progress ones, showing 11 instead
+  // of 4). "Escrowed" means locked right now, at risk, not yet
+  // resolved — a cancelled escrow refunded everything back to the
+  // creator, and an approved one already paid everything out to the
+  // counterparty; either way there's nothing left in the contract for
+  // this tile to be counting. Matches routers/analytics.py's own
+  // tvl_open_escrows_gen, which already excludes exactly these two
+  // states for the identical reason — this tile just hadn't gotten the
+  // same fix yet.
   const totalEscrowed = escrows
-    .filter((e) => e.asset.isNative)
+    .filter(
+      (e) => e.asset.isNative && e.statusKey !== "cancelled" && e.statusKey !== "approved"
+    )
     .reduce((s, e) => s + (Number(e.total) || 0), 0);
   const activeReviewCount = escrows.filter(
     (e) => e.statusKey === "in_review" || e.milestones.some((m) => m.statusKey === "in_review")

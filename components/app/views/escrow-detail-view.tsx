@@ -187,13 +187,29 @@ export function EscrowDetailView({
   // recorded a hash" — shown to everyone viewing, not creator-gated,
   // since the counterparty benefits from seeing real funds are locked
   // too.
-  const isConfirmedFunded = Boolean(escrow.contractAddress) && (escrow.fundedAmount ?? 0) > 0;
+  // FIXED 2026-09-12 (again) — found live: a cancelled, previously-funded
+  // escrow's OWN backend data was already fully correct (funded_amount
+  // synced to 0 the moment the real on-chain refund landed — confirmed
+  // directly in the database) — this was a pure display bug. Neither
+  // flag below checked escrow.statusKey at all, so once cancel_escrow's
+  // real refund dropped fundedAmount back to 0, isConfirmedFunded
+  // naturally went false again and isFundingPendingConfirmation came
+  // back TRUE — showing "waiting for on-chain confirmation" for an
+  // escrow that was already fully done, as if the refund itself were
+  // the thing still pending. A cancelled escrow has nothing left to
+  // wait for; it needs its own card (below), not either of these two.
+  const isCancelledOnChain = escrow.statusKey === "cancelled" && Boolean(escrow.contractAddress);
+  const isConfirmedFunded =
+    Boolean(escrow.contractAddress) && !isCancelledOnChain && (escrow.fundedAmount ?? 0) > 0;
   // A fund transaction was sent (funded_tx_hash) but the indexer hasn't
   // yet confirmed the real amount against the contract — a real, if
   // usually brief, in-between state (one poll cycle, ~15s default) worth
   // its own honest label rather than silence.
   const isFundingPendingConfirmation =
-    Boolean(escrow.contractAddress) && Boolean(escrow.fundedTxHash) && !isConfirmedFunded;
+    Boolean(escrow.contractAddress) &&
+    !isCancelledOnChain &&
+    Boolean(escrow.fundedTxHash) &&
+    !isConfirmedFunded;
 
   // Client-side pre-check only, matching cancel_escrow's own on-chain
   // condition (see that method's docstring on why a deadline gate isn't
@@ -295,6 +311,30 @@ export function EscrowDetailView({
           </div>
           <div className="mt-1 text-xs text-fg-meta">
             Verified directly against the deployed contract, not just a submitted transaction.
+          </div>
+        </div>
+      )}
+
+      {/* FIXED 2026-09-12 (again) — the actual bug reported live: a real
+          cancel_escrow refund landed on-chain (the contract itself
+          returns everything locked, the same transaction that flips its
+          own status to "cancelled" — see contracts/nuance_escrow.py's
+          own cancel_escrow docstring), fundedAmount synced back to 0
+          exactly as it should, and the escrow detail view showed
+          "waiting for on-chain confirmation" instead of confirming
+          anything — because nothing here previously distinguished
+          "never funded, still pending" fundedAmount=0 from "was funded,
+          now refunded" fundedAmount=0. Only shown when a fund
+          transaction was actually sent — an escrow cancelled before
+          ever being funded has nothing to have refunded. */}
+      {isCancelledOnChain && escrow.fundedTxHash && (
+        <div className="mt-5 rounded-xl border border-positive/30 bg-positive/10 p-4.5">
+          <div className="text-[13px] font-semibold text-positive-text">
+            ✓ Cancelled — {escrow.total.toLocaleString()} {escrow.asset.symbol} refunded to your
+            wallet
+          </div>
+          <div className="mt-1 text-xs text-fg-meta">
+            The contract returned everything locked as part of the same cancellation transaction.
           </div>
         </div>
       )}
