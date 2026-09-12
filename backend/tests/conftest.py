@@ -102,3 +102,23 @@ def _disable_prediction_auto_deploy_by_default(monkeypatch):
     from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "auto_deploy_prediction_contracts", False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_quick_escrow_sync_by_default(monkeypatch):
+    """FIXED 2026-09-12 — a real mistake caught live: routers/escrows.py's
+    fund/cancel/submit/release-on-chain acks queue services/
+    genlayer_indexer.py::quick_sync_escrow as a background task whenever
+    settings.enable_quick_escrow_sync is true (the default) — FastAPI's
+    TestClient runs background tasks before a request call returns, so
+    every EXISTING test hitting one of those four endpoints (written
+    before this background task existed) started firing a real
+    subprocess -> real Bradbury RPC call, up to 12 times, 2s apart, per
+    test — confirmed live via a real `npx tsx scripts/genlayer-read.ts`
+    process caught mid-flight during a routine full-suite run. Same
+    reasoning as _disable_auto_deploy_by_default above. Tests that
+    specifically want to exercise quick_sync_escrow call it directly
+    (see test_escrow_quick_sync.py) rather than relying on this flag."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "enable_quick_escrow_sync", False)

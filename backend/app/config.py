@@ -144,6 +144,26 @@ class Settings(BaseSettings):
     # _process_events directly, many times, and has no business firing
     # real deployments.
     auto_deploy_prediction_contracts: bool = True
+    # FIXED 2026-09-12 — found live the hard way: routers/escrows.py's
+    # fund/cancel/submit/release-on-chain acks queue services/
+    # genlayer_indexer.py::quick_sync_escrow as a background task (a
+    # fast, ~24s-max poll of one escrow, so a user sees on-chain
+    # confirmation without waiting for the general indexer's own ~15s
+    # sweep — see that function's own docstring). Missing this exact
+    # settings-gate initially: FastAPI's TestClient runs background
+    # tasks before a request call returns, so every EXISTING test hitting
+    # one of those four endpoints (none written with this new background
+    # task in mind) started firing a real subprocess -> real Bradbury RPC
+    # call, up to 12 times, 2s apart, per test — confirmed live via a
+    # real `npx tsx scripts/genlayer-read.ts` process caught mid-flight
+    # during a routine full-suite run. Same pattern as
+    # auto_deploy_escrow_contracts above: true by default, forced off for
+    # the whole suite by tests/conftest.py. Tests that specifically want
+    # to exercise quick_sync_escrow call it directly (see
+    # test_escrow_quick_sync.py) or monkeypatch it before hitting the
+    # live endpoint — they don't need this flag on either way, since
+    # neither path goes through the queueing decision itself.
+    enable_quick_escrow_sync: bool = True
 
     # --- used starting the Part 3 hardening prompt (Postgres/Redis/security) ---
     # Redis pub/sub behind the consensus WebSocket channel (routers/

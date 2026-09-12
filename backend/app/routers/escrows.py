@@ -137,6 +137,35 @@ async def _publish_escrow_snapshot(escrow_id: int) -> None:
         await publish_escrow_update(escrow_id, {"type": "escrow", "escrow": snapshot})
 
 
+def _queue_quick_sync(background_tasks: BackgroundTasks, escrow_id: int) -> None:
+    """Queued right after every wallet-initiated on-chain ack (fund/
+    cancel/submit/release) — the exact moments a user is actively
+    watching for confirmation. FIXED 2026-09-12 — found live: without
+    this, confirmation took as long as the general indexer's own poll
+    interval (15s by default) to show up, because nothing distinguished
+    "someone is watching this specific escrow right now" from "just
+    sync everything on the usual cadence." See services/genlayer_
+    indexer.py::quick_sync_escrow's own docstring for the full account.
+
+    Gated by settings.enable_quick_escrow_sync (true by default; forced
+    off for the whole test suite by conftest.py) — a real, live-caught
+    mistake otherwise: FastAPI's TestClient runs background tasks before
+    a request call returns, so every EXISTING test hitting one of these
+    four endpoints would fire a real subprocess -> real Bradbury RPC
+    call, up to 12 times, without this gate. Same reasoning
+    auto_deploy_escrow_contracts's own gate documents for create_escrow.
+
+    Inline import — this module (routers.escrows) is imported by
+    genlayer_indexer.py itself (for _publish_escrow_snapshot), so a
+    top-level import back would be circular.
+    """
+    if not settings.enable_quick_escrow_sync:
+        return
+    from app.services.genlayer_indexer import quick_sync_escrow
+
+    background_tasks.add_task(quick_sync_escrow, escrow_id)
+
+
 @router.websocket("/ws/{escrow_id}")
 async def escrow_updates_ws(websocket: WebSocket, escrow_id: int) -> None:
     """Live counterpart to GET /escrows/{id} — added 2026-09-12 after a
@@ -477,6 +506,7 @@ async def submit_deliverable(
 async def fund_escrow_on_chain(
     escrow_id: int,
     payload: OnChainFundAck,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Escrow:
@@ -511,6 +541,7 @@ async def fund_escrow_on_chain(
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
     await _publish_escrow_snapshot(escrow_id)
+    _queue_quick_sync(background_tasks, escrow_id)
     return escrow
 
 
@@ -522,6 +553,7 @@ async def fund_escrow_on_chain(
 async def cancel_escrow_on_chain(
     escrow_id: int,
     payload: OnChainCancelAck,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Escrow:
@@ -561,6 +593,7 @@ async def cancel_escrow_on_chain(
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
     await _publish_escrow_snapshot(escrow_id)
+    _queue_quick_sync(background_tasks, escrow_id)
     return escrow
 
 
@@ -572,6 +605,7 @@ async def cancel_escrow_on_chain(
 async def submit_deliverable_on_chain(
     escrow_id: int,
     payload: OnChainSubmissionAck,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Milestone:
@@ -618,6 +652,7 @@ async def submit_deliverable_on_chain(
     await db.commit()
     await db.refresh(milestone)
     await _publish_escrow_snapshot(escrow_id)
+    _queue_quick_sync(background_tasks, escrow_id)
     return milestone
 
 
@@ -870,6 +905,7 @@ async def release_milestone(
 async def release_milestone_on_chain(
     escrow_id: int,
     payload: OnChainReleaseAck,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Escrow:
@@ -920,5 +956,6 @@ async def release_milestone_on_chain(
     await db.commit()
     await db.refresh(escrow, attribute_names=["milestones"])
     await _publish_escrow_snapshot(escrow_id)
+    _queue_quick_sync(background_tasks, escrow_id)
     return escrow
 

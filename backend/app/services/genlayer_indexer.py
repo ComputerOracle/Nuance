@@ -695,6 +695,96 @@ async def trigger_pending_market_resolutions(predictions: list[Prediction]) -> N
             )
 
 
+# --- Fast, one-off sync for a single escrow ---------------------------------
+
+# How long a real GenVM write call actually took to land, confirmed live
+# against a real deployed escrow's fund_escrow transaction (see
+# quick_sync_escrow's own docstring) — chosen to comfortably cover that,
+# not a guess.
+_QUICK_SYNC_MAX_ATTEMPTS = 12
+_QUICK_SYNC_INTERVAL_SECONDS = 2.0
+
+
+async def quick_sync_escrow(
+    escrow_id: int,
+    max_attempts: int = _QUICK_SYNC_MAX_ATTEMPTS,
+    interval_seconds: float = _QUICK_SYNC_INTERVAL_SECONDS,
+) -> None:
+    """FIXED 2026-09-12 — found live: after funding a real escrow, the UI
+    took as long as run_forever's own poll interval (15s by default) to
+    show it, because nothing distinguished "a user is actively watching
+    this specific escrow right after their own action" from "just sync
+    everything on the usual cadence." Real dapps don't make you wait for
+    a generic background sweep to notice your own transaction — this is
+    that fix: a short-lived, fast-cadence poll of ONE escrow, queued as a
+    background task right after routers/escrows.py's fund/cancel/submit/
+    release-on-chain acks (the exact moments a user is watching for
+    confirmation), reusing the same read-batch/view-apply/publish
+    machinery run_once's own periodic sweep already uses — not a second,
+    competing sync path.
+
+    Stops the moment a poll actually changes something (the live WS/SSE
+    channel has already pushed it by then via _publish_escrow_snapshot)
+    or `max_attempts` is exhausted, whichever comes first — 12 attempts
+    at 2s apart covers ~24s, comfortably past what a real fund_escrow
+    transaction took to land end to end in a live test. Bounded and
+    one-off: this never replaces run_once's own periodic sweep, which
+    stays the catch-all for state that changes via any other path (a
+    different browser session, someone calling the contract directly).
+    """
+    for _ in range(max_attempts):
+        await asyncio.sleep(interval_seconds)
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Escrow)
+                .where(Escrow.id == escrow_id)
+                .options(selectinload(Escrow.milestones))
+            )
+            escrow = result.scalar_one_or_none()
+            if escrow is None or escrow.contract_address is None:
+                return
+
+            reads = _build_read_batch([escrow], [], [])
+            read_results, _ = await genlayer_rpc.read_and_check(reads, [])
+
+            changed = False
+
+            escrow_result = read_results.get(f"escrow:{escrow.id}")
+            if escrow_result is not None:
+                before = escrow.funded_amount
+                await _apply_escrow_view(escrow, escrow_result)
+                after = escrow.funded_amount
+                # FOUND while testing this fix: the very first poll always
+                # looked "changed" simply because `before` starts as None
+                # (never synced yet) and any real read — even "still not
+                # funded" (0) — differs from None, stopping after a single
+                # attempt regardless of whether funding had actually
+                # landed. Only the first-ever sync settling on zero is a
+                # non-event; settling on zero *after* having been
+                # something else (a real refund/cancel) still counts.
+                first_sync_still_zero = before is None and after in (None, Decimal("0"))
+                if after != before and not first_sync_still_zero:
+                    changed = True
+
+            for milestone in escrow.milestones:
+                if milestone.on_chain_index is None:
+                    continue
+                milestone_result = read_results.get(f"milestone:{milestone.id}")
+                if milestone_result is None:
+                    continue
+                before_state = (milestone.status_key, milestone.chain_status, milestone.released_at)
+                await _apply_milestone_view(db, milestone, escrow, milestone_result)
+                if (milestone.status_key, milestone.chain_status, milestone.released_at) != before_state:
+                    changed = True
+
+            await db.commit()
+
+            if changed:
+                await _publish_escrow_snapshot(escrow_id)
+                return
+
+
 # --- One poll cycle ----------------------------------------------------------
 
 
