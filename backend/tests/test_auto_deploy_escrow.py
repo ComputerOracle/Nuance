@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 _TMP_DIR = tempfile.mkdtemp(prefix="nuance-auto-deploy-test-")
@@ -76,6 +77,8 @@ async def _create_escrow_row(
     criteria: str,
     contract_address: str | None = None,
     asset_id: int = 1,
+    status_key: StatusKey = StatusKey.IN_PROGRESS,
+    deploy_attempted_at: datetime | None = None,
 ) -> int:
     async with AsyncSessionLocal() as db:
         for addr in (creator, counterparty):
@@ -87,8 +90,9 @@ async def _create_escrow_row(
             title="Auto-deploy test escrow",
             total=Decimal(total),
             asset_id=asset_id,
-            status_key=StatusKey.IN_PROGRESS,
+            status_key=status_key,
             contract_address=contract_address,
+            deploy_attempted_at=deploy_attempted_at,
         )
         escrow.milestones.append(
             Milestone(
@@ -143,6 +147,7 @@ def test_deploy_escrow_contract_links_correctly(monkeypatch):
     milestone = asyncio.run(_get_milestone(escrow_id))
     assert escrow.contract_address == _FAKE_ADDRESS
     assert milestone.on_chain_index == 0
+    assert escrow.deploy_attempted_at is not None
 
     assert captured["file"] == "nuance_escrow.py"
     creator, counterparty, milestone_name, amount_arg, criteria = captured["args"]
@@ -213,6 +218,10 @@ def test_deploy_escrow_contract_failed_deploy_leaves_it_unlinked(monkeypatch):
     milestone = asyncio.run(_get_milestone(escrow_id))
     assert escrow.contract_address is None
     assert milestone.on_chain_index is None
+    # FIXED 2026-09-12 — a failed attempt still counts as "attempted," so
+    # retry_undeployed_escrows knows not to immediately re-fire it (see
+    # that function's own cooldown reasoning).
+    assert escrow.deploy_attempted_at is not None
 
 
 def test_deploy_escrow_contract_skips_already_linked(monkeypatch):
@@ -264,3 +273,150 @@ def test_create_escrow_endpoint_queues_and_completes_deploy(client: TestClient, 
 
     escrow = asyncio.run(_get_escrow(escrow_id))
     assert escrow.contract_address == _FAKE_ADDRESS
+
+
+# --- retry_undeployed_escrows ---------------------------------------------
+#
+# FIXED 2026-09-12 — a real gap found live: deploy_escrow_contract was a
+# pure one-shot fire-and-forget background task queued exactly once, at
+# creation. A failed or interrupted attempt left an escrow off-chain (no
+# real GEN custody, ever) PERMANENTLY, with no way for this app to ever
+# try again. See Escrow.deploy_attempted_at's own docstring for the full
+# account.
+
+
+def test_retry_undeployed_escrows_retries_a_never_attempted_escrow(monkeypatch):
+    escrow_id = asyncio.run(
+        _create_escrow_row(
+            "0x8888888888888888888888888888888888888888",
+            "0x9999999999999999999999999999999999999999",
+            "12.00",
+            "Never attempted yet.",
+        )
+    )
+
+    async def _fake_deploy_contract(file, args):
+        return _FAKE_ADDRESS
+
+    monkeypatch.setattr(genlayer_deploy, "deploy_contract", _fake_deploy_contract)
+
+    asyncio.run(genlayer_deploy.retry_undeployed_escrows())
+
+    escrow = asyncio.run(_get_escrow(escrow_id))
+    assert escrow.contract_address == _FAKE_ADDRESS
+
+
+def test_retry_undeployed_escrows_retries_a_stale_failed_attempt(monkeypatch):
+    stale = datetime.now(timezone.utc) - genlayer_deploy._DEPLOY_RETRY_COOLDOWN - timedelta(minutes=1)
+    escrow_id = asyncio.run(
+        _create_escrow_row(
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "12.00",
+            "Failed a while ago.",
+            deploy_attempted_at=stale,
+        )
+    )
+
+    async def _fake_deploy_contract(file, args):
+        return _FAKE_ADDRESS
+
+    monkeypatch.setattr(genlayer_deploy, "deploy_contract", _fake_deploy_contract)
+
+    asyncio.run(genlayer_deploy.retry_undeployed_escrows())
+
+    escrow = asyncio.run(_get_escrow(escrow_id))
+    assert escrow.contract_address == _FAKE_ADDRESS
+
+
+def test_retry_undeployed_escrows_skips_a_recent_attempt_in_cooldown(monkeypatch):
+    """The core safety property: an attempt from 1 minute ago could
+    plausibly still be running (deploy_contract's own subprocess timeout
+    is measured in minutes) — retrying it now would risk double-submitting
+    a real, testnet-GEN-costing deploy transaction."""
+    recent = datetime.now(timezone.utc) - timedelta(minutes=1)
+    escrow_id = asyncio.run(
+        _create_escrow_row(
+            "0xcccccccccccccccccccccccccccccccccccccccc",
+            "0xdddddddddddddddddddddddddddddddddddddddd",
+            "12.00",
+            "Attempted very recently.",
+            deploy_attempted_at=recent,
+        )
+    )
+
+    def _fail_if_called(file, args):
+        raise AssertionError("deploy_contract should not be called for an attempt still in cooldown")
+
+    monkeypatch.setattr(genlayer_deploy, "deploy_contract", _fail_if_called)
+
+    asyncio.run(genlayer_deploy.retry_undeployed_escrows())  # must not raise
+
+    escrow = asyncio.run(_get_escrow(escrow_id))
+    assert escrow.contract_address is None
+
+
+def test_retry_undeployed_escrows_skips_cancelled_escrows(monkeypatch):
+    escrow_id = asyncio.run(
+        _create_escrow_row(
+            "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "0xffffffffffffffffffffffffffffffffffffffff",
+            "12.00",
+            "Cancelled before ever deploying.",
+            status_key=StatusKey.CANCELLED,
+        )
+    )
+
+    def _fail_if_called(file, args):
+        raise AssertionError("deploy_contract should never be called for a cancelled escrow")
+
+    monkeypatch.setattr(genlayer_deploy, "deploy_contract", _fail_if_called)
+
+    asyncio.run(genlayer_deploy.retry_undeployed_escrows())  # must not raise
+
+    escrow = asyncio.run(_get_escrow(escrow_id))
+    assert escrow.contract_address is None
+
+
+def test_retry_undeployed_escrows_skips_non_native_asset(monkeypatch):
+    escrow_id = asyncio.run(
+        _create_escrow_row(
+            "0x1010101010101010101010101010101010101010",
+            "0x2020202020202020202020202020202020202020",
+            "12.00",
+            "USDC-denominated, never eligible.",
+            asset_id=2,  # seeded testnet USDC
+        )
+    )
+
+    def _fail_if_called(file, args):
+        raise AssertionError("deploy_contract should never be called for a non-native asset")
+
+    monkeypatch.setattr(genlayer_deploy, "deploy_contract", _fail_if_called)
+
+    asyncio.run(genlayer_deploy.retry_undeployed_escrows())  # must not raise
+
+    escrow = asyncio.run(_get_escrow(escrow_id))
+    assert escrow.contract_address is None
+
+
+def test_retry_undeployed_escrows_skips_already_linked(monkeypatch):
+    escrow_id = asyncio.run(
+        _create_escrow_row(
+            "0x3030303030303030303030303030303030303030",
+            "0x4040404040404040404040404040404040404040",
+            "12.00",
+            "Already linked.",
+            contract_address="0xAlreadyLinked000000000000000000000002",
+        )
+    )
+
+    def _fail_if_called(file, args):
+        raise AssertionError("deploy_contract should never be called for an already-linked escrow")
+
+    monkeypatch.setattr(genlayer_deploy, "deploy_contract", _fail_if_called)
+
+    asyncio.run(genlayer_deploy.retry_undeployed_escrows())  # must not raise
+
+    escrow = asyncio.run(_get_escrow(escrow_id))
+    assert escrow.contract_address == "0xAlreadyLinked000000000000000000000002"

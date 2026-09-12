@@ -29,13 +29,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.db import AsyncSessionLocal
-from app.models import Escrow, Prediction
+from app.enums import StatusKey
+from app.models import Asset, Escrow, Prediction
 from app.services.genlayer_rpc import _repo_root
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,15 @@ logger = logging.getLogger(__name__)
 # GEN has 18 decimals — same fact components/app/genlayer-chain.ts's
 # WEI_PER_GEN is pulled from (GENLAYER_BRADBURY.nativeCurrency.decimals).
 _WEI_PER_GEN_EXPONENT = 18
+
+# retry_undeployed_escrows's cooldown before treating an unfinished deploy
+# attempt as safe to retry — comfortably longer than _DEPLOY_TIMEOUT_SECONDS
+# below (deploy_contract's own hard subprocess timeout), so this never
+# double-submits a real, testnet-GEN-costing deploy transaction while a
+# previous attempt could plausibly still be in flight. See Escrow.
+# deploy_attempted_at's own docstring for the full account of the gap this
+# closes.
+_DEPLOY_RETRY_COOLDOWN = timedelta(minutes=10)
 
 
 def _gen_to_wei(amount: Decimal) -> int:
@@ -225,6 +236,17 @@ async def deploy_escrow_contract(escrow_id: int) -> None:
             )
             return
 
+        # Set BEFORE the actual (slow, up to _DEPLOY_TIMEOUT_SECONDS) deploy
+        # call below, and committed immediately — this is the guard
+        # retry_undeployed_escrows reads to avoid double-submitting a real
+        # deploy transaction while this exact attempt could still be in
+        # flight (see Escrow.deploy_attempted_at's own docstring). Not
+        # rolled back on failure further down: a failed attempt still
+        # counts as "attempted," subject to the same cooldown as any other
+        # attempt before being retried again.
+        escrow.deploy_attempted_at = datetime.now(timezone.utc)
+        await db.commit()
+
         # NuanceEscrow's milestone_amount is a u256, real wei — matching
         # exactly what components/app/genlayer-write-client.ts's
         # fundEscrowOnChain sends as fund_escrow's payable value (via
@@ -247,8 +269,10 @@ async def deploy_escrow_contract(escrow_id: int) -> None:
         )
         if address is None:
             logger.error(
-                "Auto-deploy failed for escrow id=%s — it stays on the legacy off-chain path.",
+                "Auto-deploy failed for escrow id=%s — staying on the legacy off-chain path "
+                "for now; retry_undeployed_escrows will try again once %s has passed.",
                 escrow_id,
+                _DEPLOY_RETRY_COOLDOWN,
             )
             return
 
@@ -256,6 +280,43 @@ async def deploy_escrow_contract(escrow_id: int) -> None:
         milestone.on_chain_index = 0
         await db.commit()
         logger.info("Auto-deployed NuanceEscrow for escrow id=%s -> %s", escrow_id, address)
+
+
+async def retry_undeployed_escrows() -> None:
+    """Called once per services/genlayer_indexer.py poll cycle (gated by
+    the same settings.auto_deploy_escrow_contracts flag as the initial
+    deploy) — the fix for a real gap: deploy_escrow_contract used to be a
+    pure one-shot fire-and-forget background task queued exactly once, at
+    creation. If it failed for ANY reason (a transient Bradbury RPC
+    hiccup, the backend restarting mid-deploy), that escrow stayed on the
+    legacy off-chain path — no real GEN custody, ever — PERMANENTLY, with
+    no way for this app to ever try again and no visibility that it had
+    even happened.
+
+    Finds every native-GEN, not-yet-deployed, not-cancelled escrow whose
+    last attempt (if any) is old enough that it can't plausibly still be
+    running (see _DEPLOY_RETRY_COOLDOWN), and just calls
+    deploy_escrow_contract again — that function's own idempotency guards
+    (contract_address is None, asset.is_native, a real milestone to deploy
+    against) are exactly what a safe retry needs, so this doesn't
+    duplicate any of that logic, only decides *when* to call it again.
+    """
+    cutoff = datetime.now(timezone.utc) - _DEPLOY_RETRY_COOLDOWN
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Escrow.id)
+            .join(Asset, Escrow.asset_id == Asset.id)
+            .where(
+                Escrow.contract_address.is_(None),
+                Escrow.status_key != StatusKey.CANCELLED,
+                Asset.is_native.is_(True),
+                (Escrow.deploy_attempted_at.is_(None)) | (Escrow.deploy_attempted_at < cutoff),
+            )
+        )
+        escrow_ids = [row[0] for row in result.all()]
+
+    for escrow_id in escrow_ids:
+        await deploy_escrow_contract(escrow_id)
 
 
 async def deploy_prediction_contract(prediction_id: int) -> None:

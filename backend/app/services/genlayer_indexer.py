@@ -80,7 +80,7 @@ from app.config import get_settings
 from app.db import AsyncSessionLocal, init_db
 from app.enums import ChainStatus, ConsensusSubjectType, StatusKey
 from app.models import DeliverableSubmission, Dispute, Escrow, Milestone, Prediction
-from app.services import genlayer_rpc, genlayer_write
+from app.services import genlayer_deploy, genlayer_rpc, genlayer_write
 
 # Reused rather than re-derived: the exact cascade a verdict applies
 # (advance the next pending milestone to in_progress, lock/unlock the
@@ -634,6 +634,21 @@ async def trigger_pending_market_resolutions(predictions: list[Prediction]) -> N
 
 
 async def run_once(db: AsyncSession) -> None:
+    # Retry any escrow whose auto-deploy failed or never ran — a real gap
+    # fixed 2026-09-12 (see genlayer_deploy.retry_undeployed_escrows's own
+    # docstring): deploy_escrow_contract used to be a one-shot fire-and-
+    # forget task, so a transient RPC failure left an escrow off-chain
+    # forever. Own session, own settings gate (same one create_escrow's
+    # initial queue already checks) — genuinely independent of the
+    # contract-linked-rows sync below, since an undeployed escrow has
+    # nothing for _load_linked_rows to find in the first place. Gated off
+    # entirely in tests the same way the initial auto-deploy already is
+    # (tests/conftest.py forces auto_deploy_escrow_contracts False for the
+    # whole suite) — an ordinary indexer test has no business firing a
+    # real ~3-minute Bradbury deployment costing real testnet GEN.
+    if settings.auto_deploy_escrow_contracts:
+        await genlayer_deploy.retry_undeployed_escrows()
+
     # Resolve any dispute ids still pending first — a row this fills in
     # becomes visible to _load_linked_rows below in the same cycle
     # (SQLAlchemy autoflushes the pending UPDATE before that SELECT runs),

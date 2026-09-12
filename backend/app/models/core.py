@@ -133,6 +133,23 @@ class Escrow(Base):
     # routers/escrows.py's cancel_escrow_on_chain ack. Null means never
     # cancelled on-chain.
     cancelled_tx_hash: Mapped[str | None] = mapped_column(default=None)
+    # FIXED 2026-09-12 — a real gap found live: services/genlayer_deploy.py's
+    # deploy_escrow_contract was a pure one-shot fire-and-forget background
+    # task queued exactly once at creation time. If it failed for ANY
+    # reason (a transient Bradbury RPC hiccup, the backend restarting
+    # mid-deploy), this escrow stayed on the legacy off-chain path
+    # PERMANENTLY — no real GEN custody, ever, with no way for this app to
+    # ever try again and no visibility that it had even happened. Set at
+    # the START of a deploy attempt (before the actual, slow subprocess
+    # call), so genlayer_deploy.py::retry_undeployed_escrows (called every
+    # genlayer_indexer.py poll cycle) can tell "never attempted" from "an
+    # attempt may still be in flight" apart from "attempted a while ago,
+    # safe to retry" — see that function's own docstring for the exact
+    # cooldown reasoning. Left set (not cleared) after a successful
+    # deploy — contract_address being non-null is what actually gates
+    # retry eligibility; this is purely a "don't double-submit a real,
+    # testnet-GEN-costing deploy tx" guard, not a success/failure flag.
+    deploy_attempted_at: Mapped[datetime | None] = mapped_column(default=None)
 
     creator: Mapped["User"] = relationship(
         foreign_keys=[creator_address], back_populates="created_escrows"

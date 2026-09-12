@@ -96,6 +96,7 @@ _SQLITE_COLUMN_PATCHES: dict[str, list[tuple[str, str]]] = {
         # always GEN-denominated even though nothing recorded that
         # explicitly.
         ("asset_id", "INTEGER DEFAULT 1"),
+        ("deploy_attempted_at", "TIMESTAMP"),
     ],
     "milestones": [
         ("on_chain_index", "INTEGER"),

@@ -216,12 +216,30 @@ KEY` with insufficient GEN balance for gas is the most likely real-world
 cause — deploys are backend-signed from one service wallet, so its balance
 is a shared resource across every auto-deploy in flight.
 
-**Recover**: no automatic retry exists. The row stays on the legacy
-off-chain path indefinitely (this is safe — see nuance-app.tsx's own
-`activeMilestoneOnChain`/`contractAddress` checks throughout, every write
-path already branches to the off-chain fallback when `contract_address` is
-null) — an on-chain cutover for that specific row would need a manual
-re-trigger of the deploy call, not currently exposed as an endpoint.
+**Recover — escrows**: **automatic as of 2026-09-12** (this used to say
+"no automatic retry exists" — that was the real gap, found live: a
+one-shot fire-and-forget task meant a single transient RPC hiccup left an
+escrow off-chain, with no real GEN custody, *permanently*).
+`genlayer_indexer.py::run_once` now calls `genlayer_deploy.
+retry_undeployed_escrows()` every poll cycle (`GENLAYER_INDEXER_POLL_
+SECONDS`, 15s by default) — it finds every native-GEN, non-cancelled,
+still-undeployed escrow whose last attempt (`Escrow.deploy_attempted_at`)
+is either unset or older than `_DEPLOY_RETRY_COOLDOWN` (10 minutes,
+comfortably longer than `deploy_contract`'s own 360s subprocess timeout,
+so a retry never double-submits a real deploy tx while a previous attempt
+could plausibly still be running) and calls `deploy_escrow_contract`
+again. A persistently-failing cause (e.g. the service wallet genuinely out
+of GEN) will keep retrying every ~10 minutes rather than needing a manual
+kick — check the service wallet's balance if it's still unlinked after
+several such cycles have clearly passed.
+
+**Recover — prediction markets**: still no automatic retry (this fix was
+scoped to escrows only, where the gap was found and reported live —
+`deploy_prediction_contract` has the identical one-shot shape and would
+benefit from the identical treatment, just not yet done). The row stays
+on the legacy off-chain path indefinitely — an on-chain cutover for that
+specific row needs a manual re-trigger of the deploy call, not currently
+exposed as an endpoint.
 
 ## Database outage / migration failure
 
