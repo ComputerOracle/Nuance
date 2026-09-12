@@ -223,7 +223,30 @@ async def submit_deliverable(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DeliverableSubmissionRead:
+    """FIXED 2026-09-12 — a real authorization gap found live: this
+    endpoint never checked who was calling it at all. Any signed-in
+    wallet — not the counterparty, not even a party to this escrow —
+    could submit a "deliverable" for someone else's escrow, trigger real
+    AI consensus, and move the milestone straight to APPROVED (payout-
+    eligible). Confirmed live: the on-chain contract's own
+    submit_deliverable has always enforced both of the checks added
+    below (`gl.message.sender_address != self.counterparty` and
+    `self.status != "active"` — contracts/nuance_escrow.py) — this
+    off-chain sibling had neither, despite existing specifically so an
+    off-chain escrow gets equivalent behavior to an on-chain one.
+    """
     escrow = await _get_escrow_or_404(escrow_id, db)
+    if current_user.wallet_address != escrow.counterparty_address:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the escrow counterparty can submit a deliverable.",
+        )
+    if escrow.status_key == StatusKey.CANCELLED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This escrow has been cancelled — no deliverable can be submitted.",
+        )
+
     milestone = _active_milestone(escrow)
     if milestone is None:
         raise HTTPException(

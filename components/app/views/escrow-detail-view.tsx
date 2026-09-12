@@ -87,6 +87,22 @@ export function EscrowDetailView({
   const isConnectedAsCreator =
     connectedWalletAddress != null &&
     connectedWalletAddress.toLowerCase() === escrow.creatorAddress.toLowerCase();
+  // FIXED 2026-09-12 — found live: this view offered an active-looking
+  // deliverable submission form to ANY connected wallet, including a
+  // total stranger to the escrow. The off-chain path's own equivalent
+  // authorization gap is fixed server-side (routers/escrows.py::
+  // submit_deliverable now checks this), but the on-chain path signs and
+  // sends a real transaction BEFORE the contract's own identical check
+  // (`gl.message.sender_address != self.counterparty`) can reject it —
+  // real gas spent on a transaction that was always going to revert.
+  // `null` (not connected at all) is deliberately NOT treated as "wrong
+  // wallet" here: the off-chain path only needs a valid JWT, not a live
+  // wallet connection, so a counterparty who's since disconnected their
+  // injected wallet extension can still submit off-chain — the backend's
+  // own check is what actually matters there.
+  const isConnectedAsWrongWallet =
+    connectedWalletAddress != null &&
+    connectedWalletAddress.toLowerCase() !== escrow.counterpartyAddress.toLowerCase();
   const activeIdx = activeMilestoneIndex(escrow.milestones);
   const activeMilestone = escrow.milestones[activeIdx];
   // Same fix as ChainStatusBadge's own contractLinked prop: a submission
@@ -318,22 +334,39 @@ export function EscrowDetailView({
                   stage === 0 &&
                   (m.statusKey === "pending" || m.statusKey === "in_progress") &&
                   escrow.statusKey !== "approved" &&
-                  escrow.statusKey !== "disputed" && (
+                  escrow.statusKey !== "disputed" &&
+                  // FIXED 2026-09-12 — a cancelled escrow's still-"pending"
+                  // milestone (cancellation only ever touches the Escrow
+                  // row's own statusKey, see types.ts) kept showing this as
+                  // if the deal were still live. Both submission endpoints
+                  // now reject this too (belt-and-suspenders, not
+                  // duplicated trust) — this just stops the doomed attempt
+                  // before it starts.
+                  escrow.statusKey !== "cancelled" && (
                     <div className="mt-3.5 border-t border-border-1 pt-3.5">
-                      <textarea
-                        value={deliverableText}
-                        onChange={(e) => onDeliverableChange(e.target.value)}
-                        placeholder="Paste deliverable URL, PR link, or describe the completed work for AI review…"
-                        className="min-h-[78px] w-full resize-y rounded-lg border border-border-4 bg-surface-3 px-3 py-2.5 font-sans text-[13px] text-fg placeholder:text-fg-faint-2"
-                      />
-                      <button
-                        onClick={onSubmitDeliverable}
-                        disabled={!deliverableText.trim() || submitDisabled}
-                        className="mt-2.5 cursor-pointer rounded-lg border border-border-6 bg-chip-hover px-4.5 py-2.5 text-[13px] font-semibold transition-colors hover:bg-chip-hover-2 disabled:cursor-default"
-                        style={{ opacity: deliverableText.trim() && !submitDisabled ? 1 : 0.5 }}
-                      >
-                        {submitDisabled ? "Waiting for wallet…" : "Submit for AI Review"}
-                      </button>
+                      {isConnectedAsWrongWallet ? (
+                        <div className="text-xs text-fg-meta">
+                          Connect the counterparty&rsquo;s wallet (
+                          {formatAddress(escrow.counterpartyAddress)}) to submit a deliverable.
+                        </div>
+                      ) : (
+                        <>
+                          <textarea
+                            value={deliverableText}
+                            onChange={(e) => onDeliverableChange(e.target.value)}
+                            placeholder="Paste deliverable URL, PR link, or describe the completed work for AI review…"
+                            className="min-h-[78px] w-full resize-y rounded-lg border border-border-4 bg-surface-3 px-3 py-2.5 font-sans text-[13px] text-fg placeholder:text-fg-faint-2"
+                          />
+                          <button
+                            onClick={onSubmitDeliverable}
+                            disabled={!deliverableText.trim() || submitDisabled}
+                            className="mt-2.5 cursor-pointer rounded-lg border border-border-6 bg-chip-hover px-4.5 py-2.5 text-[13px] font-semibold transition-colors hover:bg-chip-hover-2 disabled:cursor-default"
+                            style={{ opacity: deliverableText.trim() && !submitDisabled ? 1 : 0.5 }}
+                          >
+                            {submitDisabled ? "Waiting for wallet…" : "Submit for AI Review"}
+                          </button>
+                        </>
+                      )}
                     </div>
                   )}
               </div>

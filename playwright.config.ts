@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 import path from "path";
 import os from "os";
+import { BACKEND_PORT, FRONTEND_PORT } from "./e2e/ports";
 
 // ROADMAP.md Part 3 5.3's E2E row: "Full escrow lifecycle: connect a
 // mocked injected wallet -> create escrow -> submit deliverable -> watch
@@ -16,8 +17,9 @@ const E2E_DB_DIR = path.join(os.tmpdir(), `nuance-e2e-${Date.now()}`);
 // this run must never collide with (or need to kill) a dev server you
 // already have up, confirmed a real concern: this repo's own backend
 // dev server was found live on :8010 while writing this config.
-const BACKEND_PORT = 8099;
-const FRONTEND_PORT = 3100;
+// BACKEND_PORT/FRONTEND_PORT themselves now live in ./e2e/ports.ts —
+// shared with any spec that needs to reach the backend directly (see
+// that file's own comment for why).
 
 export default defineConfig({
   testDir: "./e2e",

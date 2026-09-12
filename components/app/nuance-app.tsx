@@ -844,6 +844,18 @@ export function NuanceApp() {
       wallet.status === "connected" &&
       wallet.provider
     ) {
+      // FIXED 2026-09-12 — found live: nothing here checked the connected
+      // wallet was actually the counterparty before signing and sending a
+      // real transaction. The contract itself always rejected it
+      // correctly (`gl.message.sender_address != self.counterparty`),
+      // but only *after* real gas had already been spent on a call that
+      // was guaranteed to revert. Same client-side-guardrail-before-ever-
+      // touching-the-wallet pattern fundEscrow/cancelEscrow already use
+      // for their own creator-only checks.
+      if (wallet.address.toLowerCase() !== escrowData.counterparty_address.toLowerCase()) {
+        setEscrowActionError("Connect the escrow counterparty's wallet to submit a deliverable.");
+        return;
+      }
       // On-chain path: sign and send NuanceEscrow.submit_deliverable
       // directly from this browser via the connected wallet — no LLM call
       // from our own backend, GenVM's validator committee does that

@@ -184,7 +184,8 @@ def test_user_profile_and_settings_update(client, wallet):
 def test_protected_escrow_flow_accepts_valid_token(client, wallet):
     token = _get_token(client, wallet)
     headers = {"Authorization": f"Bearer {token}"}
-    counterparty = Account.create().address.lower()
+    counterparty_account = Account.create()
+    counterparty = counterparty_account.address.lower()
 
     create = client.post(
         "/escrows",
@@ -206,13 +207,19 @@ def test_protected_escrow_flow_accepts_valid_token(client, wallet):
     # Public read needs no auth at all.
     assert client.get(f"/escrows/{escrow_id}").status_code == 200
 
+    # Only the counterparty may submit a deliverable (routers/escrows.py's
+    # submit_deliverable, fixed 2026-09-12 — a real authorization gap
+    # found live: this used to accept a submission from anyone, including
+    # the escrow's own creator) — a real, separate token for the actual
+    # counterparty, not the creator's.
+    counterparty_token = _get_token(client, counterparty_account)
     deliver = client.post(
         f"/escrows/{escrow_id}/deliverable",
         json={"text": "Here is the finished deliverable."},
-        headers=headers,
+        headers={"Authorization": f"Bearer {counterparty_token}"},
     )
     assert deliver.status_code == 201
-    assert deliver.json()["wallet"] == wallet.address.lower()
+    assert deliver.json()["wallet"] == counterparty
 
     # release_milestone requires a real, already-APPROVED milestone (see
     # routers/escrows.py's _releasable_milestone, fixed 2026-09-08) —
