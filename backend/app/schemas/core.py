@@ -193,6 +193,11 @@ class EscrowRead(BaseModel):
     # Escrow.funded_tx_hash's own docstring on why this isn't the same
     # thing as the contract's own funded_amount.
     funded_tx_hash: str | None = None
+    # The contract's own real, chain-verified funded_amount (converted to
+    # GEN) — see Escrow.funded_amount's own docstring. Null for an
+    # off-chain escrow, or an on-chain one the indexer hasn't synced yet
+    # (funded_tx_hash can be set while this is still null, briefly).
+    funded_amount: Decimal | None = None
     # Set once a real cancel_escrow() transaction has been sent and
     # acknowledged — see Escrow.cancelled_tx_hash's own docstring.
     cancelled_tx_hash: str | None = None

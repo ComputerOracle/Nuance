@@ -128,6 +128,22 @@ class Escrow(Base):
     # column only tracks whether this app has sent a fund_escrow call at
     # all, for UI purposes (hide the "Fund Escrow" action once it has).
     funded_tx_hash: Mapped[str | None] = mapped_column(default=None)
+    # FIXED 2026-09-12 — a real gap found live: this app had no field at
+    # all for the contract's own `funded_amount` — only funded_tx_hash,
+    # which (per its own docstring above) means "a fund_escrow call was
+    # SENT," never "and it actually landed, for this much." A live check
+    # against a real deployed escrow found funding had genuinely
+    # succeeded (5 GEN really locked, confirmed via a direct get_escrow
+    # read) while the UI showed nothing at all to that effect — the "Fund
+    # Escrow" card correctly disappears once funded_tx_hash is set, but
+    # nothing ever appeared in its place to confirm funding, since
+    # nothing tracked the real number. Set ONLY by services/
+    # genlayer_indexer.py's view-sync (_apply_escrow_view), reading the
+    # contract's own get_escrow.funded_amount — never by the fund ack
+    # endpoint itself (not a trust boundary, same reasoning every other
+    # on-chain ack in this app already documents). Null for an off-chain
+    # escrow, or an on-chain one the indexer hasn't synced yet.
+    funded_amount: Mapped[Decimal | None] = mapped_column(AssetAmount, default=None)
     # The tx hash of the creator's NuanceEscrow.cancel_escrow call, once
     # sent — set alongside status_key flipping to StatusKey.CANCELLED in
     # routers/escrows.py's cancel_escrow_on_chain ack. Null means never

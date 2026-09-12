@@ -142,6 +142,19 @@ def test_escrow_ws_pushes_snapshot_after_auto_deploy(client, monkeypatch):
 # --- SSE -----------------------------------------------------------------
 
 
+class _FakeRequest:
+    """Minimal stand-in for fastapi.Request — only is_disconnected() is
+    ever called on it by _escrow_updates_sse_events. `connected`
+    (mutable, checked by reference) lets a test flip it mid-stream to
+    simulate a client going away."""
+
+    def __init__(self, disconnected: bool = False):
+        self.disconnected = disconnected
+
+    async def is_disconnected(self) -> bool:
+        return self.disconnected
+
+
 def test_escrow_sse_events_initial_and_update(monkeypatch):
     monkeypatch.setattr(escrows_router, "ESCROW_POLL_INTERVAL_SECONDS", 0.05)
 
@@ -150,7 +163,7 @@ def test_escrow_sse_events_initial_and_update(monkeypatch):
     escrow_id = asyncio.run(_create_escrow(creator.address.lower(), counterparty.address.lower()))
 
     async def _run():
-        agen = escrows_router._escrow_updates_sse_events(escrow_id)
+        agen = escrows_router._escrow_updates_sse_events(escrow_id, _FakeRequest())
         first = await agen.__anext__()
         assert "event: " not in first  # bare data: line for the init payload
         assert '"type": "escrow"' in first
@@ -170,12 +183,39 @@ def test_escrow_sse_events_initial_and_update(monkeypatch):
 
 def test_escrow_sse_events_error_for_missing_escrow():
     async def _run():
-        agen = escrows_router._escrow_updates_sse_events(999999)
+        agen = escrows_router._escrow_updates_sse_events(999999, _FakeRequest())
         first = await agen.__anext__()
         assert "event: " not in first
         assert "Escrow not found." in first
         with pytest.raises(StopAsyncIteration):
             await agen.__anext__()
+
+    asyncio.run(_run())
+
+
+def test_escrow_sse_events_stops_polling_once_client_disconnects(monkeypatch):
+    """FIXED 2026-09-12 — found live, the hard way: a client killed
+    abruptly (not a clean close) can leave the ASGI layer never
+    delivering a disconnect signal on its own, so this loop kept polling
+    the db forever — six abandoned connections were enough to make even
+    GET /health stop responding on a real running server. This proves
+    the fix: once request.is_disconnected() reports true, the generator
+    must actually stop iterating, not keep querying the db tick after
+    tick."""
+    monkeypatch.setattr(escrows_router, "ESCROW_POLL_INTERVAL_SECONDS", 0.05)
+
+    creator = Account.create()
+    counterparty = Account.create()
+    escrow_id = asyncio.run(_create_escrow(creator.address.lower(), counterparty.address.lower()))
+
+    async def _run():
+        request = _FakeRequest(disconnected=False)
+        agen = escrows_router._escrow_updates_sse_events(escrow_id, request)
+        await agen.__anext__()  # the initial snapshot
+
+        request.disconnected = True  # simulate the client vanishing
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(agen.__anext__(), timeout=2.0)
 
     asyncio.run(_run())
 

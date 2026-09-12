@@ -15,7 +15,16 @@ import logging
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -191,12 +200,26 @@ async def escrow_updates_ws(websocket: WebSocket, escrow_id: int) -> None:
             pass  # already closed
 
 
-async def _escrow_updates_sse_events(escrow_id: int) -> AsyncIterator[str]:
+async def _escrow_updates_sse_events(escrow_id: int, request: Request) -> AsyncIterator[str]:
     """SSE counterpart to escrow_updates_ws — see routers/consensus.py's
     _consensus_sse_events / routers/disputes.py's
     _dispute_messages_sse_events for why this is factored out as its own
     generator (directly testable) and ROADMAP.md Part 3 5.2 for why SSE
-    exists as a fallback tier at all."""
+    exists as a fallback tier at all.
+
+    FIXED 2026-09-12 — found live, the hard way: a client killed
+    abruptly (not a clean close — confirmed live with a curl process
+    killed via SIGTERM mid-stream) can leave the ASGI layer never
+    delivering a disconnect signal on its own; relying only on the next
+    `yield` failing to notice a gone client meant this loop kept polling
+    the db every ESCROW_POLL_INTERVAL_SECONDS forever, accumulating one
+    such zombie task per abandoned connection — six of them were enough
+    to make even GET /health stop responding on a real running server.
+    `request.is_disconnected()` is checked explicitly every tick now,
+    in both the polling fallback and (in case a slow/quiet Redis
+    channel goes a long time between publishes) the Redis-subscribed
+    path too, instead of trusting only the write-side to notice.
+    """
     updates = await subscribe_escrow_updates(escrow_id)
 
     snapshot = await _get_escrow_snapshot(escrow_id)
@@ -206,13 +229,25 @@ async def _escrow_updates_sse_events(escrow_id: int) -> AsyncIterator[str]:
     yield format_sse({"type": "escrow", "escrow": snapshot})
 
     if updates is not None:
-        async for payload in updates:
+        agen = updates.__aiter__()
+        while True:
+            try:
+                payload = await asyncio.wait_for(agen.__anext__(), timeout=ESCROW_POLL_INTERVAL_SECONDS)
+            except asyncio.TimeoutError:
+                if await request.is_disconnected():
+                    await agen.aclose()
+                    return
+                continue
+            except StopAsyncIteration:
+                return
             yield format_sse(payload)
         return
 
     last_sent = json.dumps(snapshot, sort_keys=True)
     while True:
         await asyncio.sleep(ESCROW_POLL_INTERVAL_SECONDS)
+        if await request.is_disconnected():
+            return
         fresh = await _get_escrow_snapshot(escrow_id)
         if fresh is None:
             yield format_sse({"error": "Escrow not found."})
@@ -224,9 +259,9 @@ async def _escrow_updates_sse_events(escrow_id: int) -> AsyncIterator[str]:
 
 
 @router.get("/sse/{escrow_id}")
-async def escrow_updates_sse(escrow_id: int) -> StreamingResponse:
+async def escrow_updates_sse(escrow_id: int, request: Request) -> StreamingResponse:
     return StreamingResponse(
-        _escrow_updates_sse_events(escrow_id),
+        _escrow_updates_sse_events(escrow_id, request),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

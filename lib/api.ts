@@ -189,6 +189,15 @@ export interface ApiEscrow {
   // for why this is only a UI convenience, not the source of truth for
   // whether the contract itself is actually funded.
   funded_tx_hash: string | null;
+  // The contract's own real, chain-verified funded_amount (GEN, as a
+  // decimal string) — see models/core.py's Escrow.funded_amount for why
+  // this is the actually-trustworthy field (synced from a real
+  // get_escrow read, not just "an ack endpoint recorded a hash").
+  // Null for an off-chain escrow, or an on-chain one the indexer hasn't
+  // synced yet — funded_tx_hash can be set while this is still null,
+  // briefly, right after a fund transaction is sent but before the next
+  // indexer poll cycle confirms it.
+  funded_amount: string | null;
   // Set once a real cancel_escrow() transaction has been sent and
   // acknowledged — see models/core.py's Escrow.cancelled_tx_hash.
   cancelled_tx_hash: string | null;

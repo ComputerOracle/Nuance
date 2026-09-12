@@ -93,6 +93,7 @@ function mapEscrow(e: ApiEscrow): Escrow {
     milestones: e.milestones.map(mapMilestone),
     contractAddress: e.contract_address,
     fundedTxHash: e.funded_tx_hash,
+    fundedAmount: e.funded_amount == null ? null : Number(e.funded_amount),
     cancelledTxHash: e.cancelled_tx_hash,
   };
 }

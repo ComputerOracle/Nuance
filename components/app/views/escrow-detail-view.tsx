@@ -176,6 +176,25 @@ export function EscrowDetailView({
   const showFundCard =
     Boolean(escrow.contractAddress) && !escrow.fundedTxHash && isConnectedAsCreator;
 
+  // FIXED 2026-09-12 — a real gap found live: a genuinely funded escrow
+  // (5 GEN actually locked, confirmed directly against the deployed
+  // contract) showed nothing at all once showFundCard above correctly
+  // stopped rendering — the "Fund Escrow" card just vanished with no
+  // confirmation left behind, reading as "funding silently failed"
+  // rather than "funding succeeded." fundedAmount (models/core.py's
+  // Escrow.funded_amount) is the one field in this app actually synced
+  // from the contract's own get_escrow, not just "an ack endpoint
+  // recorded a hash" — shown to everyone viewing, not creator-gated,
+  // since the counterparty benefits from seeing real funds are locked
+  // too.
+  const isConfirmedFunded = Boolean(escrow.contractAddress) && (escrow.fundedAmount ?? 0) > 0;
+  // A fund transaction was sent (funded_tx_hash) but the indexer hasn't
+  // yet confirmed the real amount against the contract — a real, if
+  // usually brief, in-between state (one poll cycle, ~15s default) worth
+  // its own honest label rather than silence.
+  const isFundingPendingConfirmation =
+    Boolean(escrow.contractAddress) && Boolean(escrow.fundedTxHash) && !isConfirmedFunded;
+
   // Client-side pre-check only, matching cancel_escrow's own on-chain
   // condition (see that method's docstring on why a deadline gate isn't
   // included: no on-chain clock exists for it to check) — hides a button
@@ -252,6 +271,30 @@ export function EscrowDetailView({
                   : `Fund Escrow (${escrow.total.toLocaleString()} ${escrow.asset.symbol})`}
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {isFundingPendingConfirmation && (
+        <div className="mt-5 rounded-xl border border-review/30 bg-review/10 p-4.5">
+          <div className="text-[13px] font-semibold text-review-text">
+            Funding transaction sent — waiting for on-chain confirmation…
+          </div>
+          <div className="mt-1 text-xs text-fg-meta">
+            This can take up to a minute. The amount shown here will update automatically once
+            confirmed — no need to refresh.
+          </div>
+        </div>
+      )}
+
+      {isConfirmedFunded && (
+        <div className="mt-5 rounded-xl border border-positive/30 bg-positive/10 p-4.5">
+          <div className="text-[13px] font-semibold text-positive-text">
+            ✓ Funded — {escrow.fundedAmount?.toLocaleString()} {escrow.asset.symbol} locked in the
+            contract
+          </div>
+          <div className="mt-1 text-xs text-fg-meta">
+            Verified directly against the deployed contract, not just a submitted transaction.
           </div>
         </div>
       )}

@@ -71,6 +71,7 @@ import argparse
 import asyncio
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -298,6 +299,19 @@ def _build_read_batch(
 ) -> list[genlayer_rpc.ReadRequest]:
     reads: list[genlayer_rpc.ReadRequest] = []
     for escrow in escrows:
+        # FIXED 2026-09-12 — a real gap found live: this batch read every
+        # linked milestone's own state but never the escrow contract's own
+        # get_escrow — the only place `funded_amount` (how much GEN is
+        # actually locked right now, vs. funded_tx_hash's "a fund_escrow
+        # call was sent") lives. One read per escrow, not per milestone.
+        reads.append(
+            {
+                "id": f"escrow:{escrow.id}",
+                "address": escrow.contract_address,
+                "functionName": "get_escrow",
+                "args": [],
+            }
+        )
         for milestone in escrow.milestones:
             if milestone.on_chain_index is None:
                 continue
@@ -418,6 +432,50 @@ def _apply_transaction_status(
 
 
 # --- Apply: contract business state (status_key / ruling / outcome) --------
+
+# GEN has 18 decimals — same fact genlayer_deploy.py's own
+# _WEI_PER_GEN_EXPONENT is pulled from (GENLAYER_BRADBURY.nativeCurrency.
+# decimals, in genlayer-chain.ts). Duplicated as a plain constant here
+# rather than importing genlayer_deploy's private one — this module
+# already imports that one for retry_undeployed_escrows, but reaching
+# into a leading-underscore name from a different module for one integer
+# is worse than just restating the same well-known fact once more.
+_WEI_PER_GEN_EXPONENT = 18
+
+
+def _wei_to_gen(wei: int) -> Decimal:
+    """Exact integer-wei -> Decimal-GEN conversion — the inverse of
+    genlayer_deploy._gen_to_wei, same never-floating-point reasoning
+    (string digit manipulation, not division, so this is immune to
+    Decimal's ambient context precision same as that function is to
+    float rounding). Used only for get_escrow's own real, on-chain
+    funded_amount — see Escrow.funded_amount's own docstring on why this
+    is the one field in this app actually verified against the contract,
+    not just "an ack endpoint recorded a hash.\""""
+    negative = wei < 0
+    digits = str(abs(wei)).rjust(_WEI_PER_GEN_EXPONENT + 1, "0")
+    whole, frac = digits[: -_WEI_PER_GEN_EXPONENT], digits[-_WEI_PER_GEN_EXPONENT:]
+    value = Decimal(f"{whole}.{frac}")
+    return -value if negative else value
+
+
+async def _apply_escrow_view(escrow: Escrow, result: genlayer_rpc.ReadResult) -> None:
+    """FIXED 2026-09-12 — a real gap found live: a fully-funded, real
+    on-chain escrow (5 GEN genuinely locked, confirmed via a direct
+    get_escrow read against the live contract) showed nothing in the UI
+    to that effect — the app only ever tracked funded_tx_hash ("a
+    fund_escrow call was sent"), never the contract's own actual
+    funded_amount. This is the sync: escrow.funded_amount only ever
+    reflects what get_escrow reports right now, the same "blockchain is
+    authoritative, this app mirrors it" pattern every other on-chain
+    field in this file already follows."""
+    if not result.get("ok"):
+        logger.warning("get_escrow failed for escrow id=%s: %s", escrow.id, result.get("error"))
+        return
+    raw_amount = result["result"].get("funded_amount")
+    if raw_amount is None:
+        return
+    escrow.funded_amount = _wei_to_gen(int(raw_amount))
 
 
 async def _apply_milestone_view(
@@ -712,6 +770,10 @@ async def run_once(db: AsyncSession) -> None:
     # call this app never tracked a hash for (someone calling the deployed
     # contract directly, e.g. through the block explorer or another client).
     for escrow in escrows:
+        escrow_result = read_results.get(f"escrow:{escrow.id}")
+        if escrow_result is not None:
+            await _apply_escrow_view(escrow, escrow_result)
+            touched_escrow_ids.add(escrow.id)
         for milestone in escrow.milestones:
             if milestone.on_chain_index is None:
                 continue

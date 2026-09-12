@@ -83,6 +83,11 @@ export interface Escrow {
   // ApiEscrow.funded_tx_hash for the full caveat on what this does and
   // doesn't guarantee.
   fundedTxHash?: string | null;
+  // The contract's own real, chain-verified funded amount (GEN) — see
+  // lib/api.ts's ApiEscrow.funded_amount. Null until the indexer has
+  // actually confirmed it against the deployed contract, even if
+  // fundedTxHash is already set.
+  fundedAmount?: number | null;
   // Set once a real cancel_escrow transaction has been sent and
   // acknowledged. See lib/api.ts's ApiEscrow.cancelled_tx_hash.
   cancelledTxHash?: string | null;
