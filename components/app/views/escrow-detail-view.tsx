@@ -173,8 +173,17 @@ export function EscrowDetailView({
   // isConnectedAsCreator added 2026-09-08 — see that flag's own comment
   // above for why (a live test found this staying visible/signable from
   // the wrong wallet).
+  // statusKey !== "cancelled" added 2026-09-11 — fund_escrow() itself
+  // already rejects a call once cancel_escrow() has run (its own guard is
+  // `if self.status != "active"`, and cancel_escrow sets status to
+  // "cancelled"), so this was never a fund-loss risk — just a button that
+  // would stay visible and cleanly revert on submit for a cancelled
+  // escrow's creator. Matches canCancel's own statusKey check below.
   const showFundCard =
-    Boolean(escrow.contractAddress) && !escrow.fundedTxHash && isConnectedAsCreator;
+    Boolean(escrow.contractAddress) &&
+    !escrow.fundedTxHash &&
+    escrow.statusKey !== "cancelled" &&
+    isConnectedAsCreator;
 
   // FIXED 2026-09-12 — a real gap found live: a genuinely funded escrow
   // (5 GEN actually locked, confirmed directly against the deployed

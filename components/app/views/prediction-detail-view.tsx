@@ -234,17 +234,40 @@ export function PredictionDetailView({
                         figure services/payout.py computed, already
                         reflected here, nothing further to claim. */}
                     {prediction.contractAddress && onClaimWinnings && (
-                      <button
-                        onClick={onClaimWinnings}
-                        disabled={isClaiming || hasClaimed}
-                        className="mt-3 w-full cursor-pointer rounded-lg border border-positive/40 bg-positive/20 py-2.5 text-[13px] font-semibold text-positive-text transition-colors hover:bg-positive/30 disabled:cursor-default disabled:opacity-60"
-                      >
-                        {hasClaimed
-                          ? "Claimed ✓"
-                          : isClaiming
-                            ? "Claiming…"
-                            : "Claim Winnings"}
-                      </button>
+                      <>
+                        <button
+                          onClick={onClaimWinnings}
+                          disabled={isClaiming || hasClaimed}
+                          className="mt-3 w-full cursor-pointer rounded-lg border border-positive/40 bg-positive/20 py-2.5 text-[13px] font-semibold text-positive-text transition-colors hover:bg-positive/30 disabled:cursor-default disabled:opacity-60"
+                        >
+                          {hasClaimed
+                            ? "Submitted — check your wallet"
+                            : isClaiming
+                              ? "Submitting…"
+                              : "Claim Winnings"}
+                        </button>
+                        {/* FOUND 2026-09-12 — root cause since confirmed
+                            (see escrow-detail-view.tsx's identical
+                            isPayoutStuck banner for the full account):
+                            claim_winnings()'s emit_transfer call is
+                            blocked by a confirmed, currently-open GenLayer
+                            platform bug (genlayerlabs/genvm-manager#20) —
+                            outbound async transfers from an Intelligent
+                            Contract are recorded in the triggering
+                            transaction's receipt but never actually
+                            executed on-chain, on both Bradbury and Asimov.
+                            Not something this app can fix on its own.
+                            "Submitted" above means exactly that and
+                            nothing more — a finalized on-chain call, not
+                            confirmed money in hand. This caption stays
+                            until GenLayer's own platform fixes it. */}
+                        <div className="mt-2 text-[11px] leading-snug text-fg-meta">
+                          ⚠ A currently-open GenLayer network issue (genlayerlabs/genvm-manager#20)
+                          is blocking outbound transfers from Intelligent Contracts — a
+                          &ldquo;Submitted&rdquo; transaction is confirmed on-chain, but check your
+                          wallet balance directly before assuming the GEN has actually arrived.
+                        </div>
+                      </>
                     )}
                   </div>
                 ) : (
