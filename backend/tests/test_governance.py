@@ -61,6 +61,7 @@ async def _seed_proposal(
     total_for: int = 0,
     total_against: int = 0,
     total_abstain: int = 0,
+    category: str = "General",
 ) -> int:
     now = datetime.now(timezone.utc)
     async with AsyncSessionLocal() as db:
@@ -75,6 +76,7 @@ async def _seed_proposal(
             description="For finalize/quorum tests.",
             proposer_address=proposer.address.lower(),
             status=status,
+            category=category,
             start_time=now - timedelta(days=1),
             end_time=now + timedelta(days=end_delta_days),
             quorum_threshold=quorum_threshold,
@@ -96,6 +98,46 @@ def test_list_proposals_ok(client):
     resp = client.get("/proposals")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
+
+
+# FIXED 2026-09-13 — reported live as "only one [proposal] is showing" as
+# a genuine one: a one-off "Test"-category smoke test proposal (left in
+# the database to verify cast_vote/retract_vote against a freshly
+# deployed NuanceGovernance) had no way to be told apart from a real
+# community proposal on the public list. See list_proposals's own
+# docstring for the full account — same "hide drafts from the public
+# feed by default" reasoning routers/predictions.py's list_predictions
+# already applies to its own "pending_review" rows.
+
+
+@pytest.mark.asyncio
+async def test_list_proposals_hides_test_category_by_default(client):
+    test_id = await _seed_proposal(category="Test")
+    real_id = await _seed_proposal(category="Treasury")
+
+    resp = client.get("/proposals")
+    assert resp.status_code == 200
+    ids = {p["id"] for p in resp.json()}
+    assert test_id not in ids
+    assert real_id in ids
+
+
+@pytest.mark.asyncio
+async def test_list_proposals_include_test_returns_it(client):
+    test_id = await _seed_proposal(category="Test")
+
+    resp = client.get("/proposals", params={"include_test": "true"})
+    assert resp.status_code == 200
+    ids = {p["id"] for p in resp.json()}
+    assert test_id in ids
+
+
+@pytest.mark.asyncio
+async def test_get_single_proposal_is_never_filtered_even_if_test_category(client):
+    test_id = await _seed_proposal(category="Test")
+
+    resp = client.get(f"/proposals/{test_id}")
+    assert resp.status_code == 200
 
 
 def test_create_proposal_requires_auth(client):

@@ -374,3 +374,62 @@ async def test_dry_run_of_non_actionable_event_creates_nothing_and_logs_nothing(
     async with AsyncSessionLocal() as db:
         log_row = await db.get(GovernanceEventLog, event.source_id)
     assert log_row is None
+
+
+# --- process_latest_events: governance_gemini_api_key preference -----------
+#
+# FOUND 2026-09-13, diagnosing a live report that Governance only ever had
+# one real proposal: process_latest_events used to always build its
+# genai.Client from the same gemini_api_key market_generator.py's own
+# weekly sweep already draws on — and that sweep runs hours earlier in the
+# day and was confirmed live to exhaust the shared free-tier daily quota
+# (RESOURCE_EXHAUSTED on every one of governance's own extraction calls)
+# before governance's sweep ever got a turn. See config.py's own
+# governance_gemini_api_key docstring for the full account.
+
+
+class _RecordingGenaiClient:
+    """Stands in for google.genai.Client — records the api_key it was
+    constructed with instead of touching the network, so these tests can
+    assert on *which* key process_latest_events actually chose without
+    needing a real extraction call at all (paired with an empty event
+    list below, so nothing past client construction ever runs)."""
+
+    last_api_key: str | None = None
+
+    def __init__(self, api_key: str | None = None):
+        type(self).last_api_key = api_key
+
+
+@pytest.mark.asyncio
+async def test_process_latest_events_prefers_governance_specific_gemini_key(monkeypatch):
+    monkeypatch.setattr(governance_generator, "genai", type("_M", (), {"Client": _RecordingGenaiClient}))
+
+    async def _no_events(**kwargs):
+        return []
+
+    monkeypatch.setattr(governance_generator, "_ingest_events", _no_events)
+    monkeypatch.setattr(get_settings(), "gemini_api_key", "shared-key")
+    monkeypatch.setattr(get_settings(), "governance_gemini_api_key", "governance-only-key")
+
+    async with AsyncSessionLocal() as db:
+        await governance_generator.process_latest_events(db, auto_publish=True)
+
+    assert _RecordingGenaiClient.last_api_key == "governance-only-key"
+
+
+@pytest.mark.asyncio
+async def test_process_latest_events_falls_back_to_shared_gemini_key(monkeypatch):
+    monkeypatch.setattr(governance_generator, "genai", type("_M", (), {"Client": _RecordingGenaiClient}))
+
+    async def _no_events(**kwargs):
+        return []
+
+    monkeypatch.setattr(governance_generator, "_ingest_events", _no_events)
+    monkeypatch.setattr(get_settings(), "gemini_api_key", "shared-key")
+    monkeypatch.setattr(get_settings(), "governance_gemini_api_key", None)
+
+    async with AsyncSessionLocal() as db:
+        await governance_generator.process_latest_events(db, auto_publish=True)
+
+    assert _RecordingGenaiClient.last_api_key == "shared-key"

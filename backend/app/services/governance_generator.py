@@ -379,7 +379,19 @@ async def process_latest_events(db: AsyncSession, auto_publish: bool = True) -> 
         web_pages=settings.market_generator_web_pages_list,
     )
 
-    gemini_client = genai.Client(api_key=settings.gemini_api_key) if settings.gemini_api_key else None
+    # FOUND 2026-09-13 — see config.py's own governance_gemini_api_key
+    # docstring for the full account: sharing gemini_api_key with
+    # market_generator.py meant both weekly sweeps drew on one Google-side
+    # free-tier daily quota, and market_generator's own scheduler runs
+    # hours earlier in the day and was confirmed live to exhaust it
+    # completely before this generator ever got a turn — every extraction
+    # call failing RESOURCE_EXHAUSTED, silently, every single week.
+    # governance_gemini_api_key (from a genuinely separate Google Cloud/AI
+    # Studio project) is preferred when set; None falls back to the shared
+    # key, i.e. today's exact starved behavior for anyone who hasn't
+    # configured it yet.
+    effective_gemini_key = settings.governance_gemini_api_key or settings.gemini_api_key
+    gemini_client = genai.Client(api_key=effective_gemini_key) if effective_gemini_key else None
     if gemini_client is None:
         logger.warning(
             "GEMINI_API_KEY not set — governance_generator has no responsible offline "

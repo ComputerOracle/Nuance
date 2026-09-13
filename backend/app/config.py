@@ -122,6 +122,25 @@ class Settings(BaseSettings):
     # existing "nothing" connotation. No real GEN ever needs to move from
     # this address — it never votes, stakes, or executes anything itself.
     governance_generator_proposer_address: str = "0xffffffffffffffffffffffffffffffffffffffff"
+    # FOUND 2026-09-13, diagnosing "why does Governance only ever have one
+    # real proposal": governance_generator.py sharing gemini_api_key with
+    # market_generator.py means both weekly sweeps draw on the SAME
+    # Google-side free-tier quota (confirmed live — a manual run of
+    # process_latest_events failed all 20 extraction calls with
+    # `RESOURCE_EXHAUSTED ... GenerateRequestsPerDayPerProjectPerModel-
+    # FreeTier ... quotaValue: 20`). Since Google's free tier caps this
+    # PER PROJECT, not per key, a second key from the *same* Google Cloud/
+    # AI Studio project wouldn't add any headroom — but market_generator's
+    # own scheduler already runs hours earlier in the day (see AppState's
+    # market_ingestion_last_run_at vs governance_ingestion_last_run_at)
+    # and, judging by how many predictions it produces, consumes the
+    # entire daily quota before governance's own sweep ever gets a turn.
+    # This setting is the actual fix available without asking for a paid
+    # plan: point it at a key from a genuinely SEPARATE Google Cloud/AI
+    # Studio project (its own independent quota) to stop the two
+    # generators competing for one pool. None (the default) falls back to
+    # the shared gemini_api_key, i.e. today's exact starved behavior.
+    governance_gemini_api_key: str | None = None
 
     # --- used starting the idempotency/rate-limit prompt ---
     # How long a completed Idempotency-Key response stays cached and

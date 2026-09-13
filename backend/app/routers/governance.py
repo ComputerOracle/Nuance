@@ -289,10 +289,29 @@ def _adjust_tally(proposal: Proposal, choice: VoteChoice, delta: int | Decimal) 
 
 @router.get("", response_model=list[ProposalRead])
 async def list_proposals(
+    include_test: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_optional_current_user),
 ) -> list[ProposalRead]:
-    result = await db.execute(select(Proposal).order_by(Proposal.created_at.desc()))
+    """FIXED 2026-09-13 — a real gap found live: reported as "only one
+    [proposal] is showing [as a genuine, well-formed one]" — the other row
+    on this page was a deliberate, one-off "LIVE VERIFICATION — real
+    GEN-staked voting" smoke test (category "Test") left in the live
+    database to prove cast_vote/retract_vote against a freshly deployed
+    NuanceGovernance, complete with a leftover near-zero quorum_
+    threshold_gen from before that value got fixed properly (see this
+    router's own create_proposal_on_chain note). A real dapp's public
+    governance feed has no business surfacing an internal smoke test next
+    to genuine community proposals — same reasoning routers/predictions.py's
+    list_predictions already defaults to hiding "pending_review" drafts
+    from its own public feed. `include_test=true` still returns it (e.g.
+    for whoever needs to keep using it to verify the on-chain flow), and a
+    direct GET /proposals/{id} is never filtered — only this list view.
+    """
+    query = select(Proposal).order_by(Proposal.created_at.desc())
+    if not include_test:
+        query = query.where(func.lower(Proposal.category) != "test")
+    result = await db.execute(query)
     proposals = list(result.scalars().all())
     eligible_voters = await _total_eligible_voters(db)
 
