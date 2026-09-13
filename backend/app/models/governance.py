@@ -50,8 +50,31 @@ class Proposal(Base):
     end_time: Mapped[datetime]
 
     # Percentages (0-100), not fractions — matches quorum_pct/pass_threshold_pct
-    # naming already used in ROADMAP.md.
+    # naming already used in ROADMAP.md. Meaningful ONLY for a LEGACY_
+    # OFFCHAIN proposal's own quorum check (_progress/_finalize_if_due,
+    # routers/governance.py) — see quorum_threshold_gen below for why an
+    # on-chain proposal can't reuse this value at all.
     quorum_threshold: Mapped[int] = mapped_column(default=20)
+    # FIXED 2026-09-13 — a real, serious bug found live auditing
+    # governance end-to-end: services/genlayer_indexer.py::
+    # create_proposal_on_chain used to pass quorum_threshold above
+    # straight through as NuanceGovernance.create_proposal's own
+    # quorum_threshold argument — but that contract-side field is an
+    # ABSOLUTE WEI TURNOUT threshold (see contracts/nuance_governance.py's
+    # own header), while this column is a PERCENTAGE (1-100) of "every
+    # wallet that's ever signed in," a concept that doesn't even exist
+    # on-chain (GenVM has no wallet registry to be a percentage OF).
+    # Passing "20" (meaning 20%) straight through made every on-chain
+    # proposal's real quorum a trivial 20 wei — met by any single vote,
+    # defeating quorum's entire purpose. This is the real, GEN-denominated
+    # value used instead for an on-chain proposal; null for a
+    # LEGACY_OFFCHAIN one, where it's meaningless. No UI can set this yet
+    # (see ROADMAP.md/RUNBOOK.md — there's no create-proposal form in this
+    # app at all, on- or off-chain; every existing proposal was created
+    # via a direct API call) — routers/governance.py::create_proposal
+    # applies a server-side default whenever a new proposal is about to
+    # queue for on-chain creation.
+    quorum_threshold_gen: Mapped[Decimal | None] = mapped_column(_GenAmount, default=None)
     pass_threshold: Mapped[int] = mapped_column(default=50)
 
     # FIXED 2026-09-13 — widened int -> Decimal (GEN wei-precision, same

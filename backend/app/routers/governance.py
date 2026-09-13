@@ -79,6 +79,14 @@ from app.services.genlayer_indexer import create_proposal_on_chain
 
 router = APIRouter(prefix="/proposals", tags=["governance"])
 
+# See Proposal.quorum_threshold_gen's own model docstring — applied
+# whenever a new proposal queues for on-chain creation and the client
+# didn't supply its own value (no create-proposal UI does yet). 1 GEN is
+# a deliberately modest, real, non-trivial floor — nowhere near "20 wei"
+# (what forwarding the old percentage field produced), but also not so
+# high that testing this on a low-balance testnet wallet is impractical.
+_DEFAULT_ON_CHAIN_QUORUM_GEN = Decimal("1")
+
 
 def _voting_power(user: User) -> int:
     """Sybil-resistance placeholder (see module docstring): 1 point for
@@ -135,9 +143,28 @@ def _aware(dt: datetime) -> datetime:
 
 
 def _progress(proposal: Proposal, eligible_voters: int) -> dict:
-    """Quorum is turnout (however anyone voted) against every wallet that
-    could have; pass/fail is FOR's share of *decided* ballots — abstains
-    count toward quorum but don't move the pass threshold either way.
+    """Pass/fail is FOR's share of *decided* ballots either way — abstains
+    count toward quorum but don't move the pass threshold. Quorum itself
+    branches by chain linkage, and the two are NOT interchangeable
+    concepts (see Proposal.quorum_threshold_gen's own model docstring for
+    the live bug this split fixes):
+
+      - LEGACY_OFFCHAIN: turnout as a PERCENTAGE of every wallet that's
+        ever signed in, compared against quorum_threshold (also a
+        percentage). No on-chain equivalent exists for "every wallet
+        that's ever signed in" — GenVM has no wallet registry.
+      - on-chain (quorum_threshold_gen set): turnout is real GEN,
+        compared directly against quorum_threshold_gen (also GEN) — a
+        percentage of eligible_voters would be meaningless here. turnout_
+        pct instead reports how close real turnout is to the real GEN
+        quorum (100% == quorum exactly met), which is what finalize_
+        proposal on the contract actually decides against.
+
+    Only ever a *display* computation either way — for an on-chain
+    proposal the real, authoritative pass/fail decision is NuanceGovernance.
+    finalize_proposal's own on-chain result, synced back by _apply_
+    proposal_view; this never drives that outcome, only presents it
+    consistently before/after it's known.
 
     FIXED 2026-09-13 — total_for/against/abstain are now Decimal (see
     Proposal.total_for's own model docstring), and Python refuses to mix
@@ -151,7 +178,14 @@ def _progress(proposal: Proposal, eligible_voters: int) -> dict:
     total_abstain = float(proposal.total_abstain)
 
     turnout_power = total_for + total_against + total_abstain
-    turnout_pct = (100.0 * turnout_power / eligible_voters) if eligible_voters else 0.0
+
+    if proposal.quorum_threshold_gen is not None:
+        quorum_gen = float(proposal.quorum_threshold_gen)
+        turnout_pct = (100.0 * turnout_power / quorum_gen) if quorum_gen else 0.0
+        quorum_met = turnout_power >= quorum_gen
+    else:
+        turnout_pct = (100.0 * turnout_power / eligible_voters) if eligible_voters else 0.0
+        quorum_met = turnout_pct >= proposal.quorum_threshold
 
     decided = total_for + total_against
     for_pct = (100.0 * total_for / decided) if decided else 0.0
@@ -163,7 +197,7 @@ def _progress(proposal: Proposal, eligible_voters: int) -> dict:
         "for_pct": round(for_pct, 1),
         "against_pct": round(against_pct, 1),
         "abstain_pct": round(abstain_pct, 1),
-        "quorum_met": turnout_pct >= proposal.quorum_threshold,
+        "quorum_met": quorum_met,
     }
 
 
@@ -220,6 +254,7 @@ def _proposal_fields(
         "start_time": proposal.start_time,
         "end_time": proposal.end_time,
         "quorum_threshold": proposal.quorum_threshold,
+        "quorum_threshold_gen": proposal.quorum_threshold_gen,
         "pass_threshold": proposal.pass_threshold,
         "total_for": proposal.total_for,
         "total_against": proposal.total_against,
@@ -364,6 +399,13 @@ async def create_proposal(
         end_time=now + timedelta(days=payload.voting_period_days),
         quorum_threshold=payload.quorum_threshold,
         pass_threshold=payload.pass_threshold,
+        # See Proposal.quorum_threshold_gen's own model docstring — a
+        # client-supplied value is used as-is; otherwise (no create-
+        # proposal UI collects this yet) a sensible default is applied
+        # right below, but only once we know this proposal is actually
+        # going on-chain — a purely off-chain proposal has no use for it
+        # at all and should keep it null.
+        quorum_threshold_gen=payload.quorum_threshold_gen,
     )
     # FIXED 2026-09-13 — asked directly to make voting/unvoting real GEN
     # actions ("like a real Governance"): a proposal needs an on-chain
@@ -382,6 +424,8 @@ async def create_proposal(
     # confirmed directly: only new proposals go on-chain.
     if settings.auto_create_proposals_on_chain and settings.governance_contract_address:
         proposal.deploy_attempted_at = now
+        if proposal.quorum_threshold_gen is None:
+            proposal.quorum_threshold_gen = _DEFAULT_ON_CHAIN_QUORUM_GEN
     db.add(proposal)
     await db.commit()
     await db.refresh(proposal)

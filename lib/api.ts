@@ -381,6 +381,13 @@ export interface ApiProposal {
   start_time: string;
   end_time: string;
   quorum_threshold: number;
+  // Null for a LEGACY_OFFCHAIN proposal — see backend/app/models/
+  // governance.py's Proposal.quorum_threshold_gen docstring for the real
+  // bug this exists to fix: quorum_threshold above is a PERCENTAGE (of
+  // "every wallet that's ever signed in"), meaningless on-chain; this is
+  // the real, GEN-denominated quorum an on-chain proposal actually uses.
+  // Decimal GEN string, same serialization as total_for/against/abstain.
+  quorum_threshold_gen?: string | null;
   pass_threshold: number;
   // Decimal GEN strings since 2026-09-13 (not plain numbers) — see
   // backend/app/models/governance.py's Proposal.total_for docstring on

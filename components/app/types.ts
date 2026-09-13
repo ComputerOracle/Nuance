@@ -216,6 +216,11 @@ export interface Proposal {
   abstainPct: number;
   turnoutPct: number;
   quorumThreshold: number;
+  // GEN, not a percentage — only set for an on-chain proposal (see
+  // api.ts's ApiProposal.quorum_threshold_gen doc). When set, this (not
+  // quorumThreshold above) is the real threshold turnoutPct/quorumMet
+  // are computed against — governance-view.tsx displays accordingly.
+  quorumThresholdGen?: number | null;
   passThreshold: number;
   quorumMet: boolean;
   endTime: string;

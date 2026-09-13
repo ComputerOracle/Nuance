@@ -126,7 +126,26 @@ export function GovernanceView({
 
               <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-fg-meta">
                 <span>
-                  Turnout {pr.turnoutPct}% · needs {pr.quorumThreshold}% quorum
+                  {/* FIXED 2026-09-13 — a real bug found live: an
+                      on-chain proposal's quorum is real GEN turnout
+                      against a real GEN threshold (quorumThresholdGen) —
+                      "needs X% quorum" (a percentage of "every wallet
+                      that's ever signed in") is a LEGACY_OFFCHAIN-only
+                      concept with no on-chain equivalent at all. See
+                      backend/app/models/governance.py's Proposal.
+                      quorum_threshold_gen docstring for the full account
+                      (create_proposal_on_chain used to forward the
+                      percentage straight through as the contract's own
+                      wei-denominated threshold, silently making quorum
+                      trivial to meet). */}
+                  {isOnChain && pr.quorumThresholdGen != null ? (
+                    <>
+                      Turnout {pr.totalFor + pr.totalAgainst + pr.totalAbstain} GEN of{" "}
+                      {pr.quorumThresholdGen} GEN needed ({pr.turnoutPct}%)
+                    </>
+                  ) : (
+                    <>Turnout {pr.turnoutPct}% · needs {pr.quorumThreshold}% quorum</>
+                  )}
                   {" "}
                   {pr.quorumMet ? (
                     <span className="text-positive-text">(met)</span>

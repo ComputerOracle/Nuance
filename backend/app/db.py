@@ -94,6 +94,7 @@ _SQLITE_COLUMN_PATCHES: dict[str, list[tuple[str, str]]] = {
         ("on_chain_tx_hash", "TEXT"),
         ("deploy_attempted_at", "TIMESTAMP"),
         ("finalize_trigger_tx_hash", "TEXT"),
+        ("quorum_threshold_gen", "NUMERIC(38, 18)"),
     ],
     "votes": [
         ("stake_amount", "NUMERIC(38, 18)"),

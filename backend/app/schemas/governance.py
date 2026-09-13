@@ -24,8 +24,20 @@ class ProposalCreate(BaseModel):
     description: str = Field(min_length=1, max_length=5000)
     category: str = Field(default="General", max_length=60)
     voting_period_days: int = Field(default=7, ge=1, le=90)
+    # Percentage of "every wallet that's ever signed in" — only ever
+    # meaningful for a LEGACY_OFFCHAIN proposal (see Proposal.
+    # quorum_threshold_gen's own model docstring on why this can't be
+    # reused for an on-chain one, and why that field exists separately).
     quorum_threshold: int = Field(default=20, ge=1, le=100)
     pass_threshold: int = Field(default=50, ge=1, le=100)
+    # The real, GEN-denominated quorum for an on-chain proposal — see
+    # Proposal.quorum_threshold_gen's own model docstring for the live
+    # bug this exists to fix. Optional here because no create-proposal UI
+    # exists yet to actually collect it (every proposal today is created
+    # via a direct API call) — routers/governance.py::create_proposal
+    # applies a sensible server-side default whenever a new proposal is
+    # about to queue for on-chain creation and this wasn't supplied.
+    quorum_threshold_gen: Decimal | None = Field(default=None, ge=0)
 
 
 class VoteCreate(BaseModel):
@@ -105,6 +117,11 @@ class ProposalRead(BaseModel):
     end_time: datetime
     quorum_threshold: int
     pass_threshold: int
+    # Null for a LEGACY_OFFCHAIN proposal — see Proposal.
+    # quorum_threshold_gen's own model docstring for the live bug this
+    # exists to fix (an on-chain proposal's real quorum, in GEN, cannot
+    # reuse the percentage field above).
+    quorum_threshold_gen: Decimal | None = None
     # Decimal, not int, since 2026-09-13 — see models/governance.py's own
     # Proposal.total_for docstring on why this widening is value-
     # compatible with every existing off-chain proposal's small integer

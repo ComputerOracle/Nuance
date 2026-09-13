@@ -126,12 +126,70 @@ def test_create_proposal_on_chain_sends_the_real_call(monkeypatch):
     assert captured["address"] == _CONTRACT_ADDRESS
     assert captured["function_name"] == "create_proposal"
     assert captured["args"][0] == "Governance chain-sync test proposal"
-    assert captured["args"][4] == 20  # quorum_threshold
+    # FIXED 2026-09-13 — a real bug found live: this call used to pass
+    # the off-chain PERCENTAGE quorum_threshold (20, meaning "20%")
+    # straight through as the contract's own quorum_threshold argument,
+    # which treats it as an ABSOLUTE WEI TURNOUT — "20" became a real
+    # on-chain quorum of 20 wei, trivially met by any single vote. This
+    # proposal has no quorum_threshold_gen set, so the defensive fallback
+    # (_DEFAULT_ON_CHAIN_QUORUM_GEN = 1 GEN) applies — see the dedicated
+    # test below for the case where a real value IS set.
+    assert captured["args"][4] == 1_000_000_000_000_000_000  # 1 GEN, in wei
     assert captured["args"][5] == 50  # pass_threshold
 
     proposal = asyncio.run(_get_proposal(proposal_id))
     assert proposal.on_chain_tx_hash == _FAKE_TX_HASH
     assert proposal.deploy_attempted_at is not None
+    assert proposal.quorum_threshold_gen == Decimal("1"), (
+        "the fallback default must be persisted, not just used for this one call"
+    )
+
+
+def test_create_proposal_on_chain_uses_the_real_gen_quorum_when_set(monkeypatch):
+    """The actual fix, not just its fallback: a proposal with a real
+    quorum_threshold_gen set (e.g. by routers/governance.py::
+    create_proposal, which always sets one before queuing on-chain
+    creation) must have THAT value sent, converted to wei — not the
+    unrelated percentage field, and not silently overwritten by the
+    fallback default either."""
+    _set_governance_address(monkeypatch, _CONTRACT_ADDRESS)
+
+    async def _seed() -> int:
+        now = datetime.now(timezone.utc)
+        async with AsyncSessionLocal() as db:
+            proposal = Proposal(
+                title="Real GEN quorum test proposal",
+                description="Test description.",
+                category="Test",
+                proposer_address="0x" + "1" * 40,
+                status=ProposalStatus.ACTIVE,
+                start_time=now,
+                end_time=now + timedelta(days=5),
+                quorum_threshold=20,
+                quorum_threshold_gen=Decimal("2.5"),
+                pass_threshold=50,
+            )
+            db.add(proposal)
+            await db.commit()
+            await db.refresh(proposal)
+            return proposal.id
+
+    proposal_id = asyncio.run(_seed())
+
+    captured: dict = {}
+
+    async def _fake_write_contract(address, function_name, args):
+        captured["args"] = args
+        return _FAKE_TX_HASH
+
+    monkeypatch.setattr(genlayer_indexer.genlayer_write, "write_contract", _fake_write_contract)
+
+    asyncio.run(genlayer_indexer.create_proposal_on_chain(proposal_id))
+
+    assert captured["args"][4] == 2_500_000_000_000_000_000  # 2.5 GEN, in wei
+
+    proposal = asyncio.run(_get_proposal(proposal_id))
+    assert proposal.quorum_threshold_gen == Decimal("2.5"), "must not be overwritten by the fallback"
 
 
 def test_create_proposal_on_chain_noop_without_configured_address(monkeypatch):
@@ -246,6 +304,58 @@ def test_apply_proposal_view_syncs_status_and_tallies():
         assert refetched.status == ProposalStatus.PASSED
         assert refetched.total_for == Decimal("3")
         assert refetched.total_against == Decimal("1")
+
+    asyncio.run(_run())
+
+
+def test_apply_proposal_view_self_heals_a_locally_wrong_status():
+    """FIXED 2026-09-13 — a real bug found live, not hypothesized: this
+    used to only ever move status FORWARD (active -> passed/rejected),
+    with "active needs no change either way" as an explicit no-op. An
+    unrelated incident (a stray test run mutating a live DB row directly
+    with fabricated data) left a local Proposal at status=REJECTED while
+    the real, actual contract had always said "active" — and the old
+    version of this function had no way to ever notice or correct that,
+    since local "active" was never touched, and only "passed"/"rejected"
+    triggered a write. Confirms the fix: a local row that has drifted
+    from the contract's own truth is corrected back to whatever the
+    contract actually says, in EITHER direction — safe because the
+    contract's own status transition is one-way, so a real "passed"/
+    "rejected" read is never followed by a real "active" one; this can
+    only ever fix drift, never un-finalize a genuinely decided proposal.
+    """
+    proposal_id = asyncio.run(_create_proposal(on_chain_proposal_id=0))
+
+    async def _run():
+        # Simulate the exact corruption found live: local status says
+        # REJECTED (with some stray tally), but nothing on the real
+        # contract ever actually decided that.
+        async with AsyncSessionLocal() as db:
+            proposal = await db.get(Proposal, proposal_id)
+            proposal.status = ProposalStatus.REJECTED
+            proposal.total_against = Decimal("0.000000000000000001")
+            await db.commit()
+
+        proposal = await _get_proposal(proposal_id)
+        await genlayer_indexer._apply_proposal_view(
+            proposal,
+            {
+                "ok": True,
+                "result": {
+                    "status": "active",
+                    "total_for": "0",
+                    "total_against": "0",
+                    "total_abstain": "0",
+                },
+            },
+        )
+        async with AsyncSessionLocal() as db:
+            db.add(proposal)
+            await db.commit()
+
+        refetched = await _get_proposal(proposal_id)
+        assert refetched.status == ProposalStatus.ACTIVE
+        assert refetched.total_against == Decimal("0")
 
     asyncio.run(_run())
 

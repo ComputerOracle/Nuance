@@ -15,8 +15,51 @@ it's in.
 from __future__ import annotations
 
 import os
+import tempfile
 
 import pytest
+
+# FIXED 2026-09-13 — a real, serious gap found live while auditing
+# governance: app/db.py's `engine`/`AsyncSessionLocal` are module-level
+# singletons, created ONCE, the first time anything does
+# `from app.db import ...` in this process — bound to whatever
+# settings.database_url resolved to AT THAT EXACT MOMENT. Every
+# "isolated" test file's own `os.environ.setdefault("DATABASE_URL", tmp)`
+# preamble only helps if IT is the first thing in the whole pytest
+# process to trigger that import — a race this repo had no guard on at
+# all above the level of "most test files happen to set it, so it usually
+# works out."
+#
+# test_governance.py and test_predictions.py are documented as
+# DELIBERATELY not setting an override, on the reasoning that they want
+# "the real configured database" (a disposable Postgres instance in CI,
+# where DATABASE_URL is already set as a job-level env var before pytest
+# even starts). That reasoning is sound in CI. Locally, with nothing
+# external setting DATABASE_URL, "the real configured database" is
+# backend/.env's own `sqlite+aiosqlite:///./nuance.db` — the actual,
+# live, real dev database. Confirmed live, not hypothesized: running
+# `pytest tests/test_governance.py tests/test_governance_chain_sync.py`
+# (test_governance.py collected first) changed nuance.db's own on-disk
+# contents — a "governance chain sync" test that believes it's using a
+# disposable temp file was actually mutating live Proposal/Vote/AppState
+# rows, including one real, user-created proposal's own state.
+#
+# The fix: conftest.py is *always* imported before any test module in
+# its directory (pytest's own guarantee, unlike file-to-file import
+# order, which depends on collection order / what's explicitly listed on
+# the command line) — so a plain `os.environ.setdefault` here, before
+# anything else runs, wins the race unconditionally for a bare local
+# `pytest` invocation, while still being a correct no-op in CI (which has
+# already set the real key in `os.environ` before pytest starts, and
+# setdefault never overwrites an existing value). test_governance.py/
+# test_predictions.py's own "share one db across this run" reasoning is
+# completely unaffected by this — they still all share exactly one
+# engine/db for the whole process, it's just never, by accident, the real
+# one when nothing external opted in.
+os.environ.setdefault(
+    "DATABASE_URL",
+    f"sqlite+aiosqlite:///{tempfile.mkdtemp(prefix='nuance-pytest-default-')}/default-test.db",
+)
 
 # Set BEFORE any test module (or app.config) is imported — conftest.py is
 # always collected first, guaranteeing Settings() never sees these as True

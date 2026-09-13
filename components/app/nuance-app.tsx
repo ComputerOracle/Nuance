@@ -209,6 +209,7 @@ function mapProposal(p: api.ApiProposal): Proposal {
     abstainPct: p.abstain_pct,
     turnoutPct: p.turnout_pct,
     quorumThreshold: p.quorum_threshold,
+    quorumThresholdGen: p.quorum_threshold_gen == null ? null : Number(p.quorum_threshold_gen),
     passThreshold: p.pass_threshold,
     quorumMet: p.quorum_met,
     endTime: p.end_time,

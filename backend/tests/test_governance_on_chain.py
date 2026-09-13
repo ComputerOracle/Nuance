@@ -79,6 +79,7 @@ async def _create_proposal(
     deploy_attempted_at: datetime | None = None,
     end_delta_days: int = 5,
     proposer: str | None = None,
+    quorum_threshold_gen: Decimal | None = None,
 ) -> int:
     now = datetime.now(timezone.utc)
     async with AsyncSessionLocal() as db:
@@ -91,6 +92,7 @@ async def _create_proposal(
             start_time=now,
             end_time=now + timedelta(days=end_delta_days),
             quorum_threshold=20,
+            quorum_threshold_gen=quorum_threshold_gen,
             pass_threshold=50,
             on_chain_proposal_id=on_chain_proposal_id,
             deploy_attempted_at=deploy_attempted_at,
@@ -289,3 +291,50 @@ def test_finalize_rejects_on_chain_linked_proposal(client: TestClient):
     resp = client.post(f"/proposals/{proposal_id}/finalize")
     assert resp.status_code == 400
     assert "automatically on-chain" in resp.json()["detail"]
+
+
+# --- 8. quorum_met/turnout_pct use real GEN for an on-chain proposal ------
+
+
+def test_on_chain_proposal_quorum_uses_gen_not_eligible_voters(client: TestClient, monkeypatch):
+    """FIXED 2026-09-13 — a real bug found live: services/genlayer_
+    indexer.py::create_proposal_on_chain used to send the off-chain
+    PERCENTAGE quorum_threshold straight through as the contract's own
+    (wei-denominated) quorum_threshold argument — silently defeating
+    quorum for every on-chain proposal. This confirms the DISPLAY side of
+    the fix too: an on-chain proposal's quorum_met/turnout_pct must
+    compare real GEN turnout against quorum_threshold_gen, never against
+    eligible_voters (a concept — "every wallet that's ever signed in" —
+    that has no on-chain equivalent at all)."""
+    _set_governance_address(monkeypatch)
+    wallet = Account.create()
+    token = _get_token(client, wallet)
+    proposal_id = asyncio.run(
+        _create_proposal(on_chain_proposal_id=0, quorum_threshold_gen=Decimal("2"))
+    )
+
+    # Stake exactly half the 2 GEN quorum — quorum must NOT read as met,
+    # regardless of how many (or few) wallets have ever signed in.
+    resp = client.post(
+        f"/proposals/{proposal_id}/vote/on-chain",
+        json={"tx_hash": _FAKE_TX_HASH, "choice": "for", "stake_amount": "1"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert Decimal(body["quorum_threshold_gen"]) == Decimal("2")
+    assert body["quorum_met"] is False
+    assert body["turnout_pct"] == 50.0  # 1 of 2 GEN quorum — not a % of any wallet count
+
+    # Top up to exactly the 2 GEN quorum via a second wallet's vote —
+    # now it must read as met.
+    other_token = _get_token(client, Account.create())
+    resp2 = client.post(
+        f"/proposals/{proposal_id}/vote/on-chain",
+        json={"tx_hash": "0x" + "ab" * 32, "choice": "against", "stake_amount": "1"},
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+    assert resp2.status_code == 201, resp2.text
+    body2 = resp2.json()
+    assert body2["quorum_met"] is True
+    assert body2["turnout_pct"] == 100.0

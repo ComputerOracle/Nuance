@@ -113,6 +113,14 @@ _TERMINAL_CHAIN_STATUSES = {ChainStatus.FINALIZED, ChainStatus.CANCELED}
 # retry could double-submit while the first attempt might still be
 # in flight.
 _PROPOSAL_CREATE_RETRY_COOLDOWN = timedelta(minutes=10)
+# Same value and reasoning as routers/governance.py's own
+# _DEFAULT_ON_CHAIN_QUORUM_GEN (a separate constant, not a cross-module
+# reach into that one — see _PROPOSAL_CREATE_RETRY_COOLDOWN's own comment
+# just above for why this file keeps its own copies rather than importing
+# router-private names): applied only as a defensive fallback if this
+# function is ever called with quorum_threshold_gen still null, which the
+# normal router path already prevents.
+_DEFAULT_ON_CHAIN_QUORUM_GEN = Decimal("1")
 # GenVM's raw TransactionStatus values that lib/chain-status.ts's
 # "decided" bucket folds an active appeal window into (see that file's
 # own comment: "includes ACCEPTED and both APPEAL_* states"). Checked
@@ -884,6 +892,20 @@ async def create_proposal_on_chain(proposal_id: int) -> None:
         # failed attempt still counts as "attempted," subject to the same
         # cooldown as any other attempt before being retried.
         proposal.deploy_attempted_at = datetime.now(timezone.utc)
+        # FIXED 2026-09-13 — a real, serious bug found live auditing
+        # governance: this call used to pass proposal.quorum_threshold
+        # (an off-chain PERCENTAGE, 1-100) straight through as the
+        # contract's own quorum_threshold argument, which it treats as an
+        # ABSOLUTE WEI TURNOUT (see contracts/nuance_governance.py's own
+        # header) — "20" became a real quorum of 20 wei, trivially met by
+        # any single vote. quorum_threshold_gen is the real, GEN-
+        # denominated value meant for this — see its own model docstring.
+        # Defensive fallback here (routers/governance.py::create_proposal
+        # is the normal path that already sets this alongside deploy_
+        # attempted_at) covers this function being called directly
+        # without going through that router, e.g. a manual retry/backfill.
+        if proposal.quorum_threshold_gen is None:
+            proposal.quorum_threshold_gen = _DEFAULT_ON_CHAIN_QUORUM_GEN
         await db.commit()
 
         tx_hash = await genlayer_write.write_contract(
@@ -894,7 +916,7 @@ async def create_proposal_on_chain(proposal_id: int) -> None:
                 proposal.description,
                 proposal.category,
                 proposal.end_time.isoformat(),
-                proposal.quorum_threshold,
+                genlayer_deploy._gen_to_wei(proposal.quorum_threshold_gen),
                 proposal.pass_threshold,
             ],
         )
@@ -1069,20 +1091,42 @@ async def _apply_proposal_view(proposal: Proposal, result: genlayer_rpc.ReadResu
     """Syncs a linked Proposal's business state from the real
     NuanceGovernance.get_proposal() read — status and the three wei-sum
     tallies (see Proposal.total_for's own 2026-09-13 docstring on why
-    these are Decimal now, not the old flat integer weights). Never moves
-    status backwards (passed/rejected -> active) — finalize_proposal on
-    the contract side is itself one-way, same as routers/governance.py's
-    own off-chain _finalize_if_due."""
+    these are Decimal now, not the old flat integer weights).
+
+    FIXED 2026-09-13 — a real bug found live while auditing governance
+    end-to-end: this used to only ever move status FORWARD (active ->
+    passed/rejected), with an explicit "active needs no change either
+    way" no-op — reasoned as safe because finalize_proposal on the
+    contract side is itself one-way. That reasoning covers the CONTRACT
+    correctly, but not this app's own local mirror of it: a completely
+    unrelated bug (an unintended test run mutating a live DB row directly
+    via _apply_proposal_view with fabricated data — see tests/conftest.py's
+    own 2026-09-13 DATABASE_URL-isolation fix) left a local Proposal
+    status at "rejected" while the real contract had always said "active"
+    — and this function, by design, could never notice or correct that,
+    since it only special-cased passed/rejected. The actual invariant
+    that matters is simpler and fully safe either way: this local row's
+    status should always equal whatever the contract's own get_proposal()
+    just said, full stop — the contract's own one-way transition already
+    guarantees a real "passed"/"rejected" read is never followed by a
+    real "active" one, so this can't un-finalize a genuinely decided
+    proposal; it can only ever correct a local row that's drifted from
+    the one source of truth that actually decides anything.
+    """
     if not result.get("ok"):
         logger.warning("get_proposal failed for proposal id=%s: %s", proposal.id, result.get("error"))
         return
     p = result["result"]
     onchain_status = p.get("status")
-    if onchain_status == "passed":
-        proposal.status = ProposalStatus.PASSED
-    elif onchain_status == "rejected":
-        proposal.status = ProposalStatus.REJECTED
-    # "active" needs no change either way.
+    if onchain_status in ("active", "passed", "rejected"):
+        proposal.status = ProposalStatus(onchain_status)
+    else:
+        logger.warning(
+            "get_proposal for proposal id=%s returned an unrecognized status %r — leaving local "
+            "status untouched this cycle.",
+            proposal.id,
+            onchain_status,
+        )
 
     proposal.total_for = _wei_to_gen(int(p.get("total_for", 0)))
     proposal.total_against = _wei_to_gen(int(p.get("total_against", 0)))
