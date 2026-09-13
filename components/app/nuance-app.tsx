@@ -181,6 +181,9 @@ function mapPrediction(p: api.ApiPrediction): Prediction {
     // on-chain. This mirrors that same condition so the bet panel shows
     // "deploying" instead of a button the backend will now 503.
     isDeployingOnChain: !p.contract_address && !!p.resolution_source_url,
+    contractBalance: p.contract_balance == null ? null : Number(p.contract_balance),
+    contractBalanceAtResolution:
+      p.contract_balance_at_resolution == null ? null : Number(p.contract_balance_at_resolution),
   };
 }
 

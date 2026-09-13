@@ -130,6 +130,12 @@ export interface Prediction {
   // market with this true will get a contractAddress eventually, usually
   // within minutes, not on a schedule the user controls.
   isDeployingOnChain?: boolean;
+  // GEN, not milli-GEN (matching Escrow.contractBalance's own
+  // convention/units above) — see api.ts's ApiPrediction.contract_balance
+  // doc for why these exist and why a resolved on-chain market's payout
+  // needs this ground-truth check, not just trusting a "Submitted" tx.
+  contractBalance?: number | null;
+  contractBalanceAtResolution?: number | null;
 }
 
 export interface Position {

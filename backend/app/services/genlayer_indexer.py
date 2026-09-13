@@ -370,6 +370,22 @@ def _build_read_batch(
                 "args": [],
             }
         )
+        # See Prediction.contract_balance's own docstring — same
+        # "__native_balance__" sentinel, same reasoning as escrows' own
+        # balance read above: claim_winnings' payout leaves this contract
+        # via the identical emit_transfer() mechanism already confirmed
+        # (genlayerlabs/genvm-manager#20) to sometimes never actually
+        # deliver, despite the triggering transaction itself finalizing
+        # cleanly. Folded into this same batch/round-trip, not a second
+        # subprocess call.
+        reads.append(
+            {
+                "id": f"balance:prediction:{prediction.id}",
+                "address": prediction.contract_address,
+                "functionName": "__native_balance__",
+                "args": [],
+            }
+        )
     return reads
 
 
@@ -680,6 +696,36 @@ async def _apply_prediction_view(
 
         calculate_prediction_payouts(prediction)
 
+        # See Prediction.contract_balance_at_resolution's own docstring —
+        # captured the instant this market is first observed RESOLVED,
+        # necessarily still the full pool (claim_winnings() rejects any
+        # call before this point on the contract side). Whatever
+        # contract_balance currently holds is safe to snapshot here even
+        # if this exact cycle's own balance read failed (None) or is
+        # slightly stale from an earlier cycle — either way it still
+        # predates any possible claim.
+        prediction.contract_balance_at_resolution = prediction.contract_balance
+
+
+def _apply_prediction_balance(prediction: Prediction, result: genlayer_rpc.ReadResult) -> None:
+    """The predictions equivalent of _apply_escrow_balance above — same
+    ground-truth reasoning, same "__native_balance__" sentinel. See
+    Prediction.contract_balance's own docstring for why this exists:
+    claim_winnings()'s payout leaves the contract via the identical
+    emit_transfer() call already confirmed (genlayerlabs/genvm-manager#20)
+    to sometimes never actually deliver despite a clean FINALIZED receipt."""
+    if not result.get("ok"):
+        logger.warning(
+            "native balance check failed for prediction id=%s: %s",
+            prediction.id,
+            result.get("error"),
+        )
+        return
+    raw_balance = result.get("result")
+    if raw_balance is None:
+        return
+    prediction.contract_balance = _wei_to_gen(int(raw_balance))
+
 
 async def trigger_pending_market_resolutions(predictions: list[Prediction]) -> None:
     """Closes the same gap trigger_pending_adjudications closes for
@@ -957,6 +1003,14 @@ async def run_once(db: AsyncSession) -> None:
     await trigger_pending_adjudications(disputes)
 
     for prediction in predictions:
+        # Balance applied BEFORE the view sync below on purpose: if this
+        # cycle is the one where _apply_prediction_view first observes
+        # RESOLVED, its contract_balance_at_resolution snapshot needs
+        # whatever fresh balance this same cycle just read, not a stale
+        # value from before.
+        balance_result = read_results.get(f"balance:prediction:{prediction.id}")
+        if balance_result is not None:
+            _apply_prediction_balance(prediction, balance_result)
         result = read_results.get(f"prediction:{prediction.id}")
         if result is not None:
             await _apply_prediction_view(db, prediction, result)

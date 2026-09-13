@@ -664,6 +664,15 @@ class PredictionRead(BaseModel):
     contract_address: str | None = None
     chain_status: ChainStatus = ChainStatus.LEGACY_OFFCHAIN
     resolution_trigger_tx_hash: str | None = None
+    # See Prediction.contract_balance's own model docstring — the
+    # contract's real native GEN balance (eth_getBalance), never inferred
+    # from the contract's own self-reported state. Null until the
+    # indexer's first balance read for this contract lands.
+    contract_balance: Decimal | None = None
+    # Snapshotted once, the instant this market first resolves — see
+    # Prediction.contract_balance_at_resolution's own docstring. Null for
+    # an unresolved (or never-linked) market.
+    contract_balance_at_resolution: Decimal | None = None
 
 
 def _validate_side(v: str) -> str:

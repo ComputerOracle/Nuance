@@ -92,6 +92,23 @@ export function PredictionDetailView({
   // refuses it outright. Disabling here matches that instead of letting
   // someone click "Place Bet" into a guaranteed 503.
   const isDeploying = Boolean(prediction.isDeployingOnChain);
+
+  // The one check on this page actually run against the chain's real
+  // state instead of a "Submitted" transaction receipt — see
+  // Prediction.contract_balance's own docstring (backend/app/models/
+  // core.py). contractBalanceAtResolution is the full pool, snapshotted
+  // the instant this market resolved (necessarily true — claim_winnings()
+  // rejects any call before then); contractBalance is what's actually
+  // there right now. If nothing has moved since resolution, both are
+  // still equal (or ~equal) — meaning either no one's claimed yet, or
+  // every claim attempted so far hit the same known GenLayer platform bug
+  // escrow refunds/payouts already did (genlayerlabs/genvm-manager#20).
+  // Same epsilon reasoning as escrow-detail-view.tsx's own isPayoutStuck.
+  const _STUCK_EPSILON = 1e-9;
+  const hasVerifiedPoolMovement =
+    prediction.contractBalance != null &&
+    prediction.contractBalanceAtResolution != null &&
+    prediction.contractBalanceAtResolution - prediction.contractBalance > _STUCK_EPSILON;
   const betDisabled =
     !(betAmountMilliGen != null && betSide) ||
     isBetting ||
@@ -258,27 +275,41 @@ export function PredictionDetailView({
                               ? "Submitting…"
                               : "Claim Winnings"}
                         </button>
-                        {/* FOUND 2026-09-12 — root cause since confirmed
-                            (see escrow-detail-view.tsx's identical
-                            isPayoutStuck banner for the full account):
-                            claim_winnings()'s emit_transfer call is
-                            blocked by a confirmed, currently-open GenLayer
-                            platform bug (genlayerlabs/genvm-manager#20) —
-                            outbound async transfers from an Intelligent
-                            Contract are recorded in the triggering
+                        {/* FIXED 2026-09-13 — this used to be a static
+                            caption regardless of what actually happened
+                            on-chain (root cause found 2026-09-12, see
+                            escrow-detail-view.tsx's identical
+                            isPayoutStuck banner): claim_winnings()'s
+                            emit_transfer call can be blocked by a
+                            confirmed, currently-open GenLayer platform bug
+                            (genlayerlabs/genvm-manager#20) that records an
+                            outbound transfer in the triggering
                             transaction's receipt but never actually
-                            executed on-chain, on both Bradbury and Asimov.
-                            Not something this app can fix on its own.
-                            "Submitted" above means exactly that and
-                            nothing more — a finalized on-chain call, not
-                            confirmed money in hand. This caption stays
-                            until GenLayer's own platform fixes it. */}
-                        <div className="mt-2 text-[11px] leading-snug text-fg-meta">
-                          ⚠ A currently-open GenLayer network issue (genlayerlabs/genvm-manager#20)
-                          is blocking outbound transfers from Intelligent Contracts — a
-                          &ldquo;Submitted&rdquo; transaction is confirmed on-chain, but check your
-                          wallet balance directly before assuming the GEN has actually arrived.
-                        </div>
+                            executes it on-chain. Not something this app
+                            can fix — but hasVerifiedPoolMovement (Prediction.
+                            contract_balance vs contract_balance_at_resolution,
+                            both read straight off the chain) means this no
+                            longer has to be a blind disclaimer: it shows
+                            what's actually verifiably true right now. */}
+                        {!hasClaimed ? null : prediction.contractBalance == null ? (
+                          <div className="mt-2 text-[11px] leading-snug text-fg-meta">
+                            ⏳ Verifying against the chain — the indexer hasn&rsquo;t synced this
+                            contract&rsquo;s real balance yet (usually within ~15s).
+                          </div>
+                        ) : hasVerifiedPoolMovement ? (
+                          <div className="mt-2 text-[11px] leading-snug text-positive-text">
+                            ✓ Confirmed on-chain: real GEN has left this contract since it
+                            resolved — check your wallet balance to see your payout.
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-[11px] leading-snug text-negative-text">
+                            ⚠ Confirmed on-chain: no GEN has left this contract since it resolved
+                            — your claim is very likely stuck behind a currently-open GenLayer
+                            platform issue (genlayerlabs/genvm-manager#20), not a bug in this app.
+                            A &ldquo;Submitted&rdquo; transaction only means the call itself was
+                            finalized, not that the payout was delivered.
+                          </div>
+                        )}
                       </>
                     )}
                   </div>

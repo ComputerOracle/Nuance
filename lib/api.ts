@@ -330,6 +330,24 @@ export interface ApiPrediction {
   // show "deploying" instead of offering a bet that the backend will now
   // refuse anyway.
   resolution_source_url?: string | null;
+  // The contract's real native GEN balance (decimal string, GEN — NOT
+  // milli-GEN like volume/positions above, matching ApiEscrow.
+  // contract_balance's own serialization since both are the same backend
+  // Decimal/AssetAmount column type), read via eth_getBalance and never
+  // inferred from the contract's own self-reported state — see
+  // backend/app/models/core.py's Prediction.contract_balance docstring on
+  // why this exists: claim_winnings' payout leaves the contract via the
+  // same emit_transfer() mechanism already confirmed to sometimes never
+  // actually deliver despite a clean on-chain receipt
+  // (genlayerlabs/genvm-manager#20). Null until the indexer's first
+  // balance read for this contract lands.
+  contract_balance?: string | null;
+  // Snapshotted once, the instant this market first resolves (decimal
+  // GEN string, same units as contract_balance above) — see
+  // Prediction.contract_balance_at_resolution's own docstring. Comparing
+  // contract_balance above against this tells you how much GEN has
+  // actually left the contract since resolution, across every claimant.
+  contract_balance_at_resolution?: string | null;
 }
 
 export type ApiVoteChoice = "for" | "against" | "abstain";

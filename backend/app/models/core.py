@@ -447,6 +447,40 @@ class Prediction(Base):
     # read by genlayer_deploy.retry_undeployed_predictions to find markets
     # worth retrying without double-submitting a still-in-flight attempt.
     deploy_attempted_at: Mapped[datetime | None] = mapped_column(default=None)
+    # FIXED 2026-09-13 — asked directly to make sure a resolved market's
+    # GEN actually reaches the winners, "like a real Prediction Markets."
+    # The distribution MATH was already correct on both sides (contract's
+    # claim_winnings() is real pari-mutuel; services/payout.py's
+    # calculate_prediction_payouts mirrors it exactly for display — see
+    # that function's own docstring) — the real risk is delivery, not
+    # math: claim_winnings' payout leaves the contract via the exact same
+    # emit_transfer() mechanism that Escrow.contract_balance's own
+    # docstring already caught silently failing to deliver escrow
+    # refunds/payouts (a confirmed, currently-open GenLayer platform bug,
+    # genlayerlabs/genvm-manager#20 — outbound async transfers are
+    # recorded in the triggering transaction's receipt but never actually
+    # executed on-chain). No on-chain prediction market had resolved yet
+    # when this was added, so this bug hadn't visibly struck a claim here
+    # yet — but nothing about claim_winnings' call shape is different from
+    # cancel_escrow/release_milestone's, so waiting for a live incident
+    # before adding the same safeguard would just be repeating the escrow
+    # mistake. Same field, same mechanism: the contract's real native GEN
+    # balance, read directly via eth_getBalance
+    # (scripts/genlayer-read.ts's "__native_balance__" sentinel), never
+    # inferred from the contract's own state.
+    contract_balance: Mapped[Decimal | None] = mapped_column(AssetAmount, default=None)
+    # A snapshot of contract_balance taken the instant this market's
+    # status_key first flips to RESOLVED (see _apply_prediction_view) —
+    # necessarily still the FULL pool, since claim_winnings() rejects any
+    # call before state == "RESOLVED" on the contract side. Comparing the
+    # live contract_balance above against this snapshot answers "how much
+    # GEN has actually left the contract since resolution, across every
+    # claimant" without needing to enumerate every bettor address —
+    # unlike Escrow.contract_balance's single-creator case, a prediction
+    # market can have many claimants and this contract exposes no running
+    # "total paid out" counter of its own. Null until this market
+    # resolves; sqlite backfill note is the same as Escrow.deploy_attempted_at's.
+    contract_balance_at_resolution: Mapped[Decimal | None] = mapped_column(AssetAmount, default=None)
 
     positions: Mapped[list["PredictionPosition"]] = relationship(
         back_populates="prediction",
