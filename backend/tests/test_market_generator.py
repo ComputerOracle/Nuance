@@ -16,18 +16,40 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 
-import httpx
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import select
+# FIXED 2026-09-13 — a real, serious gap found live: this file had no
+# DATABASE_URL override at all, unlike every sibling test file (see e.g.
+# test_chain_unavailable_guard.py/test_prediction_contract_balance.py's
+# identical preamble) — `from app.db import AsyncSessionLocal` below used
+# to pick up whatever DATABASE_URL was already active, which with no
+# override is backend/.env's own `sqlite+aiosqlite:///./nuance.db`: the
+# real, live, production database this repo's actual running backend
+# serves to real users. Caught in the act: running this file repeatedly
+# today left 11 fake "MILESTONE_MARKER"/test:N predictions sitting in the
+# live db (ids 23-30, plus three from 2026-09-07's own
+# "auto-deploy-test:N" rows, ids 20-22) — two of which (20, 22) then got
+# picked up by services/genlayer_deploy.py's own legitimate auto-deploy
+# retry sweep and had REAL testnet GEN spent deploying real contracts for
+# fake test data. Same fix as every other test file: an isolated, throwaway
+# sqlite file, set before any app.* import triggers app.config.get_settings()'s
+# lru_cache to read the real one.
+_TMP_DIR = tempfile.mkdtemp(prefix="nuance-market-generator-test-")
+os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{_TMP_DIR}/test.db")
+os.environ.setdefault("JWT_SECRET", "test-secret-key-for-pytest-only-32bytes+")
 
-import app.services.market_generator as market_generator
-from app.db import AsyncSessionLocal
-from app.main import app
-from app.models import MarketEventLog, Prediction
-from app.services.market_generator import ExtractedMarket, RawEvent, _process_events
+import httpx  # noqa: E402
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import select  # noqa: E402
+
+import app.services.market_generator as market_generator  # noqa: E402
+from app.db import AsyncSessionLocal  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models import MarketEventLog, Prediction  # noqa: E402
+from app.services.market_generator import ExtractedMarket, RawEvent, _process_events  # noqa: E402
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -194,6 +216,73 @@ async def test_irrelevant_event_never_reaches_the_llm():
             db, [event], auto_publish=True, gemini_client=_ExplodingClient(), trusted_accounts={"genlayer"}
         )
     assert created == []
+
+
+@pytest.mark.asyncio
+async def test_transient_extraction_failure_is_not_permanently_deduped():
+    """FIXED 2026-09-13 — a real gap found live, not hypothesized: running
+    a real ingestion pass right after GEMINI_API_KEY was configured hit a
+    transient `[Errno -3] Temporary failure in name resolution` calling
+    Gemini for every one of 20 freshly-fetched, real tweets (confirmed
+    separately as genuinely transient — a bare retry of the same DNS
+    lookup succeeded 2 of 3 times, not a bad key). The old code called
+    _mark_processed(outcome="error") in that branch — exactly as
+    permanent as "skipped"/"created" per _already_processed — which would
+    have silently and permanently lost all 20 tweets, on every future
+    run, over one passing network blip. This is the exact scenario that
+    would have caused: an event whose extraction call raises must NOT be
+    logged at all, so a later run (this same event, offered again) gets a
+    real second chance once the transient failure has cleared — contrast
+    with test_noise_event_creates_no_prediction_but_is_logged, where the
+    LLM DID successfully judge the event (as noise) and that real verdict
+    is correctly permanent."""
+
+    class _FlakyThenWorkingClient:
+        """Raises on every call within _call_extractor's own retry budget
+        (stop_after_attempt(3) — see _RETRYABLE_ERRORS' 2026-09-13 fix
+        note, which now retries OSError there too) so the first
+        _process_events run below still genuinely exhausts its retries and
+        reaches the except block, exactly like the live incident this
+        guards against; the 4th call — a separate, later run, exactly what
+        a real subsequent scheduled ingestion does — succeeds normally."""
+
+        def __init__(self):
+            self.calls = 0
+            self.aio = self
+
+        @property
+        def models(self):
+            return self
+
+        async def generate_content(self, *, model: str, contents: str, config=None):
+            self.calls += 1
+            if self.calls <= 3:
+                raise OSError("[Errno -3] Temporary failure in name resolution")
+            return await _FakeAsyncModels().generate_content(model=model, contents=contents, config=config)
+
+    event = _event("MILESTONE_MARKER: a real milestone hit by a flaky DNS lookup")
+    client = _FlakyThenWorkingClient()
+
+    # First run: the extraction call raises. Nothing created, and —
+    # unlike the noise case — nothing logged either.
+    async with AsyncSessionLocal() as db:
+        created = await _process_events(
+            db, [event], auto_publish=True, gemini_client=client, trusted_accounts={"genlayer"}
+        )
+    assert created == []
+    async with AsyncSessionLocal() as db:
+        log_row = await db.get(MarketEventLog, event.source_id)
+    assert log_row is None, "a transient extraction failure must not be permanently deduped"
+
+    # Second run: same event offered again (exactly what the next
+    # scheduled ingestion run does) — this time extraction succeeds, and
+    # since it was never logged, _already_processed doesn't skip it.
+    async with AsyncSessionLocal() as db:
+        created = await _process_events(
+            db, [event], auto_publish=True, gemini_client=client, trusted_accounts={"genlayer"}
+        )
+    assert len(created) == 1
+    assert created[0].title == "Will GenLayer ship the marked milestone?"
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,7 @@ from app.routers import (
 )
 from app.services.consensus import ChainUnavailableError
 from app.services.genlayer_indexer import run_forever as run_chain_indexer
+from app.services.market_ingestion_scheduler import run_forever as run_market_ingestion_scheduler
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -64,6 +65,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.enable_chain_indexer:
         indexer_task = asyncio.create_task(run_chain_indexer(), name="genlayer-chain-indexer")
 
+    # services/market_ingestion_scheduler.py's own recurring sweep —
+    # identical reasoning/pattern to the chain indexer above, gated by its
+    # own settings.enable_market_ingestion_scheduler (default True) so
+    # conftest.py's autouse fixture can force it off for the whole test
+    # suite the same way it already does for the indexer/auto-deploy: a
+    # real Twitter/Gemini call (or a real testnet GEN deploy) has no
+    # business firing just because a test instantiated the app.
+    market_ingestion_task: asyncio.Task[None] | None = None
+    if settings.enable_market_ingestion_scheduler:
+        market_ingestion_task = asyncio.create_task(
+            run_market_ingestion_scheduler(), name="market-ingestion-scheduler"
+        )
+
     yield
 
     # Shutdown: cancel the indexer cleanly before tearing down the engine
@@ -82,6 +96,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception:  # noqa: BLE001 — shutdown must not crash on this
             logger.exception("genlayer-chain-indexer task raised during shutdown")
+
+    # Same cancel-before-dispose reasoning as the indexer above — a
+    # sweep mid-flight when shutdown starts must not try a DB write
+    # against an already-disposed engine.
+    if market_ingestion_task is not None:
+        market_ingestion_task.cancel()
+        try:
+            await market_ingestion_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 — shutdown must not crash on this
+            logger.exception("market-ingestion-scheduler task raised during shutdown")
 
     await dispose_engine()
 

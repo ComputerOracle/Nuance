@@ -65,6 +65,34 @@ class Settings(BaseSettings):
     # Comma-separated webpage URLs scraped generically (headline <a> tags)
     # one tier below RSS, for sources with no feed at all.
     market_generator_web_pages: str = ""
+    # Whether main.py's lifespan launches services/market_ingestion_
+    # scheduler.py's own recurring sweep as a background task, same
+    # pattern as enable_chain_indexer just below. Asked directly: "fetch
+    # update for the API key and update the project every week" — this is
+    # that, running inside the same process rather than depending on an
+    # external cron this app has no way to verify actually exists on
+    # whatever host it's deployed to. True by default (this is the whole
+    # point of the feature); tests/conftest.py forces this False for the
+    # whole suite for the identical reason enable_chain_indexer/
+    # auto_deploy_prediction_contracts already are — real Gemini/
+    # TwitterAPI.io calls (and real testnet GEN deploys, via auto_publish)
+    # have no business firing just because a test instantiated the app.
+    enable_market_ingestion_scheduler: bool = True
+    # How often that sweep actually runs, in seconds — default 7 days
+    # (604800), per the request above. Deliberately NOT how often the
+    # background loop wakes up to *check* (see market_ingestion_scheduler.
+    # py's own run_forever, which checks hourly against AppState's
+    # durably-stored last-run timestamp) — a literal asyncio.sleep(this
+    # many seconds) would mean a config change or a process restart could
+    # never move a run earlier, and a process that isn't up continuously
+    # for a full week would never trigger at all.
+    market_ingestion_interval_seconds: int = 7 * 24 * 60 * 60
+    # How often the scheduler wakes up to check whether a week has passed
+    # — cheap (one AppState read, no network calls) — not how often it
+    # actually ingests. An hour is frequent enough that the real run
+    # happens within an hour of becoming due, without polling pointlessly
+    # often for a job that fires roughly once a week.
+    market_ingestion_check_interval_seconds: int = 60 * 60
 
     # --- used starting the idempotency/rate-limit prompt ---
     # How long a completed Idempotency-Key response stays cached and

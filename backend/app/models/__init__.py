@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from app.models.core import (
     ApiKey,
+    AppState,
     Asset,
     ConsensusJob,
     DeliverableSubmission,
@@ -31,6 +32,7 @@ from app.models.governance import Proposal, Vote
 
 __all__ = [
     "ApiKey",
+    "AppState",
     "Asset",
     "ConsensusJob",
     "DeliverableSubmission",

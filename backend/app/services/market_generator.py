@@ -65,7 +65,19 @@ KEYWORDS: tuple[str, ...] = (
     "release",
 )
 
-_RETRYABLE_ERRORS = (errors.APIError,)
+_RETRYABLE_ERRORS = (
+    errors.APIError,
+    # FIXED 2026-09-13 — this used to only cover a real API-level error
+    # response (rate limit, 5xx). A DNS/connection failure below the HTTP
+    # layer (socket.gaierror, itself an OSError — the exact
+    # `[Errno -3] Temporary failure in name resolution` hit live running
+    # a real ingestion pass) raised straight past this retry entirely,
+    # reaching _process_events' except block. That block no longer treats
+    # it as permanent (see its own 2026-09-13 fix note) — but retrying
+    # within this same call, same as any other transient failure, is
+    # strictly better than always needing a whole separate run.
+    OSError,
+)
 
 
 # --- Ingestion ---------------------------------------------------------
@@ -104,6 +116,38 @@ def _is_relevant_candidate(event: RawEvent, trusted_accounts: set[str]) -> bool:
 TWITTERAPI_IO_URL = "https://api.twitterapi.io/twitter/user/last_tweets"
 
 
+# FIXED 2026-09-13 — a real gap found live, not hypothesized: asked to
+# "use the API key to refresh and get new data" right after TWITTERAPI_IO_
+# KEY/GEMINI_API_KEY were configured, and this exact single-attempt
+# request failed outright on several separate runs in a row — a bare
+# `ConnectTimeout('')`/similar transient network error each time, not a
+# bad key (confirmed separately: the same host answered fine, including a
+# real 401, once a retry got past the first attempt's failure). Before
+# this fix, one flaky connection attempt meant "TwitterAPI.io ingestion
+# failed for every configured account — falling back," and since this
+# codebase's fallback tiers below aren't actually viable (TWITTER_BEARER_
+# TOKEN needs a paid X tier this app doesn't have; RSS/web pages default
+# empty — see this file's own header), a single transient blip silently
+# meant zero new markets for that entire scheduled run. Same retry shape
+# _call_extractor below already uses for Gemini, applied here for the
+# identical reason — transient connection failures should be retried
+# within the same call, not treated as "this account has no data."
+@retry(
+    retry=retry_if_exception_type(httpx.TransportError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    reraise=True,
+)
+async def _fetch_twitterapi_io_page(client: httpx.AsyncClient, handle: str, api_key: str) -> dict:
+    resp = await client.get(
+        TWITTERAPI_IO_URL,
+        params={"userName": handle},
+        headers={"X-API-Key": api_key},
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 async def _ingest_from_twitter(accounts: list[str], api_key: str | None) -> list[RawEvent] | None:
     """Primary Twitter/X ingestion path — TwitterAPI.io, a third-party
     proxy that doesn't need a paid X developer tier. Verified live against
@@ -131,13 +175,7 @@ async def _ingest_from_twitter(accounts: list[str], api_key: str | None) -> list
     async with httpx.AsyncClient(timeout=15) as client:
         for handle in accounts:
             try:
-                resp = await client.get(
-                    TWITTERAPI_IO_URL,
-                    params={"userName": handle},
-                    headers={"X-API-Key": api_key},
-                )
-                resp.raise_for_status()
-                payload = resp.json()
+                payload = await _fetch_twitterapi_io_page(client, handle, api_key)
             except (httpx.HTTPError, ValueError) as exc:
                 logger.warning("TwitterAPI.io request failed for %s: %s", handle, exc)
                 continue
@@ -607,8 +645,36 @@ async def _process_events(
                 else _extract_market_offline(event)
             )
         except Exception as exc:  # noqa: BLE001 — one bad extraction shouldn't kill the batch
-            logger.warning("Extraction failed for %s: %s", event.source_id, exc)
-            await _mark_processed(db, event, outcome="error")
+            # FIXED 2026-09-13 — a real gap found live, not hypothesized:
+            # this used to call _mark_processed(outcome="error") here,
+            # which is exactly as permanent as "skipped"/"created" —
+            # _already_processed above treats any logged source_id as
+            # done, forever, regardless of outcome. Caught in the act
+            # running a real ingestion pass right after GEMINI_API_KEY was
+            # configured: 20 fresh, real tweets all hit this branch (a
+            # transient `[Errno -3] Temporary failure in name resolution`
+            # calling generativelanguage.googleapis.com — confirmed
+            # separately as genuinely transient, not a bad key: a bare
+            # retry of the same DNS lookup succeeded 2 of 3 times). Every
+            # one of those 20 tweets would have been marked "error" and
+            # then silently skipped on every future run, including a
+            # rerun on a host with perfectly reliable DNS — a permanent
+            # loss of real content over a passing network blip. A genuine
+            # extraction failure (LLM judged it not a real market, or a
+            # malformed response) already has its own outcome="skipped"
+            # path below (`extracted is None`) — this branch is only ever
+            # reached for the extraction CALL itself throwing, which this
+            # codebase's own established pattern elsewhere (LLM provider
+            # fallback chains, deploy retries) already treats as "retry
+            # later," never "give up forever." Deliberately does NOT call
+            # _mark_processed at all — leaving source_id unlogged is
+            # exactly what lets the next scheduled run reconsider it.
+            logger.warning(
+                "Extraction failed for %s (will retry on the next run, not "
+                "marked processed): %s",
+                event.source_id,
+                exc,
+            )
             continue
 
         if extracted is None:

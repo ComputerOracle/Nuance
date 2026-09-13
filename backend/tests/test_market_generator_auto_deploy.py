@@ -20,14 +20,35 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 
-import pytest
-from fastapi.testclient import TestClient
+# FIXED 2026-09-13 — a real, serious gap found live: this file had no
+# DATABASE_URL override at all, unlike every properly-isolated test file
+# (see test_chain_unavailable_guard.py's identical preamble) — imports
+# below used to pick up whatever DATABASE_URL was already active, which
+# with no override is backend/.env's own `sqlite+aiosqlite:///./nuance.db`
+# — the real, live, production database this repo's actual backend serves
+# to real users. Caught in the act: this file's own "auto-deploy-test:N"
+# source_ids were found sitting in the live db as predictions 20-22
+# (created 2026-09-07), two of which (20, 22) then got picked up by
+# services/genlayer_deploy.py's own legitimate auto-deploy retry sweep and
+# had REAL testnet GEN spent deploying real contracts for fake test data —
+# despite this file's own docstring claiming "no real testnet GEN spent"
+# (true for what THIS file's mocked deploy_prediction_contract call itself
+# does; false for what the real one later did to the Prediction rows this
+# file left behind in the live db).
+_TMP_DIR = tempfile.mkdtemp(prefix="nuance-market-generator-auto-deploy-test-")
+os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{_TMP_DIR}/test.db")
+os.environ.setdefault("JWT_SECRET", "test-secret-key-for-pytest-only-32bytes+")
 
-import app.services.genlayer_deploy as genlayer_deploy
-from app.main import app
-from app.services.market_generator import ExtractedMarket, RawEvent, _process_events
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+import app.services.genlayer_deploy as genlayer_deploy  # noqa: E402
+from app.main import app  # noqa: E402
+from app.services.market_generator import ExtractedMarket, RawEvent, _process_events  # noqa: E402
 
 _id_counter = itertools.count(1)
 

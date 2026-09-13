@@ -40,6 +40,14 @@ os.environ.setdefault("AUTO_DEPLOY_ESCROW_CONTRACTS", "false")
 # same reasoning as the escrow one above, just for
 # services/market_generator.py's own auto-deploy hook.
 os.environ.setdefault("AUTO_DEPLOY_PREDICTION_CONTRACTS", "false")
+# services/market_ingestion_scheduler.py's own recurring sweep — same
+# race as every flag above (a module-scoped _init_schema fixture's first
+# TestClient(app) instantiation would otherwise start this for real
+# before any function-scoped fixture gets a turn), and a real one would
+# mean actual Twitter/Gemini network calls (and, via auto_publish's own
+# auto-deploy hook, real testnet GEN spent) firing just because a test
+# happened to instantiate the app.
+os.environ.setdefault("ENABLE_MARKET_INGESTION_SCHEDULER", "false")
 
 
 @pytest.fixture(autouse=True)
@@ -102,6 +110,20 @@ def _disable_prediction_auto_deploy_by_default(monkeypatch):
     from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "auto_deploy_prediction_contracts", False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_market_ingestion_scheduler_by_default(monkeypatch):
+    """app.main's lifespan launches services/market_ingestion_scheduler.
+    run_forever as a background task whenever settings.
+    enable_market_ingestion_scheduler is true (the .env default) — same
+    pattern as _disable_chain_indexer_by_default above, and the same real
+    risk: a live poll loop making real Twitter/Gemini calls (and real
+    testnet GEN deploys via auto_publish) has no business running just
+    because a test instantiated the app."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "enable_market_ingestion_scheduler", False)
 
 
 @pytest.fixture(autouse=True)

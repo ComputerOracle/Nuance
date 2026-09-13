@@ -653,3 +653,34 @@ class Webhook(Base):
     user: Mapped["User"] = relationship()
 
 
+class AppState(Base):
+    """A tiny, generic key/value durable-state store for background jobs
+    that need to remember something across process restarts, but don't
+    warrant their own dedicated table/column the way a per-row field
+    (Escrow.deploy_attempted_at, Prediction.deploy_attempted_at) does for
+    per-row retry state.
+
+    First use: services/market_ingestion_scheduler.py's own weekly
+    ingestion sweep needs ONE global "when did this last actually run"
+    timestamp — not per-row, since there's no natural row to hang it off
+    (a run can create zero new Prediction rows, e.g. a quiet week with no
+    new qualifying tweets, and still needs to count as "ran"). A plain
+    module-level variable wouldn't survive this process restarting
+    (`uvicorn --reload`, a real deploy, a crash) — this table is what
+    makes "check every hour, actually run about once a week" durable
+    across all of that, same reasoning Prediction.deploy_attempted_at's
+    own docstring gives for why an in-memory-only timer isn't enough.
+
+    `value` is always a plain string — callers that need something
+    structured (a timestamp, here) serialize/parse it themselves
+    (`datetime.isoformat()`/`datetime.fromisoformat()`) rather than this
+    table trying to be a generic JSON store for every possible future use.
+    """
+
+    __tablename__ = "app_state"
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    value: Mapped[str]
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
