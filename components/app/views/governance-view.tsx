@@ -55,7 +55,14 @@ export function GovernanceView({
           // which mirrors backend/app/routers/governance.py::cast_vote's
           // server-side rejection of the off-chain endpoint for either
           // state.
-          const isOnChain = Boolean(pr.onChainProposalId);
+          // FIXED 2026-09-13 — a real bug found live: on_chain_proposal_id
+          // is a real on-chain index starting at 0, and Boolean(0) is
+          // false — the very first linked proposal (id 0) rendered as if
+          // it were still off-chain (plain Vote For/Against buttons, no
+          // GEN amount input), and clicking them then hit nuance-app.tsx's
+          // off-chain guard, which correctly 503'd against a UI state
+          // that should never have been shown. != null leaves 0 alone.
+          const isOnChain = pr.onChainProposalId != null;
           const isDeploying = Boolean(pr.isDeployingOnChain) && !isOnChain;
           const voted = pr.userVote;
           const isPending = pendingVoteId === pr.id;

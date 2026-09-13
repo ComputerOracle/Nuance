@@ -1795,7 +1795,16 @@ export function NuanceApp() {
       return;
     }
 
-    const isOnChain = Boolean(proposalData.on_chain_proposal_id);
+    // FIXED 2026-09-13 — a real bug found live: on_chain_proposal_id is a
+    // real, valid on-chain index starting at 0, and Boolean(0) is false —
+    // the very first proposal ever linked (id 0) was silently treated as
+    // "not on-chain" everywhere this used Boolean(...)/a bare truthiness
+    // check instead of an explicit null check, sending real votes into
+    // the off-chain endpoint (which then correctly, but confusingly,
+    // 503'd — the guard fix from earlier today was working exactly as
+    // designed against a wrong input). != null catches both null and
+    // undefined while leaving 0 alone.
+    const isOnChain = proposalData.on_chain_proposal_id != null;
     const isQueued = Boolean(proposalData.is_queued_for_on_chain);
 
     if (isOnChain || isQueued) {
@@ -1897,7 +1906,10 @@ export function NuanceApp() {
       return;
     }
     const contractAddress = proposalData.governance_contract_address;
-    if (!proposalData.on_chain_proposal_id || !contractAddress) {
+    // Same 0-is-a-real-id fix as vote()'s own isOnChain above — a bare
+    // `!proposalData.on_chain_proposal_id` would incorrectly refuse to
+    // retract a vote on the very first on-chain proposal (id 0).
+    if (proposalData.on_chain_proposal_id == null || !contractAddress) {
       setVoteError("This proposal isn't linked to the on-chain governance registry.");
       setPendingRetractId(null);
       return;
