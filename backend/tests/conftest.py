@@ -48,6 +48,14 @@ os.environ.setdefault("AUTO_DEPLOY_PREDICTION_CONTRACTS", "false")
 # auto-deploy hook, real testnet GEN spent) firing just because a test
 # happened to instantiate the app.
 os.environ.setdefault("ENABLE_MARKET_INGESTION_SCHEDULER", "false")
+# routers/governance.py::create_proposal queues services/genlayer_indexer.
+# create_proposal_on_chain as a background task whenever settings.
+# auto_create_proposals_on_chain is true (the .env default) — same race
+# as every flag above, and caught live: test_governance.py's own
+# test_create_proposal_success fired a real, unmocked Bradbury subprocess
+# call the moment this flag existed with no test-suite override, before
+# this exact fixture was added.
+os.environ.setdefault("AUTO_CREATE_PROPOSALS_ON_CHAIN", "false")
 
 
 @pytest.fixture(autouse=True)
@@ -124,6 +132,23 @@ def _disable_market_ingestion_scheduler_by_default(monkeypatch):
     from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "enable_market_ingestion_scheduler", False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_proposal_auto_create_by_default(monkeypatch):
+    """routers/governance.py::create_proposal queues services/
+    genlayer_indexer.create_proposal_on_chain as a background task
+    whenever settings.auto_create_proposals_on_chain is true (the .env
+    default) — FastAPI's TestClient runs background tasks before a
+    request call returns, so any test hitting POST /proposals would
+    otherwise fire a real create_proposal transaction, spending real
+    testnet GEN from the deployer key. Forced off here regardless of
+    what's in .env — same pattern as _disable_auto_deploy_by_default
+    above. Caught live: test_governance.py's own test_create_proposal_
+    success fired exactly this, unmocked, before this fixture existed."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "auto_create_proposals_on_chain", False)
 
 
 @pytest.fixture(autouse=True)

@@ -117,6 +117,21 @@ class Settings(BaseSettings):
     # contract_address — since a real deploy-per-agreement flow doesn't
     # exist yet), this one genuinely is global config.
     dispute_court_contract_address: str | None = None
+    # Same shared-registry shape as dispute_court_contract_address above —
+    # one global NuanceGovernance instance backs every on-chain proposal,
+    # distinguished by Proposal.on_chain_proposal_id, not one deployed
+    # contract per proposal. See contracts/nuance_governance.py's own
+    # 2026-09-13 header for the real-GEN-staked voting this backs.
+    governance_contract_address: str | None = None
+    # Whether routers/governance.py::create_proposal fires a background
+    # NuanceGovernance.create_proposal call right after the off-chain row
+    # commits — same settings.auto_deploy_*_contracts pattern already used
+    # for escrows/predictions, same reason for existing: real testnet gas
+    # per call, and what makes this endpoint safe to test without an
+    # unmocked real Bradbury call firing on every test hitting POST
+    # /proposals. True by default; conftest.py forces this False for the
+    # whole suite.
+    auto_create_proposals_on_chain: bool = True
     # The bootstrap NuanceEscrow/NuancePredictionMarket instances
     # scripts/deploy.ts creates (placeholder data, not a real agreement —
     # see that script's header) — not read by the indexer's normal poll
@@ -151,6 +166,12 @@ class Settings(BaseSettings):
     # by (claimant, escrow_address, claim_statement). This bounds how far
     # back that scan looks.
     dispute_id_scan_window: int = 50
+    # Same idea, same bound, for services/genlayer_indexer.py's
+    # resolve_pending_proposal_ids — NuanceGovernance.create_proposal has
+    # the identical "returns the real id, but genlayer-js can't surface a
+    # plain call's return value from its receipt" gap file_dispute already
+    # has (see dispute_id_scan_window's own comment just above).
+    governance_proposal_id_scan_window: int = 50
     # Whether routers/escrows.py::create_escrow queues services/
     # genlayer_deploy.py's deploy_escrow_contract as a background task for
     # every new escrow — the actual Part 2 finish line: a real per-escrow

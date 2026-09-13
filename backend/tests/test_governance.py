@@ -13,6 +13,7 @@ percentage itself.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 from eth_account import Account
@@ -122,7 +123,12 @@ def test_create_proposal_success(client, wallet):
     body = resp.json()
     assert body["status"] == "active"
     assert body["proposer_address"] == wallet.address.lower()
-    assert body["total_for"] == body["total_against"] == body["total_abstain"] == 0
+    # FIXED 2026-09-13 — total_for/against/abstain widened int -> Decimal
+    # (see models/governance.py's own Proposal docstring); Pydantic's
+    # default JSON encoding of Decimal is a string ("0E-18" for a bare
+    # 0), not a bare 0 — Decimal(...) normalizes both sides for the
+    # comparison regardless of exact string formatting.
+    assert Decimal(body["total_for"]) == Decimal(body["total_against"]) == Decimal(body["total_abstain"]) == 0
     assert body["quorum_met"] is False
     assert body["user_vote"] is None
 
@@ -138,15 +144,15 @@ async def test_vote_then_revote_flips_not_stacks(client, wallet):
     resp = client.post(f"/proposals/{proposal_id}/vote", json={"choice": "for"}, headers=headers)
     assert resp.status_code == 200
     body = resp.json()
-    assert body["total_for"] == 1
+    assert Decimal(body["total_for"]) == 1
     assert body["user_vote"] == "for"
 
     # Flip to AGAINST (also exercises case-insensitive input).
     resp = client.post(f"/proposals/{proposal_id}/vote", json={"choice": "AGAINST"}, headers=headers)
     assert resp.status_code == 200
     body = resp.json()
-    assert body["total_for"] == 0, "flipping away from FOR must remove the old tally"
-    assert body["total_against"] == 1
+    assert Decimal(body["total_for"]) == 0, "flipping away from FOR must remove the old tally"
+    assert Decimal(body["total_against"]) == 1
     assert body["user_vote"] == "against"
 
     # Exactly one Vote row for this wallet on this proposal, not two.

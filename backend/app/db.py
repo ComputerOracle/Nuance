@@ -85,7 +85,22 @@ _SQLITE_COLUMN_PATCHES: dict[str, list[tuple[str, str]]] = {
         ("contract_balance", "NUMERIC(38, 18)"),
         ("contract_balance_at_resolution", "NUMERIC(38, 18)"),
     ],
-    "proposals": [("executed_by", "TEXT"), ("executed_at", "TIMESTAMP")],
+    "proposals": [
+        ("executed_by", "TEXT"),
+        ("executed_at", "TIMESTAMP"),
+        ("on_chain_proposal_id", "INTEGER"),
+        ("chain_status", "TEXT DEFAULT 'LEGACY_OFFCHAIN'"),
+        ("on_chain_raw_status", "TEXT"),
+        ("on_chain_tx_hash", "TEXT"),
+        ("deploy_attempted_at", "TIMESTAMP"),
+        ("finalize_trigger_tx_hash", "TEXT"),
+    ],
+    "votes": [
+        ("stake_amount", "NUMERIC(38, 18)"),
+        ("on_chain_tx_hash", "TEXT"),
+        ("retracted_at", "TIMESTAMP"),
+        ("retract_tx_hash", "TEXT"),
+    ],
     "escrows": [
         ("contract_address", "TEXT"),
         ("funded_tx_hash", "TEXT"),

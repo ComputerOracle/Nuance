@@ -208,6 +208,29 @@ export interface ClaimWinningsOnChainArgs {
   contractAddress: `0x${string}`;
 }
 
+export interface CastVoteOnChainArgs {
+  walletAddress: string;
+  provider: Eip1193Provider;
+  // The one shared NuanceGovernance registry address (backend/app/
+  // schemas/governance.py's ProposalRead.governance_contract_address) —
+  // not per-proposal the way an escrow/prediction's contractAddress is.
+  contractAddress: `0x${string}`;
+  onChainProposalId: number;
+  choice: "for" | "against" | "abstain";
+  // GEN, arbitrary precision (e.g. "2.5") — unlike a prediction bet (a
+  // fixed quick-pick list), real governance voting has no quantized
+  // amount. Converted to wei via parseGenToWei, same as
+  // FundEscrowOnChainArgs.amountGen.
+  amountGen: number | string;
+}
+
+export interface RetractVoteOnChainArgs {
+  walletAddress: string;
+  provider: Eip1193Provider;
+  contractAddress: `0x${string}`;
+  onChainProposalId: number;
+}
+
 export interface FundEscrowOnChainArgs {
   walletAddress: string;
   provider: Eip1193Provider;
@@ -286,6 +309,50 @@ export async function claimWinningsOnChain(args: ClaimWinningsOnChainArgs): Prom
     address: args.contractAddress,
     functionName: "claim_winnings",
     args: [] as never,
+    value: ZERO_VALUE,
+  });
+
+  return String(txHash);
+}
+
+/** Signs and sends a real, *payable* NuanceGovernance.cast_vote
+ * transaction — asked directly: "any user that vote and unvote you will
+ * have to use Gen token ... like a real Governance." The GEN sent here
+ * IS the ballot's weight (contracts/nuance_governance.py's own
+ * 2026-09-13 header), staked to the contract for as long as the vote
+ * stands — same "value sent is the record" pattern betOnChain/
+ * fundEscrowOnChain already use, not a new convention. The contract
+ * itself rejects a second active vote from the same wallet on the same
+ * proposal (call retractVoteOnChain first) — this function doesn't
+ * duplicate that check client-side; a rejected call surfaces as a normal
+ * thrown error, same as any other reverted write here. */
+export async function castVoteOnChain(args: CastVoteOnChainArgs): Promise<string> {
+  const client = createWriteClient(args.walletAddress, args.provider);
+
+  const txHash = await client.writeContract({
+    address: args.contractAddress,
+    functionName: "cast_vote",
+    args: [args.onChainProposalId, args.choice] as never,
+    value: parseGenToWei(args.amountGen),
+  });
+
+  return String(txHash);
+}
+
+/** Signs and sends a real NuanceGovernance.retract_vote transaction — the
+ * new unvote this whole update exists to add. Refunds the caller's exact
+ * staked GEN as part of this same on-chain call (see that contract
+ * method's own docstring); nothing further is needed client-side to
+ * receive it, same as cancelEscrowOnChain's refund. Not payable — this
+ * call sends no value of its own, it only triggers the contract to send
+ * value back. */
+export async function retractVoteOnChain(args: RetractVoteOnChainArgs): Promise<string> {
+  const client = createWriteClient(args.walletAddress, args.provider);
+
+  const txHash = await client.writeContract({
+    address: args.contractAddress,
+    functionName: "retract_vote",
+    args: [args.onChainProposalId] as never,
     value: ZERO_VALUE,
   });
 

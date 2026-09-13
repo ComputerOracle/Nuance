@@ -6,18 +6,34 @@ const VOTE_LABEL: Record<"for" | "against" | "abstain", string> = {
   abstain: "Abstain",
 };
 
+// Quick-pick GEN amounts for an on-chain vote — informational presets
+// only (unlike prediction bets' fixed BET_AMOUNTS_MILLI_GEN, the backend
+// accepts any positive amount), so a free-text input still exists
+// alongside these for anything else.
+const VOTE_AMOUNT_PRESETS = ["0.5", "1", "2", "5"];
+
 export function GovernanceView({
   proposals,
   walletConnected,
   pendingVoteId,
   onVote,
+  voteAmounts,
+  onVoteAmountChange,
+  pendingRetractId,
+  onRetractVote,
   pendingExecuteId,
   onExecute,
 }: {
   proposals: Proposal[];
   walletConnected: boolean;
   pendingVoteId: number | null;
-  onVote: (id: number, choice: "For" | "Against") => void;
+  onVote: (id: number, choice: "For" | "Against" | "Abstain") => void;
+  // Per-proposal GEN amount input — see nuance-app.tsx's own comment on
+  // why this is a Record, not a single shared value.
+  voteAmounts: Record<number, string>;
+  onVoteAmountChange: (id: number, value: string) => void;
+  pendingRetractId: number | null;
+  onRetractVote: (id: number) => void;
   pendingExecuteId: number | null;
   onExecute: (id: number) => void;
 }) {
@@ -30,9 +46,36 @@ export function GovernanceView({
 
       <div className="flex flex-col gap-3">
         {proposals.map((pr) => {
+          // FIXED 2026-09-13 — real, GEN-staked on-chain voting (asked
+          // directly: "any user that vote and unvote you will have to
+          // use Gen token ... like a real Governance"). A proposal
+          // linked to (or queued to link to) the shared NuanceGovernance
+          // registry routes through a different flow than the legacy
+          // off-chain one below — see nuance-app.tsx::vote's own guard,
+          // which mirrors backend/app/routers/governance.py::cast_vote's
+          // server-side rejection of the off-chain endpoint for either
+          // state.
+          const isOnChain = Boolean(pr.onChainProposalId);
+          const isDeploying = Boolean(pr.isDeployingOnChain) && !isOnChain;
           const voted = pr.userVote;
           const isPending = pendingVoteId === pr.id;
-          const canVote = pr.status === "Active" && !voted && walletConnected && !isPending;
+          const isRetracting = pendingRetractId === pr.id;
+          const amount = voteAmounts[pr.id] ?? "";
+          const canVoteOffChain =
+            !isOnChain &&
+            !isDeploying &&
+            pr.status === "Active" &&
+            !voted &&
+            walletConnected &&
+            !isPending;
+          const canVoteOnChain =
+            isOnChain &&
+            pr.status === "Active" &&
+            !voted &&
+            walletConnected &&
+            !isPending &&
+            !isRetracting;
+          const canRetract = isOnChain && voted && walletConnected && !isRetracting && !isPending;
           const isExecuting = pendingExecuteId === pr.id;
           const canExecute = pr.rawStatus === "passed" && walletConnected && !isExecuting;
           return (
@@ -43,7 +86,14 @@ export function GovernanceView({
               <div className="flex items-start justify-between gap-3">
                 <div className="max-w-[520px]">
                   <div className="text-[15px] font-semibold">{pr.title}</div>
-                  <div className="mt-0.5 text-[11px] text-fg-meta">{pr.category}</div>
+                  <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-fg-meta">
+                    <span>{pr.category}</span>
+                    {(isOnChain || isDeploying) && (
+                      <span className="rounded-md border border-review/30 bg-review/10 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-review-text">
+                        {isOnChain ? "On-Chain" : "Deploying"}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div
                   className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
@@ -63,8 +113,8 @@ export function GovernanceView({
                 <div className="bg-negative" style={{ width: `${pr.againstPct}%` }} />
               </div>
               <div className="mt-1.5 flex justify-between text-xs text-fg-meta">
-                <span>For {pr.forPct}%</span>
-                <span>Against {pr.againstPct}%</span>
+                <span>For {pr.forPct}%{isOnChain ? ` (${pr.totalFor} GEN)` : ""}</span>
+                <span>Against {pr.againstPct}%{isOnChain ? ` (${pr.totalAgainst} GEN)` : ""}</span>
               </div>
 
               <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-fg-meta">
@@ -80,7 +130,68 @@ export function GovernanceView({
                 <span>Needs {pr.passThreshold}% of decided votes to pass</span>
               </div>
 
-              {canVote && (
+              {isDeploying && (
+                <div className="mt-3.5 rounded-lg border border-review/30 bg-review/10 p-2.5 text-xs text-review-text">
+                  ⏳ Deploying on-chain — voting opens automatically once the real
+                  governance contract is live (usually within a few minutes).
+                </div>
+              )}
+
+              {canVoteOnChain && (
+                <div className="mt-3.5">
+                  <div className="mb-2 text-[11px] uppercase tracking-wide text-fg-meta">
+                    Stake GEN to vote
+                  </div>
+                  <div className="mb-2 flex flex-wrap gap-2">
+                    {VOTE_AMOUNT_PRESETS.map((preset) => (
+                      <button
+                        key={preset}
+                        onClick={() => onVoteAmountChange(pr.id, preset)}
+                        className={`cursor-pointer rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                          amount === preset
+                            ? "border-positive/60 bg-positive/15 text-positive-text"
+                            : "border-border-4 bg-surface-3 text-fg-bright hover:bg-chip-hover"
+                        }`}
+                      >
+                        {preset} GEN
+                      </button>
+                    ))}
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.001"
+                      value={amount}
+                      onChange={(e) => onVoteAmountChange(pr.id, e.target.value)}
+                      placeholder="Custom GEN"
+                      className="w-28 rounded-lg border border-border-4 bg-surface-3 px-2.5 py-1.5 text-xs text-fg-bright placeholder:text-fg-faint-2 focus:outline-none focus:border-border-6"
+                    />
+                  </div>
+                  <div className="flex gap-2.5">
+                    <button
+                      onClick={() => onVote(pr.id, "For")}
+                      className="flex-1 cursor-pointer rounded-lg border border-positive/40 bg-positive/12 py-2.5 text-[13px] font-semibold text-positive-text disabled:cursor-default disabled:opacity-50"
+                      disabled={!amount || Number(amount) <= 0}
+                    >
+                      Vote For
+                    </button>
+                    <button
+                      onClick={() => onVote(pr.id, "Against")}
+                      className="flex-1 cursor-pointer rounded-lg border border-negative/40 bg-negative/12 py-2.5 text-[13px] font-semibold text-negative-text disabled:cursor-default disabled:opacity-50"
+                      disabled={!amount || Number(amount) <= 0}
+                    >
+                      Vote Against
+                    </button>
+                    <button
+                      onClick={() => onVote(pr.id, "Abstain")}
+                      className="flex-1 cursor-pointer rounded-lg border border-border-6 bg-surface-2 py-2.5 text-[13px] font-semibold text-fg disabled:cursor-default disabled:opacity-50"
+                      disabled={!amount || Number(amount) <= 0}
+                    >
+                      Abstain
+                    </button>
+                  </div>
+                </div>
+              )}
+              {canVoteOffChain && (
                 <div className="mt-3.5 flex gap-2.5">
                   <button
                     onClick={() => onVote(pr.id, "For")}
@@ -97,12 +208,30 @@ export function GovernanceView({
                 </div>
               )}
               {isPending && (
-                <div className="mt-3 text-xs text-fg-meta">Submitting vote…</div>
+                <div className="mt-3 text-xs text-fg-meta">
+                  {isOnChain ? "Signing and sending your vote…" : "Submitting vote…"}
+                </div>
               )}
               {voted && !isPending && (
-                <div className="mt-3 text-xs text-fg-meta">✓ You voted {VOTE_LABEL[voted]}</div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-positive/30 bg-positive/10 px-3 py-2 text-xs text-positive-text">
+                  <span>
+                    ✓ You voted {VOTE_LABEL[voted]}
+                    {isOnChain && pr.userVoteStakeGen != null
+                      ? ` — ${pr.userVoteStakeGen} GEN staked`
+                      : ""}
+                  </span>
+                  {canRetract && (
+                    <button
+                      onClick={() => onRetractVote(pr.id)}
+                      className="cursor-pointer rounded-md border border-border-6 bg-surface-2 px-2.5 py-1 font-semibold text-fg hover:bg-chip-hover"
+                    >
+                      Retract Vote
+                    </button>
+                  )}
+                  {isRetracting && <span>Retracting…</span>}
+                </div>
               )}
-              {pr.status === "Active" && !voted && !walletConnected && !isPending && (
+              {pr.status === "Active" && !voted && !walletConnected && !isPending && !isDeploying && (
                 <div className="mt-3 text-xs text-fg-meta">Connect a wallet to vote.</div>
               )}
 

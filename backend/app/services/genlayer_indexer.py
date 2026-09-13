@@ -70,7 +70,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -79,8 +79,8 @@ from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.db import AsyncSessionLocal, init_db
-from app.enums import ChainStatus, ConsensusSubjectType, StatusKey
-from app.models import DeliverableSubmission, Dispute, Escrow, Milestone, Prediction
+from app.enums import ChainStatus, ConsensusSubjectType, ProposalStatus, StatusKey
+from app.models import AppState, DeliverableSubmission, Dispute, Escrow, Milestone, Prediction, Proposal
 from app.services import genlayer_deploy, genlayer_rpc, genlayer_write
 
 # Reused rather than re-derived: the exact cascade a verdict applies
@@ -104,6 +104,15 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 _TERMINAL_CHAIN_STATUSES = {ChainStatus.FINALIZED, ChainStatus.CANCELED}
+# Same value and reasoning as genlayer_deploy.py's own _DEPLOY_RETRY_
+# COOLDOWN (a separate constant, not a cross-module reach into that
+# private name — retry_uncreated_proposals below lives in this file, not
+# genlayer_deploy.py, unlike its escrow/prediction counterparts): long
+# enough that a real create_proposal call (subprocess + Bradbury
+# consensus round) is comfortably done one way or the other before a
+# retry could double-submit while the first attempt might still be
+# in flight.
+_PROPOSAL_CREATE_RETRY_COOLDOWN = timedelta(minutes=10)
 # GenVM's raw TransactionStatus values that lib/chain-status.ts's
 # "decided" bucket folds an active appeal window into (see that file's
 # own comment: "includes ACCEPTED and both APPEAL_* states"). Checked
@@ -122,7 +131,7 @@ def is_under_appeal(raw_status: str | None) -> bool:
 
 async def _load_linked_rows(
     db: AsyncSession,
-) -> tuple[list[Escrow], list[Dispute], list[Prediction]]:
+) -> tuple[list[Escrow], list[Dispute], list[Prediction], list[Proposal]]:
     escrows = (
         (
             await db.execute(
@@ -150,7 +159,12 @@ async def _load_linked_rows(
         .scalars()
         .all()
     )
-    return list(escrows), list(disputes), list(predictions)
+    proposals = (
+        (await db.execute(select(Proposal).where(Proposal.on_chain_proposal_id.is_not(None))))
+        .scalars()
+        .all()
+    )
+    return list(escrows), list(disputes), list(predictions), list(proposals)
 
 
 async def _load_unresolved_disputes(db: AsyncSession) -> list[Dispute]:
@@ -165,6 +179,19 @@ async def _load_unresolved_disputes(db: AsyncSession) -> list[Dispute]:
     result = await db.execute(
         select(Dispute).where(
             Dispute.on_chain_tx_hash.is_not(None), Dispute.on_chain_dispute_id.is_(None)
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def _load_uncreated_proposal_ids(db: AsyncSession) -> list[Proposal]:
+    """The proposals equivalent of _load_unresolved_disputes above:
+    proposals whose create_proposal_on_chain call already sent a real tx,
+    but whose on_chain_proposal_id resolve_pending_proposal_ids hasn't
+    matched yet."""
+    result = await db.execute(
+        select(Proposal).where(
+            Proposal.on_chain_tx_hash.is_not(None), Proposal.on_chain_proposal_id.is_(None)
         )
     )
     return list(result.scalars().all())
@@ -294,8 +321,114 @@ async def resolve_pending_dispute_ids(db: AsyncSession, unresolved: list[Dispute
                 break
 
 
+async def resolve_pending_proposal_ids(db: AsyncSession, unresolved: list[Proposal]) -> None:
+    """The proposals equivalent of resolve_pending_dispute_ids above — same
+    gap (NuanceGovernance.create_proposal returns the real id, but
+    genlayer-js can't surface a plain call's return value from its
+    receipt), same fix: once a tracked creation tx has actually reached
+    the chain, scan the last governance_proposal_id_scan_window on-chain
+    proposals and match each unresolved local row by (proposer, title,
+    category) — the fields create_proposal_on_chain actually passed, so a
+    real match is a real match, not a guess."""
+    if not unresolved:
+        return
+    if not settings.governance_contract_address:
+        logger.warning(
+            "%d proposal(s) awaiting on-chain id resolution but "
+            "GOVERNANCE_CONTRACT_ADDRESS isn't configured — skipping.",
+            len(unresolved),
+        )
+        return
+
+    tx_hashes = [p.on_chain_tx_hash for p in unresolved if p.on_chain_tx_hash]
+    _, tx_results = await genlayer_rpc.read_and_check([], tx_hashes)
+
+    matchable: list[Proposal] = []
+    for proposal in unresolved:
+        tx_result = tx_results.get(proposal.on_chain_tx_hash or "")
+        if tx_result is None:
+            continue  # RPC/subprocess-level failure this cycle — try again next cycle
+        _apply_transaction_status(proposal, tx_result)
+        if proposal.chain_status in (ChainStatus.DECIDED, ChainStatus.FINALIZED):
+            matchable.append(proposal)
+        elif proposal.chain_status == ChainStatus.CANCELED:
+            logger.error(
+                "create_proposal tx canceled for local proposal id=%s (tx=%s) — this "
+                "proposal will never get an on_chain_proposal_id.",
+                proposal.id,
+                proposal.on_chain_tx_hash,
+            )
+
+    if not matchable:
+        return
+
+    count_reads, _ = await genlayer_rpc.read_and_check(
+        [
+            {
+                "id": "count",
+                "address": settings.governance_contract_address,
+                "functionName": "get_proposal_count",
+                "args": [],
+            }
+        ],
+        [],
+    )
+    count_item = count_reads.get("count")
+    if count_item is None or not count_item.get("ok"):
+        logger.warning(
+            "get_proposal_count failed while resolving %d pending proposal id(s): %s",
+            len(matchable),
+            count_item.get("error") if count_item else "no response",
+        )
+        return
+    proposal_count = count_item.get("result")
+    if not isinstance(proposal_count, int) or proposal_count <= 0:
+        return
+
+    window_start = max(0, proposal_count - settings.governance_proposal_id_scan_window)
+    scan_ids = range(proposal_count - 1, window_start - 1, -1)
+    scan_reads: list[genlayer_rpc.ReadRequest] = [
+        {
+            "id": f"scan:{i}",
+            "address": settings.governance_contract_address,
+            "functionName": "get_proposal",
+            "args": [i],
+        }
+        for i in scan_ids
+    ]
+    scan_results, _ = await genlayer_rpc.read_and_check(scan_reads, [])
+
+    # Each real on-chain proposal id can satisfy at most one local row —
+    # same collision guard resolve_pending_dispute_ids' own claimed_ids
+    # gives disputes.
+    claimed_ids: set[int] = set()
+    for proposal in matchable:
+        proposer = proposal.proposer_address.lower()
+        for i in scan_ids:
+            if i in claimed_ids:
+                continue
+            item = scan_results.get(f"scan:{i}")
+            if item is None or not item.get("ok"):
+                continue
+            onchain = item["result"]
+            if (
+                str(onchain.get("proposer", "")).lower() == proposer
+                and str(onchain.get("title", "")) == proposal.title
+                and str(onchain.get("category", "")) == proposal.category
+            ):
+                proposal.on_chain_proposal_id = i
+                claimed_ids.add(i)
+                logger.info(
+                    "Resolved local proposal id=%s -> on_chain_proposal_id=%s", proposal.id, i
+                )
+                break
+
+
 def _build_read_batch(
-    escrows: list[Escrow], disputes: list[Dispute], predictions: list[Prediction]
+    escrows: list[Escrow],
+    disputes: list[Dispute],
+    predictions: list[Prediction],
+    proposals: list[Proposal],
 ) -> list[genlayer_rpc.ReadRequest]:
     reads: list[genlayer_rpc.ReadRequest] = []
     for escrow in escrows:
@@ -386,11 +519,42 @@ def _build_read_batch(
                 "args": [],
             }
         )
+
+    for proposal in proposals:
+        reads.append(
+            {
+                "id": f"proposal:{proposal.id}",
+                "address": settings.governance_contract_address,
+                "functionName": "get_proposal",
+                "args": [proposal.on_chain_proposal_id],
+            }
+        )
+    # ONE shared balance read for the whole registry, not per-proposal —
+    # unlike Escrow/Prediction (one deployed instance each), every
+    # on-chain proposal lives at this same single address. See
+    # AppState's own docstring: retract_vote's refund uses the identical
+    # emit_transfer() mechanism already confirmed (genlayerlabs/
+    # genvm-manager#20) to sometimes never actually deliver, so this is
+    # the same ground-truth check, just keyed globally instead of per-row
+    # since there's no single Proposal row to hang a per-instance balance
+    # column off of.
+    if proposals and settings.governance_contract_address:
+        reads.append(
+            {
+                "id": "balance:governance",
+                "address": settings.governance_contract_address,
+                "functionName": "__native_balance__",
+                "args": [],
+            }
+        )
     return reads
 
 
 def _collect_pending_tx_hashes(
-    escrows: list[Escrow], disputes: list[Dispute], predictions: list[Prediction]
+    escrows: list[Escrow],
+    disputes: list[Dispute],
+    predictions: list[Prediction],
+    proposals: list[Proposal],
 ) -> dict[str, tuple[str, int]]:
     """tx_hash -> (kind, row_id), for every row whose most recently tracked
     write hasn't reached a terminal chain_status yet."""
@@ -405,6 +569,9 @@ def _collect_pending_tx_hashes(
     for p in predictions:
         if p.on_chain_tx_hash and p.chain_status not in _TERMINAL_CHAIN_STATUSES:
             hashes[p.on_chain_tx_hash] = ("prediction", p.id)
+    for proposal in proposals:
+        if proposal.on_chain_tx_hash and proposal.chain_status not in _TERMINAL_CHAIN_STATUSES:
+            hashes[proposal.on_chain_tx_hash] = ("proposal", proposal.id)
     return hashes
 
 
@@ -414,7 +581,8 @@ def _find_row(
     escrows: list[Escrow],
     disputes: list[Dispute],
     predictions: list[Prediction],
-) -> Milestone | Dispute | Prediction | None:
+    proposals: list[Proposal],
+) -> Milestone | Dispute | Prediction | Proposal | None:
     if kind == "milestone":
         for e in escrows:
             for m in e.milestones:
@@ -428,6 +596,10 @@ def _find_row(
         for p in predictions:
             if p.id == row_id:
                 return p
+    elif kind == "proposal":
+        for proposal in proposals:
+            if proposal.id == row_id:
+                return proposal
     return None
 
 
@@ -435,7 +607,7 @@ def _find_row(
 
 
 def _apply_transaction_status(
-    row: Milestone | Dispute | Prediction, tx_result: genlayer_rpc.TransactionResult
+    row: Milestone | Dispute | Prediction | Proposal, tx_result: genlayer_rpc.TransactionResult
 ) -> None:
     if not tx_result.get("ok"):
         logger.warning(
@@ -660,6 +832,120 @@ async def trigger_pending_adjudications(disputes: list[Dispute]) -> None:
             )
 
 
+async def create_proposal_on_chain(proposal_id: int) -> None:
+    """Asked directly: "any user that vote and unvote you will have to
+    use Gen token ... like a real Governance." contracts/nuance_
+    governance.py's cast_vote/retract_vote are now real, GEN-staked
+    actions — but a vote needs an on-chain proposal_id to vote ON, so a
+    Proposal has to exist on the shared NuanceGovernance registry before
+    anyone can vote on it there at all.
+
+    create_proposal has no sender restriction on-chain (GenVM's validator
+    network judges nothing about who calls it — see that contract's own
+    source) — same trust argument trigger_pending_adjudications/trigger_
+    pending_market_resolutions above already make for their own backend-
+    triggered calls, so firing this from the backend right after the
+    off-chain row commits is not a meaningfully different trust boundary
+    than the proposer's own wallet doing it. Unlike cast_vote/
+    retract_vote, which move real GEN and MUST be signed by the real
+    voter's own wallet from the browser.
+
+    Fire-and-forget by design, same shape as genlayer_deploy.py's own
+    deploy_* functions: records deploy_attempted_at immediately (before
+    the real, slow call), then the real tx hash once sent — never the
+    resulting on_chain_proposal_id itself, which resolve_pending_
+    proposal_ids fills in later once the tx has actually landed (see that
+    function's own docstring on why genlayer-js can't hand this back
+    synchronously the way scripts/deploy.ts reads a deployed contract's
+    address).
+    """
+    if not settings.governance_contract_address:
+        logger.info(
+            "Skipping on-chain proposal creation for id=%s — "
+            "GOVERNANCE_CONTRACT_ADDRESS isn't configured.",
+            proposal_id,
+        )
+        return
+
+    async with AsyncSessionLocal() as db:
+        proposal = await db.get(Proposal, proposal_id)
+        if proposal is None:
+            logger.warning("create_proposal_on_chain: proposal id=%s no longer exists.", proposal_id)
+            return
+        if proposal.on_chain_tx_hash is not None:
+            return  # already sent — a duplicate/retry queue, not an error
+
+        # Set BEFORE the actual (slow) write call below, and committed
+        # immediately — same reasoning Escrow/Prediction.deploy_
+        # attempted_at's own docstrings give: this is the guard retry_
+        # uncreated_proposals reads to avoid double-submitting a real
+        # create_proposal transaction while this exact attempt could
+        # still be in flight. Not rolled back on failure further down: a
+        # failed attempt still counts as "attempted," subject to the same
+        # cooldown as any other attempt before being retried.
+        proposal.deploy_attempted_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        tx_hash = await genlayer_write.write_contract(
+            settings.governance_contract_address,
+            "create_proposal",
+            [
+                proposal.title,
+                proposal.description,
+                proposal.category,
+                proposal.end_time.isoformat(),
+                proposal.quorum_threshold,
+                proposal.pass_threshold,
+            ],
+        )
+        if tx_hash is None:
+            logger.error(
+                "Failed to send create_proposal for local proposal id=%s — will retry.",
+                proposal_id,
+            )
+            return
+
+        proposal.on_chain_tx_hash = tx_hash
+        proposal.chain_status = ChainStatus.PROCESSING
+        await db.commit()
+        logger.info(
+            "Sent create_proposal on-chain for proposal id=%s tx=%s", proposal_id, tx_hash
+        )
+
+
+async def retry_uncreated_proposals() -> None:
+    """The proposals equivalent of genlayer_deploy.retry_undeployed_
+    escrows/retry_undeployed_predictions — same one-shot-fire-and-forget
+    gap, same fix: a transient failure sending create_proposal used to
+    mean that proposal simply never went on-chain, permanently.
+
+    Deliberately scoped to deploy_attempted_at IS NOT NULL (unlike
+    escrows'/predictions' own retry sweeps, which also catch "never
+    attempted at all" rows predating the feature) — confirmed directly:
+    every proposal created before this update stays off-chain forever, on
+    purpose, so this must never pick up a legacy row that never opted in.
+    Every NEW proposal gets its first attempt queued immediately by
+    routers/governance.py::create_proposal (which always sets deploy_
+    attempted_at right away, same as create_escrow/create_prediction's
+    own initial queue) — so "deploy_attempted_at set, but no on_chain_tx_
+    hash yet" already means "a real attempt was made and failed," never
+    "this legacy row was never supposed to be on-chain."
+    """
+    cutoff = datetime.now(timezone.utc) - _PROPOSAL_CREATE_RETRY_COOLDOWN
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Proposal.id).where(
+                Proposal.on_chain_tx_hash.is_(None),
+                Proposal.deploy_attempted_at.is_not(None),
+                Proposal.deploy_attempted_at < cutoff,
+            )
+        )
+        proposal_ids = [row[0] for row in result.all()]
+
+    for proposal_id in proposal_ids:
+        await create_proposal_on_chain(proposal_id)
+
+
 async def _apply_prediction_view(
     db: AsyncSession, prediction: Prediction, result: genlayer_rpc.ReadResult
 ) -> None:
@@ -779,6 +1065,114 @@ async def trigger_pending_market_resolutions(predictions: list[Prediction]) -> N
             )
 
 
+async def _apply_proposal_view(proposal: Proposal, result: genlayer_rpc.ReadResult) -> None:
+    """Syncs a linked Proposal's business state from the real
+    NuanceGovernance.get_proposal() read — status and the three wei-sum
+    tallies (see Proposal.total_for's own 2026-09-13 docstring on why
+    these are Decimal now, not the old flat integer weights). Never moves
+    status backwards (passed/rejected -> active) — finalize_proposal on
+    the contract side is itself one-way, same as routers/governance.py's
+    own off-chain _finalize_if_due."""
+    if not result.get("ok"):
+        logger.warning("get_proposal failed for proposal id=%s: %s", proposal.id, result.get("error"))
+        return
+    p = result["result"]
+    onchain_status = p.get("status")
+    if onchain_status == "passed":
+        proposal.status = ProposalStatus.PASSED
+    elif onchain_status == "rejected":
+        proposal.status = ProposalStatus.REJECTED
+    # "active" needs no change either way.
+
+    proposal.total_for = _wei_to_gen(int(p.get("total_for", 0)))
+    proposal.total_against = _wei_to_gen(int(p.get("total_against", 0)))
+    proposal.total_abstain = _wei_to_gen(int(p.get("total_abstain", 0)))
+
+
+# AppState key for the shared NuanceGovernance registry's real native GEN
+# balance — see _build_read_batch's own comment on why this is global
+# (one shared contract, `balance:governance`) rather than a per-Proposal
+# column the way Escrow/Prediction.contract_balance are.
+_GOVERNANCE_BALANCE_STATE_KEY = "governance_contract_balance"
+
+
+async def _apply_governance_balance(db: AsyncSession, result: genlayer_rpc.ReadResult) -> None:
+    """The governance equivalent of _apply_escrow_balance/_apply_
+    prediction_balance — same "__native_balance__" ground truth, same
+    reason: retract_vote's refund leaves the contract via the identical
+    emit_transfer() call already confirmed (genlayerlabs/genvm-manager#20)
+    to sometimes never actually deliver despite a clean receipt. Written
+    into AppState rather than a Proposal column since this is one number
+    for the whole shared registry, not one per proposal."""
+    if not result.get("ok"):
+        logger.warning("native balance check failed for governance contract: %s", result.get("error"))
+        return
+    raw_balance = result.get("result")
+    if raw_balance is None:
+        return
+    value = str(_wei_to_gen(int(raw_balance)))
+    state = await db.get(AppState, _GOVERNANCE_BALANCE_STATE_KEY)
+    if state is None:
+        db.add(AppState(key=_GOVERNANCE_BALANCE_STATE_KEY, value=value))
+    else:
+        state.value = value
+
+
+async def trigger_pending_proposal_finalizations(proposals: list[Proposal]) -> None:
+    """Closes the same gap trigger_pending_adjudications/trigger_pending_
+    market_resolutions close for disputes/predictions, for governance
+    proposals: NuanceGovernance.finalize_proposal has no sender
+    restriction at all (see that contract's own source) — the outcome is
+    pure arithmetic over already-cast, already-on-chain votes, not a
+    judgment call any particular sender could bias — so triggering it
+    automatically here isn't a meaningfully different trust boundary than
+    any other address doing so. Without this, an on-chain proposal would
+    sit at the contract's own "active" forever past its end_time, even
+    though _apply_proposal_view's DB sync would otherwise be waiting on
+    exactly this call to ever observe "passed"/"rejected".
+
+    Only considers already-linked proposals (on_chain_proposal_id known)
+    whose off-chain end_time has actually passed (calling finalize_
+    proposal before then would still succeed on-chain — there's no
+    verified on-chain clock gating it either, same gap nuance_prediction_
+    market.py's own header already flags — but firing it needlessly early
+    would lock in a decision before real voters have had their full
+    window) and haven't had a trigger sent yet (finalize_trigger_tx_hash
+    null) — a successfully-sent trigger is never re-sent; a failed *send*
+    leaves it null and is safe to retry next cycle, since nothing was
+    actually submitted. Deliberately NOT gated on our own local `status`
+    column (unlike predictions' status_key.lower() != "resolved" check) —
+    _apply_proposal_view only ever learns "passed"/"rejected" from THIS
+    same finalize_proposal call actually landing, so checking our own
+    status here would be circular; finalize_trigger_tx_hash is the real
+    "already handled" signal.
+    """
+    now = datetime.now(timezone.utc)
+    candidates = []
+    for proposal in proposals:
+        if proposal.finalize_trigger_tx_hash is not None:
+            continue
+        end_time = proposal.end_time
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        if now < end_time:
+            continue
+        candidates.append(proposal)
+
+    for proposal in candidates:
+        tx_hash = await genlayer_write.write_contract(
+            settings.governance_contract_address, "finalize_proposal", [proposal.on_chain_proposal_id]
+        )
+        if tx_hash is not None:
+            proposal.finalize_trigger_tx_hash = tx_hash
+            logger.info(
+                "Triggered finalize_proposal for proposal id=%s (on_chain_proposal_id=%s) tx=%s",
+                proposal.id,
+                proposal.on_chain_proposal_id,
+                tx_hash,
+            )
+
+
 # --- Fast, one-off sync for a single escrow ---------------------------------
 
 # How long a real GenVM write call actually took to land, confirmed live
@@ -829,7 +1223,7 @@ async def quick_sync_escrow(
             if escrow is None or escrow.contract_address is None:
                 return
 
-            reads = _build_read_batch([escrow], [], [])
+            reads = _build_read_batch([escrow], [], [], [])
             read_results, _ = await genlayer_rpc.read_and_check(reads, [])
 
             changed = False
@@ -919,34 +1313,48 @@ async def run_once(db: AsyncSession) -> None:
     if settings.auto_deploy_prediction_contracts:
         await genlayer_deploy.retry_undeployed_predictions()
 
-    # Resolve any dispute ids still pending first — a row this fills in
-    # becomes visible to _load_linked_rows below in the same cycle
-    # (SQLAlchemy autoflushes the pending UPDATE before that SELECT runs),
-    # so a freshly-resolved dispute gets its full get_dispute view-sync
-    # this same pass rather than waiting a cycle.
+    # Same fix, same reasoning, for governance proposals — see
+    # retry_uncreated_proposals's own docstring. Gated off in tests the
+    # same way (conftest.py forces auto_create_proposals_on_chain False
+    # for the whole suite).
+    if settings.auto_create_proposals_on_chain:
+        await retry_uncreated_proposals()
+
+    # Resolve any dispute/proposal ids still pending first — a row either
+    # of these fills in becomes visible to _load_linked_rows below in the
+    # same cycle (SQLAlchemy autoflushes the pending UPDATE before that
+    # SELECT runs), so a freshly-resolved dispute/proposal gets its full
+    # get_dispute/get_proposal view-sync this same pass rather than
+    # waiting a cycle.
     unresolved_disputes = await _load_unresolved_disputes(db)
     if unresolved_disputes:
         await resolve_pending_dispute_ids(db, unresolved_disputes)
+    uncreated_proposals = await _load_uncreated_proposal_ids(db)
+    if uncreated_proposals:
+        await resolve_pending_proposal_ids(db, uncreated_proposals)
 
-    escrows, disputes, predictions = await _load_linked_rows(db)
-    if not escrows and not disputes and not predictions:
-        if unresolved_disputes:
+    escrows, disputes, predictions, proposals = await _load_linked_rows(db)
+    if not escrows and not disputes and not predictions and not proposals:
+        if unresolved_disputes or uncreated_proposals:
             await db.commit()
             logger.info(
                 "genlayer_indexer: no fully-linked rows yet; processed %d pending "
-                "dispute id resolution(s) this cycle.",
+                "dispute id resolution(s) and %d pending proposal id resolution(s) "
+                "this cycle.",
                 len(unresolved_disputes),
+                len(uncreated_proposals),
             )
         else:
             logger.info(
-                "genlayer_indexer: no escrow/dispute/prediction is linked on-chain yet "
-                "(contract_address / on_chain_dispute_id all null) — nothing to sync. "
-                "See --link-demo to smoke-test against a real live contract."
+                "genlayer_indexer: no escrow/dispute/prediction/proposal is linked "
+                "on-chain yet (contract_address / on_chain_dispute_id / "
+                "on_chain_proposal_id all null) — nothing to sync. See --link-demo "
+                "to smoke-test against a real live contract."
             )
         return
 
-    tx_hashes = _collect_pending_tx_hashes(escrows, disputes, predictions)
-    reads = _build_read_batch(escrows, disputes, predictions)
+    tx_hashes = _collect_pending_tx_hashes(escrows, disputes, predictions, proposals)
+    reads = _build_read_batch(escrows, disputes, predictions, proposals)
     read_results, tx_results = await genlayer_rpc.read_and_check(reads, list(tx_hashes.keys()))
 
     # Every escrow this cycle actually touched — published once, after the
@@ -964,7 +1372,7 @@ async def run_once(db: AsyncSession) -> None:
         tx_result = tx_results.get(tx_hash)
         if tx_result is None:
             continue
-        row = _find_row(kind, row_id, escrows, disputes, predictions)
+        row = _find_row(kind, row_id, escrows, disputes, predictions, proposals)
         if row is not None:
             _apply_transaction_status(row, tx_result)
             if isinstance(row, (Milestone, Dispute)):
@@ -1019,6 +1427,24 @@ async def run_once(db: AsyncSession) -> None:
     # market _apply_prediction_view just resolved this cycle is correctly
     # skipped rather than resolved a second, pointless time.
     await trigger_pending_market_resolutions(predictions)
+
+    for proposal in proposals:
+        result = read_results.get(f"proposal:{proposal.id}")
+        if result is not None:
+            await _apply_proposal_view(proposal, result)
+
+    # Same ordering reasoning as trigger_pending_adjudications/trigger_
+    # pending_market_resolutions above — a proposal _apply_proposal_view
+    # just flipped to passed/rejected this cycle needs no trigger (its
+    # finalize_trigger_tx_hash is already set from whichever earlier
+    # cycle actually sent it).
+    await trigger_pending_proposal_finalizations(proposals)
+
+    # One shared balance read for the whole registry (see _build_read_
+    # batch's own comment) — applied once per cycle, not per proposal.
+    governance_balance_result = read_results.get("balance:governance")
+    if governance_balance_result is not None:
+        await _apply_governance_balance(db, governance_balance_result)
 
     await db.commit()
 

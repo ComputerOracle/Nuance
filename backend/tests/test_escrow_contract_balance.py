@@ -145,7 +145,7 @@ def test_build_read_batch_includes_native_balance_per_linked_escrow():
     escrow_id = asyncio.run(_create_escrow())
     escrow = asyncio.run(_get_escrow(escrow_id))  # milestones eager-loaded
 
-    reads = genlayer_indexer._build_read_batch([escrow], [], [])
+    reads = genlayer_indexer._build_read_batch([escrow], [], [], [])
     balance_reads = [r for r in reads if r["id"] == f"balance:{escrow_id}"]
     assert len(balance_reads) == 1
     assert balance_reads[0]["functionName"] == "__native_balance__"

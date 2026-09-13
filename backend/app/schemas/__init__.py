@@ -60,7 +60,9 @@ from app.schemas.governance import (
     ProposalCreate,
     ProposalDetailRead,
     ProposalRead,
+    RetractVoteOnChainAck,
     VoteCreate,
+    VoteOnChainAck,
     VoteRead,
 )
 
@@ -104,6 +106,7 @@ __all__ = [
     "ProposalCreate",
     "ProposalDetailRead",
     "ProposalRead",
+    "RetractVoteOnChainAck",
     "TokenResponse",
     "UserRead",
     "UserSettingsRead",
@@ -113,6 +116,7 @@ __all__ = [
     "ValidatorStatRead",
     "VerifyRequest",
     "VoteCreate",
+    "VoteOnChainAck",
     "VoteRead",
     "WebhookCreate",
     "WebhookCreateResponse",

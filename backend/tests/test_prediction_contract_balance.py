@@ -162,7 +162,7 @@ def test_build_read_batch_includes_native_balance_per_linked_prediction():
     prediction_id = asyncio.run(_create_prediction())
     prediction = asyncio.run(_get_prediction(prediction_id))
 
-    reads = genlayer_indexer._build_read_batch([], [], [prediction])
+    reads = genlayer_indexer._build_read_batch([], [], [prediction], [])
     balance_reads = [r for r in reads if r["id"] == f"balance:prediction:{prediction_id}"]
     assert len(balance_reads) == 1
     assert balance_reads[0]["functionName"] == "__native_balance__"
@@ -197,7 +197,7 @@ def test_prediction_balance_key_never_collides_with_escrow_balance_key():
     )
     escrow.milestones = []
 
-    reads = genlayer_indexer._build_read_batch([escrow], [], [prediction])
+    reads = genlayer_indexer._build_read_batch([escrow], [], [prediction], [])
     ids = [r["id"] for r in reads]
     assert len(ids) == len(set(ids)), f"duplicate read ids: {ids}"
     assert f"balance:{prediction_id}" in ids  # the escrow's own key

@@ -1,17 +1,32 @@
-"""GET/POST /proposals, POST /proposals/{id}/vote, POST /proposals/{id}/finalize.
+"""GET/POST /proposals, POST /proposals/{id}/vote(+/on-chain),
+POST /proposals/{id}/retract-vote/on-chain, POST /proposals/{id}/finalize.
 
-Wallet-scoped governance: 1-wallet-1-vote today. `voter_address` on every
-`Vote` comes from the verified JWT (`get_current_user`) — the same
-nonce -> personal_sign -> JWT flow every other write endpoint in this app
-already trusts, not a new verification path.
+Wallet-scoped governance. `voter_address` on every `Vote` comes from the
+verified JWT (`get_current_user`) — the same nonce -> personal_sign ->
+JWT flow every other write endpoint in this app already trusts, not a new
+verification path.
 
-Voting weight (ROADMAP.md Part 3 5.4's sybil gap): `_voting_power` ties a
-wallet's ballot to its account age rather than every wallet flatly
-counting 1 — see that function's own docstring. Still a placeholder for
-real GEN-stake-weighted voting eventually (ROADMAP.md Part 4), not the
-final answer, but a flat weight-of-1 is free to defeat with N disposable
-wallets; an age-based floor at least costs an attacker real elapsed time
-per wallet, which a stake requirement will later replace outright.
+Two voting models now coexist, split by whether a Proposal is linked to
+the shared on-chain NuanceGovernance registry (`on_chain_proposal_id`
+set) — see models/governance.py's own Proposal docstring for the full
+account of why nothing retroactively converts an existing proposal:
+
+  - LEGACY (every proposal created before 2026-09-13, and any new one
+    created while GOVERNANCE_CONTRACT_ADDRESS/auto_create_proposals_on_
+    chain is off): the original off-chain scheme below, weight from
+    `_voting_power`'s account-age sybil-resistance placeholder (ROADMAP.md
+    Part 3 5.4) — no real GEN behind any of it, and no way to "unvote",
+    only to change your choice (cast_vote again).
+  - ON-CHAIN (asked directly: "any user that vote and unvote you will
+    have to use Gen token ... like a real Governance"): cast_vote/vote
+    (POST .../vote/on-chain) is a real, wallet-signed, payable
+    NuanceGovernance.cast_vote transaction — the GEN sent IS the ballot's
+    weight — and retract_vote (POST .../retract-vote/on-chain) is the new
+    real unvote, refunding that exact stake. The two off-chain write
+    endpoints below (cast_vote, plain vote) refuse outright
+    (ChainUnavailableError, 503) once a proposal is linked or even
+    queued to link (`deploy_attempted_at` set) — see cast_vote's own
+    guard for why that's checked instead of only on_chain_proposal_id.
 
 Re-voting rule: `Vote` is unique on `(proposal_id, voter_address)`, so
 casting a second vote always updates that row rather than inserting a
@@ -39,8 +54,9 @@ dev/test), a real row lock once this runs on Postgres.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,7 +65,17 @@ from app.db import get_db
 from app.dependencies import get_current_user, get_optional_current_user, require_user_with_scope
 from app.enums import ProposalStatus, VoteChoice
 from app.models import Proposal, User, Vote
-from app.schemas import ProposalCreate, ProposalDetailRead, ProposalRead, VoteCreate, VoteRead
+from app.schemas import (
+    ProposalCreate,
+    ProposalDetailRead,
+    ProposalRead,
+    RetractVoteOnChainAck,
+    VoteCreate,
+    VoteOnChainAck,
+    VoteRead,
+)
+from app.services.consensus import ChainUnavailableError
+from app.services.genlayer_indexer import create_proposal_on_chain
 
 router = APIRouter(prefix="/proposals", tags=["governance"])
 
@@ -111,14 +137,26 @@ def _aware(dt: datetime) -> datetime:
 def _progress(proposal: Proposal, eligible_voters: int) -> dict:
     """Quorum is turnout (however anyone voted) against every wallet that
     could have; pass/fail is FOR's share of *decided* ballots — abstains
-    count toward quorum but don't move the pass threshold either way."""
-    turnout_power = proposal.total_for + proposal.total_against + proposal.total_abstain
+    count toward quorum but don't move the pass threshold either way.
+
+    FIXED 2026-09-13 — total_for/against/abstain are now Decimal (see
+    Proposal.total_for's own model docstring), and Python refuses to mix
+    float and Decimal in the same expression (`100.0 * Decimal(...)`
+    raises TypeError). Converted to float once, up front — this function
+    only ever produces a *display* percentage, where float precision loss
+    is irrelevant; the stored Proposal columns themselves stay exact
+    Decimal, untouched by this conversion."""
+    total_for = float(proposal.total_for)
+    total_against = float(proposal.total_against)
+    total_abstain = float(proposal.total_abstain)
+
+    turnout_power = total_for + total_against + total_abstain
     turnout_pct = (100.0 * turnout_power / eligible_voters) if eligible_voters else 0.0
 
-    decided = proposal.total_for + proposal.total_against
-    for_pct = (100.0 * proposal.total_for / decided) if decided else 0.0
-    against_pct = (100.0 * proposal.total_against / decided) if decided else 0.0
-    abstain_pct = (100.0 * proposal.total_abstain / turnout_power) if turnout_power else 0.0
+    decided = total_for + total_against
+    for_pct = (100.0 * total_for / decided) if decided else 0.0
+    against_pct = (100.0 * total_against / decided) if decided else 0.0
+    abstain_pct = (100.0 * total_abstain / turnout_power) if turnout_power else 0.0
 
     return {
         "turnout_pct": round(turnout_pct, 1),
@@ -147,6 +185,16 @@ def _finalize_if_due(proposal: Proposal, eligible_voters: int) -> bool:
     """
     if proposal.status != ProposalStatus.ACTIVE:
         return False
+    # FIXED 2026-09-13 — an on-chain-linked proposal's real outcome is
+    # decided by NuanceGovernance.finalize_proposal itself (triggered by
+    # services/genlayer_indexer.py::trigger_pending_proposal_finalizations,
+    # synced back via _apply_proposal_view), not by this off-chain
+    # arithmetic. Running this too would risk the DB briefly disagreeing
+    # with the chain (or, worse, permanently — this function's own
+    # "status only ever leaves ACTIVE once" guarantee would then block
+    # the real on-chain result from ever landing).
+    if proposal.on_chain_proposal_id is not None:
+        return False
     if datetime.now(timezone.utc) < _aware(proposal.end_time):
         return False
 
@@ -156,7 +204,12 @@ def _finalize_if_due(proposal: Proposal, eligible_voters: int) -> bool:
     return True
 
 
-def _proposal_fields(proposal: Proposal, eligible_voters: int, user_vote: VoteChoice | None) -> dict:
+def _proposal_fields(
+    proposal: Proposal,
+    eligible_voters: int,
+    user_vote: VoteChoice | None,
+    user_vote_stake_amount: Decimal | None = None,
+) -> dict:
     return {
         "id": proposal.id,
         "title": proposal.title,
@@ -175,11 +228,22 @@ def _proposal_fields(proposal: Proposal, eligible_voters: int, user_vote: VoteCh
         "executed_at": proposal.executed_at,
         "created_at": proposal.created_at,
         "user_vote": user_vote,
+        # Only meaningful alongside an on-chain user_vote — None for a
+        # legacy off-chain vote (see Vote.stake_amount's own docstring),
+        # which real GEN never backed in the first place.
+        "user_vote_stake_amount": user_vote_stake_amount,
+        "on_chain_proposal_id": proposal.on_chain_proposal_id,
+        "chain_status": proposal.chain_status,
+        "on_chain_tx_hash": proposal.on_chain_tx_hash,
+        "is_queued_for_on_chain": (
+            proposal.deploy_attempted_at is not None and proposal.on_chain_proposal_id is None
+        ),
+        "governance_contract_address": get_settings().governance_contract_address,
         **_progress(proposal, eligible_voters),
     }
 
 
-def _adjust_tally(proposal: Proposal, choice: VoteChoice, delta: int) -> None:
+def _adjust_tally(proposal: Proposal, choice: VoteChoice, delta: int | Decimal) -> None:
     if choice == VoteChoice.FOR:
         proposal.total_for += delta
     elif choice == VoteChoice.AGAINST:
@@ -212,18 +276,33 @@ async def list_proposals(
     if any(any_finalized):
         await db.commit()
 
-    user_votes: dict[int, VoteChoice] = {}
+    user_votes: dict[int, Vote] = {}
     if current_user is not None and proposals:
         vote_result = await db.execute(
             select(Vote).where(
                 Vote.voter_address == current_user.wallet_address,
                 Vote.proposal_id.in_([p.id for p in proposals]),
+                # FIXED 2026-09-13 — a retracted on-chain vote (see
+                # retract_vote_on_chain) keeps its Vote row (retracted_at
+                # set, not deleted — see model docstring), so this must
+                # exclude it explicitly or a wallet that unvoted would
+                # still see its old, no-longer-active choice reported
+                # back as "your current vote".
+                Vote.retracted_at.is_(None),
             )
         )
-        user_votes = {v.proposal_id: v.choice for v in vote_result.scalars().all()}
+        user_votes = {v.proposal_id: v for v in vote_result.scalars().all()}
 
     return [
-        ProposalRead(**_proposal_fields(p, eligible_voters, user_votes.get(p.id))) for p in proposals
+        ProposalRead(
+            **_proposal_fields(
+                p,
+                eligible_voters,
+                user_votes[p.id].choice if p.id in user_votes else None,
+                user_votes[p.id].stake_amount if p.id in user_votes else None,
+            )
+        )
+        for p in proposals
     ]
 
 
@@ -244,21 +323,36 @@ async def get_proposal(
         select(Vote).where(Vote.proposal_id == proposal_id).order_by(Vote.created_at.asc())
     )
     votes = list(vote_result.scalars().all())
-    user_vote = next(
-        (v.choice for v in votes if current_user and v.voter_address == current_user.wallet_address),
+    # See list_proposals' identical fix note just above — a retracted
+    # vote's row stays but must not be reported as the current one.
+    user_vote_row = next(
+        (
+            v
+            for v in votes
+            if current_user
+            and v.voter_address == current_user.wallet_address
+            and v.retracted_at is None
+        ),
         None,
     )
 
-    fields = _proposal_fields(proposal, eligible_voters, user_vote)
+    fields = _proposal_fields(
+        proposal,
+        eligible_voters,
+        user_vote_row.choice if user_vote_row else None,
+        user_vote_row.stake_amount if user_vote_row else None,
+    )
     return ProposalDetailRead(**fields, votes=[VoteRead.model_validate(v) for v in votes])
 
 
 @router.post("", response_model=ProposalRead, status_code=status.HTTP_201_CREATED)
 async def create_proposal(
     payload: ProposalCreate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ProposalRead:
+    settings = get_settings()
     now = datetime.now(timezone.utc)
     proposal = Proposal(
         title=payload.title,
@@ -271,9 +365,29 @@ async def create_proposal(
         quorum_threshold=payload.quorum_threshold,
         pass_threshold=payload.pass_threshold,
     )
+    # FIXED 2026-09-13 — asked directly to make voting/unvoting real GEN
+    # actions ("like a real Governance"): a proposal needs an on-chain
+    # NuanceGovernance entry to vote on at all, so new proposals now
+    # queue a real create_proposal call. deploy_attempted_at is set HERE,
+    # synchronously, in the SAME transaction as the row's own creation —
+    # not only inside create_proposal_on_chain's own background task —
+    # closing a real race found live in the predictions equivalent of
+    # this exact problem (routers/predictions.py::place_bet's own
+    # 2026-09-13 fix note): without this, a brand-new proposal would be
+    # briefly indistinguishable from a legacy off-chain one (both show
+    # deploy_attempted_at as null) during the gap before the background
+    # task's own first write lands, and cast_vote below would wrongly
+    # accept a real off-chain vote into a ledger this proposal is about
+    # to outgrow. Existing proposals never get this set retroactively —
+    # confirmed directly: only new proposals go on-chain.
+    if settings.auto_create_proposals_on_chain and settings.governance_contract_address:
+        proposal.deploy_attempted_at = now
     db.add(proposal)
     await db.commit()
     await db.refresh(proposal)
+
+    if proposal.deploy_attempted_at is not None:
+        background_tasks.add_task(create_proposal_on_chain, proposal.id)
 
     eligible_voters = await _total_eligible_voters(db)
     return ProposalRead(**_proposal_fields(proposal, eligible_voters, user_vote=None))
@@ -289,6 +403,20 @@ async def cast_vote(
     current_user: User = Depends(require_user_with_scope("vote:cast")),
 ) -> ProposalRead:
     proposal = await _get_proposal_for_update_or_404(proposal_id, db)
+
+    # FIXED 2026-09-13 — a linked (or queued-to-link, see create_proposal's
+    # own note on why this checks deploy_attempted_at rather than only
+    # on_chain_proposal_id) proposal's real vote tally is real, GEN-staked
+    # GEN — an off-chain Vote mirrored in here for it would be notional
+    # bookkeeping with no real stake behind it, and would be orphaned the
+    # moment the real on-chain link lands. Same ChainUnavailableError
+    # shape routers/predictions.py::place_bet already uses for the
+    # identical reason.
+    if proposal.deploy_attempted_at is not None:
+        raise ChainUnavailableError(
+            f"Proposal {proposal_id} is on-chain governance — use POST "
+            f"/proposals/{proposal_id}/vote/on-chain instead of this off-chain endpoint."
+        )
 
     if proposal.status != ProposalStatus.ACTIVE:
         raise HTTPException(
@@ -329,6 +457,134 @@ async def cast_vote(
     return ProposalRead(**_proposal_fields(proposal, eligible_voters, user_vote=payload.choice))
 
 
+@router.post(
+    "/{proposal_id}/vote/on-chain",
+    response_model=ProposalRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def cast_vote_on_chain(
+    proposal_id: int,
+    payload: VoteOnChainAck,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_user_with_scope("vote:cast")),
+) -> ProposalRead:
+    """The on-chain counterpart to cast_vote above — reached once
+    components/app/genlayer-write-client.ts's castVoteOnChain has already
+    signed and sent a real, payable NuanceGovernance.cast_vote transaction
+    directly to the chain. Doesn't verify the hash is real (same
+    reasoning routers/predictions.py::place_bet_on_chain's own docstring
+    gives — nothing here is a trust boundary for the proposal's actual
+    outcome, which services/genlayer_indexer.py's real get_proposal sync
+    is); this only mirrors the stake into a Vote row so "my votes" keeps
+    working, since that sync doesn't track individual voters' on-chain
+    stakes, only the proposal's own tallies as a whole.
+
+    Matches contracts/nuance_governance.py::cast_vote's own "exactly one
+    active vote per wallet per proposal, retract first to change it" rule
+    — an existing NOT-retracted Vote row is rejected here the same way
+    the contract itself would reject the real transaction, so a client
+    that got this ack call wrong at least fails obviously rather than
+    silently doubling a mirrored stake.
+    """
+    proposal = await _get_proposal_for_update_or_404(proposal_id, db)
+    if proposal.on_chain_proposal_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This proposal isn't linked to the on-chain governance registry yet.",
+        )
+    if proposal.status != ProposalStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Voting is closed for this proposal."
+        )
+    if datetime.now(timezone.utc) >= _aware(proposal.end_time):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Voting period has ended.")
+
+    result = await db.execute(
+        select(Vote).where(
+            Vote.proposal_id == proposal_id, Vote.voter_address == current_user.wallet_address
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing is not None and existing.retracted_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You already have an active vote on this proposal — retract it first to change your vote.",
+        )
+
+    if existing is not None:
+        # A previously retracted row — reuse it (same reuse-not-delete
+        # choice the contract itself makes for its own TreeMap entry).
+        existing.choice = payload.choice
+        existing.stake_amount = payload.stake_amount
+        existing.on_chain_tx_hash = payload.tx_hash
+        existing.retracted_at = None
+        existing.retract_tx_hash = None
+    else:
+        db.add(
+            Vote(
+                proposal_id=proposal_id,
+                voter_address=current_user.wallet_address,
+                choice=payload.choice,
+                # Unused for an on-chain vote — see model docstring;
+                # stake_amount below is this ballot's real weight.
+                voting_power=0,
+                stake_amount=payload.stake_amount,
+                on_chain_tx_hash=payload.tx_hash,
+            )
+        )
+
+    _adjust_tally(proposal, payload.choice, payload.stake_amount)
+
+    await db.commit()
+    await db.refresh(proposal)
+
+    eligible_voters = await _total_eligible_voters(db)
+    return ProposalRead(
+        **_proposal_fields(proposal, eligible_voters, payload.choice, payload.stake_amount)
+    )
+
+
+@router.post("/{proposal_id}/retract-vote/on-chain", response_model=ProposalRead)
+async def retract_vote_on_chain(
+    proposal_id: int,
+    payload: RetractVoteOnChainAck,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ProposalRead:
+    """The new unvote — the other half of this whole update ("any user
+    that vote and unvote you will have to use Gen token"). Reached once
+    the frontend has already signed and sent a real NuanceGovernance.
+    retract_vote transaction, which refunds the caller's exact staked GEN
+    (see that contract method's own docstring). Deliberately allowed
+    regardless of proposal.status, matching the contract side exactly —
+    this is the voter's own money, not something forfeited by voting
+    closing or by which way the decision went.
+    """
+    proposal = await _get_proposal_for_update_or_404(proposal_id, db)
+    result = await db.execute(
+        select(Vote).where(
+            Vote.proposal_id == proposal_id, Vote.voter_address == current_user.wallet_address
+        )
+    )
+    vote = result.scalar_one_or_none()
+    if vote is None or vote.retracted_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="You have no active vote on this proposal."
+        )
+
+    _adjust_tally(proposal, vote.choice, -(vote.stake_amount or Decimal("0")))
+
+    vote.retracted_at = datetime.now(timezone.utc)
+    vote.retract_tx_hash = payload.tx_hash
+    vote.stake_amount = Decimal("0")
+
+    await db.commit()
+    await db.refresh(proposal)
+
+    eligible_voters = await _total_eligible_voters(db)
+    return ProposalRead(**_proposal_fields(proposal, eligible_voters, user_vote=None))
+
+
 @router.post("/{proposal_id}/finalize", response_model=ProposalRead)
 async def finalize_proposal(
     proposal_id: int,
@@ -346,13 +602,27 @@ async def finalize_proposal(
     if proposal.status != ProposalStatus.ACTIVE:
         return ProposalRead(**_proposal_fields(proposal, eligible_voters, user_vote=None))
 
+    # FIXED 2026-09-13 — an on-chain-linked proposal's real finalize is
+    # services/genlayer_indexer.py::trigger_pending_proposal_finalizations,
+    # automatic and unconditional once end_time passes — no manual trigger
+    # exists or is needed. Without this check, calling this endpoint on
+    # one used to silently do nothing (_finalize_if_due's own new guard
+    # returns False for it) while still returning 200 with the proposal
+    # unchanged at ACTIVE — indistinguishable from success.
+    if proposal.on_chain_proposal_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This proposal finalizes automatically on-chain once voting ends — "
+            "no manual trigger is available or needed.",
+        )
+
     if datetime.now(timezone.utc) < _aware(proposal.end_time):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Voting is still open; ends at {proposal.end_time.isoformat()}.",
         )
 
-    _finalize_if_due(proposal, eligible_voters)  # status is ACTIVE and past due — always True here
+    _finalize_if_due(proposal, eligible_voters)  # status is ACTIVE, off-chain, and past due — always True here
 
     await db.commit()
     await db.refresh(proposal)

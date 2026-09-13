@@ -500,7 +500,7 @@ class NuanceEscrow(gl.Contract):
 | `NuanceDisputeCourt` | `0xf7b4C186fF9d69701F41AA3Aa1aCF8cED0c9b057` | `0xCAFc5f0a599475C61f700fF02A11B5647c188fcd` |
 | `NuanceEscrow` (bootstrap instance — see §4.4.1) | `0xDB6939bD12775e5F77e48138F0DE103D804268f7` | same |
 | `NuancePredictionMarket` (bootstrap instance) | `0xF34c75330bEd61B7e559e554a5628b4fa50CDd24` | same |
-| `NuanceGovernance` — not in the original Part 2 plan, added 2026-09-06 on direct request (see §4.4.2) | `0xE819D14F8e862c1b6A644939D4Ddc8F3c8764276` | same |
+| `NuanceGovernance` — not in the original Part 2 plan, added 2026-09-06 on direct request (see §4.4.2). **Redeployed 2026-09-13** for real GEN-staked voting (`cast_vote` is now payable; new `retract_vote` is the real unvote) — asked directly: "any user that vote and unvote you will have to use Gen token ... like a real Governance." The original address above is now orphaned (nothing in the backend DB ever referenced it — `GOVERNANCE_CONTRACT_ADDRESS` had no on-chain-linkage wiring at all until this same change, so no real proposal/vote data is stranded there). See RUNBOOK.md's own "still missing" list on the lack of a `contracts/CHANGELOG.md` for this exact kind of redeploy history — this row is the interim record until that exists. | `0x37303291cA1438F05b2236b7Dd9667aEeFA8f310` (was `0xE819D14F8e862c1b6A644939D4Ddc8F3c8764276`) | same |
 | `NuanceValidators` — not in the original plan either (see §4.4.3) | `0x4E2B213a80c5e20CEB45Ce444cC59dB593D704FE` | same |
 | `NuanceAgentDirectory` — same | `0x3EF04900e7c535dDEfb771664FE04541d8b6D463` | same |
 

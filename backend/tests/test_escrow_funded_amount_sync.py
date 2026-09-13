@@ -163,7 +163,7 @@ def test_build_read_batch_includes_get_escrow_per_linked_escrow():
     escrow_id = asyncio.run(_create_escrow())
     escrow = asyncio.run(_get_escrow(escrow_id))  # milestones eager-loaded
 
-    reads = genlayer_indexer._build_read_batch([escrow], [], [])
+    reads = genlayer_indexer._build_read_batch([escrow], [], [], [])
     escrow_reads = [r for r in reads if r["id"] == f"escrow:{escrow_id}"]
     assert len(escrow_reads) == 1
     assert escrow_reads[0]["functionName"] == "get_escrow"

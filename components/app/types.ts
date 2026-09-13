@@ -222,6 +222,22 @@ export interface Proposal {
   // The connected wallet's own vote, if any — null if not voted or not
   // authenticated (not the same as having voted "abstain").
   userVote: "for" | "against" | "abstain" | null;
+  // GEN currently staked behind userVote — only set for an on-chain vote
+  // (see api.ts's ApiProposal.user_vote_stake_amount doc). What a real
+  // "Retract Vote" button shows before the user commits.
+  userVoteStakeGen?: number | null;
+  // --- On-chain linkage (2026-09-13) — see api.ts's ApiProposal doc.
+  // Null/undefined for every proposal created before this update, by
+  // design (nothing retroactively converts existing proposals).
+  onChainProposalId?: number | null;
+  governanceContractAddress?: string | null;
+  // True once this proposal is queued for on-chain creation but not
+  // linked yet — mirrors Prediction.isDeployingOnChain's exact shape and
+  // reasoning (components/app/nuance-app.tsx's mapPrediction): a
+  // proposal in this state will get on_chain_proposal_id soon, usually
+  // within minutes, and off-chain voting on it is already refused
+  // server-side (routers/governance.py::cast_vote's own guard).
+  isDeployingOnChain?: boolean;
 }
 
 export interface ValidatorDirectoryEntry {

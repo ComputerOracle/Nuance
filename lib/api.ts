@@ -361,6 +361,14 @@ export interface ApiVote {
   voting_power: number;
   created_at: string;
   updated_at: string;
+  // --- On-chain linkage (2026-09-13) — see backend/app/models/
+  // governance.py's Vote docstring. All null for a legacy off-chain
+  // vote. stake_amount is a decimal GEN string (not milli-GEN), same
+  // Decimal/AssetAmount serialization as ApiPrediction.contract_balance.
+  stake_amount?: string | null;
+  on_chain_tx_hash?: string | null;
+  retracted_at?: string | null;
+  retract_tx_hash?: string | null;
 }
 
 export interface ApiProposal {
@@ -374,9 +382,13 @@ export interface ApiProposal {
   end_time: string;
   quorum_threshold: number;
   pass_threshold: number;
-  total_for: number;
-  total_against: number;
-  total_abstain: number;
+  // Decimal GEN strings since 2026-09-13 (not plain numbers) — see
+  // backend/app/models/governance.py's Proposal.total_for docstring on
+  // why this widening is value-compatible with every existing off-chain
+  // proposal's small integer tallies too, not just new on-chain ones'.
+  total_for: string;
+  total_against: string;
+  total_abstain: string;
   created_at: string;
   // Computed fresh by the backend on every read — see
   // backend/app/schemas/governance.py's ProposalRead docstring.
@@ -388,6 +400,25 @@ export interface ApiProposal {
   // The requesting wallet's own vote, if any and if authenticated. Absent
   // (null) on an anonymous request — not the same as "voted abstain".
   user_vote: ApiVoteChoice | null;
+  // The requesting wallet's own currently-staked GEN behind user_vote —
+  // decimal string, only ever set alongside an on-chain vote. What a
+  // real "Retract Vote" button shows before the user commits.
+  user_vote_stake_amount?: string | null;
+  // --- On-chain linkage (2026-09-13) — see backend/app/models/
+  // governance.py's Proposal docstring. Null/"legacy_offchain" for every
+  // proposal created before this update, by design (nothing
+  // retroactively converts existing proposals).
+  on_chain_proposal_id?: number | null;
+  chain_status?: ApiChainStatus;
+  on_chain_tx_hash?: string | null;
+  // True once queued for on-chain creation but not linked yet — see
+  // backend/app/schemas/governance.py's ProposalRead docstring. Mirrors
+  // ApiPrediction.resolution_source_url's "deploying" purpose.
+  is_queued_for_on_chain?: boolean;
+  // The one shared NuanceGovernance registry address (same value on
+  // every row) — see backend/app/schemas/governance.py's ProposalRead
+  // docstring on why this isn't per-proposal.
+  governance_contract_address?: string | null;
 }
 
 export interface ApiProposalDetail extends ApiProposal {
@@ -819,6 +850,12 @@ export async function createProposal(payload: CreateProposalPayload): Promise<Ap
 
 // `choice` is case-insensitive on the backend (VoteCreate._normalize_choice
 // lowercases before validating), so callers can pass "For"/"Against" as-is.
+// FIXED 2026-09-13 — this off-chain endpoint now 503s (ChainUnavailableError)
+// for any proposal that's linked to, or even just queued to link to, the
+// on-chain governance registry (deploy_attempted_at set) — see backend/
+// app/routers/governance.py::cast_vote's own docstring. Use castVoteOnChainAck
+// below for those; the caller decides which based on ApiProposal.
+// on_chain_proposal_id/governance_contract_address.
 export async function castVote(
   proposalId: number,
   choice: ApiVoteChoice | "For" | "Against" | "Abstain"
@@ -826,6 +863,39 @@ export async function castVote(
   return apiFetch<ApiProposal>(`/proposals/${proposalId}/vote`, {
     method: "POST",
     body: JSON.stringify({ choice }),
+  });
+}
+
+// The on-chain counterpart to castVote above — reached once components/
+// app/genlayer-write-client.ts's castVoteOnChain has already signed and
+// sent a real, payable NuanceGovernance.cast_vote transaction. Mirrors
+// the stake into a Vote row so "my votes" keeps working — see backend/
+// app/routers/governance.py::cast_vote_on_chain's own docstring.
+// `amountGen` is a plain string/number GEN amount (not milli-GEN) —
+// whatever the connected wallet actually staked.
+export async function castVoteOnChainAck(
+  proposalId: number,
+  txHash: string,
+  choice: ApiVoteChoice | "For" | "Against" | "Abstain",
+  amountGen: number | string
+): Promise<ApiProposal> {
+  return apiFetch<ApiProposal>(`/proposals/${proposalId}/vote/on-chain`, {
+    method: "POST",
+    body: JSON.stringify({ tx_hash: txHash, choice, stake_amount: amountGen }),
+  });
+}
+
+// The new unvote's ack — reached once genlayer-write-client.ts's
+// retractVoteOnChain has already signed and sent a real
+// NuanceGovernance.retract_vote transaction, refunding the caller's
+// exact staked GEN. See that router endpoint's own docstring.
+export async function retractVoteOnChainAck(
+  proposalId: number,
+  txHash: string
+): Promise<ApiProposal> {
+  return apiFetch<ApiProposal>(`/proposals/${proposalId}/retract-vote/on-chain`, {
+    method: "POST",
+    body: JSON.stringify({ tx_hash: txHash }),
   });
 }
 

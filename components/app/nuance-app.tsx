@@ -38,6 +38,8 @@ import {
   fundEscrowOnChain,
   cancelEscrowOnChain,
   releaseMilestoneOnChain,
+  castVoteOnChain,
+  retractVoteOnChain,
   describeWriteError,
 } from "@/components/app/genlayer-write-client";
 import * as api from "@/lib/api";
@@ -195,9 +197,13 @@ function mapProposal(p: api.ApiProposal): Proposal {
     category: p.category,
     status: p.status === "active" ? "Active" : "Closed",
     rawStatus: p.status,
-    totalFor: p.total_for,
-    totalAgainst: p.total_against,
-    totalAbstain: p.total_abstain,
+    // Decimal GEN strings since 2026-09-13 — see api.ts's ApiProposal.
+    // total_for doc. Number() loses no meaningful precision for a
+    // percentage-bar display, same reasoning mapEscrow/mapPrediction's
+    // own Decimal->Number conversions already give.
+    totalFor: Number(p.total_for),
+    totalAgainst: Number(p.total_against),
+    totalAbstain: Number(p.total_abstain),
     forPct: p.for_pct,
     againstPct: p.against_pct,
     abstainPct: p.abstain_pct,
@@ -207,6 +213,11 @@ function mapProposal(p: api.ApiProposal): Proposal {
     quorumMet: p.quorum_met,
     endTime: p.end_time,
     userVote: p.user_vote,
+    userVoteStakeGen:
+      p.user_vote_stake_amount == null ? null : Number(p.user_vote_stake_amount),
+    onChainProposalId: p.on_chain_proposal_id ?? null,
+    governanceContractAddress: p.governance_contract_address ?? null,
+    isDeployingOnChain: Boolean(p.is_queued_for_on_chain),
   };
 }
 
@@ -519,6 +530,12 @@ export function NuanceApp() {
   const [proposalsError, setProposalsError] = useState<string | null>(null);
   const [voteError, setVoteError] = useState<string | null>(null);
   const [pendingVoteId, setPendingVoteId] = useState<number | null>(null);
+  // Per-proposal GEN amount input for an on-chain vote — a Record, not a
+  // single shared value, since GovernanceView renders every proposal's
+  // card inline at once (unlike prediction-detail-view's single betAmount,
+  // which only ever has one market open at a time).
+  const [voteAmounts, setVoteAmounts] = useState<Record<number, string>>({});
+  const [pendingRetractId, setPendingRetractId] = useState<number | null>(null);
   const [executeError, setExecuteError] = useState<string | null>(null);
   const [pendingExecuteId, setPendingExecuteId] = useState<number | null>(null);
 
@@ -1753,12 +1770,95 @@ export function NuanceApp() {
   // clickable. Nothing replaced it — there was nothing left to enforce.
 
   // Governance handlers -----------------------------------------------------
-  async function vote(id: number, choice: "For" | "Against") {
-    const target = proposals.find((p) => p.id === id);
-    if (!target || target.status !== "Active" || pendingVoteId != null) return;
+  function setVoteAmount(id: number, value: string) {
+    setVoteAmounts((prev) => ({ ...prev, [id]: value }));
+  }
 
+  // FIXED 2026-09-13 — asked directly: "any user that vote and unvote you
+  // will have to use Gen token ... like a real Governance." A linked (or
+  // queued-to-link) proposal's off-chain POST /proposals/{id}/vote now
+  // 503s server-side (see routers/governance.py::cast_vote's own guard),
+  // so this branches the same way placeBet/submitDeliverable already do:
+  // a fresh read decides on-chain vs. legacy, never the possibly-stale
+  // `proposals` state.
+  async function vote(id: number, choice: "For" | "Against" | "Abstain") {
+    if (pendingVoteId != null) return;
     setVoteError(null);
     setPendingVoteId(id);
+
+    let proposalData: api.ApiProposal;
+    try {
+      proposalData = await api.getProposal(id);
+    } catch (err) {
+      setVoteError(errorText(err, "Failed to cast vote."));
+      setPendingVoteId(null);
+      return;
+    }
+
+    const isOnChain = Boolean(proposalData.on_chain_proposal_id);
+    const isQueued = Boolean(proposalData.is_queued_for_on_chain);
+
+    if (isOnChain || isQueued) {
+      if (isQueued && !isOnChain) {
+        setVoteError(
+          "This proposal is deploying on-chain — voting opens automatically once " +
+            "the contract is live (usually within a few minutes). Try again shortly."
+        );
+        setPendingVoteId(null);
+        return;
+      }
+      if (!(wallet.status === "connected" && wallet.provider)) {
+        setVoteError("This proposal is on-chain governance — connect your wallet to vote.");
+        setPendingVoteId(null);
+        return;
+      }
+      const amountGen = (voteAmounts[id] ?? "").trim();
+      if (!amountGen || Number(amountGen) <= 0) {
+        setVoteError("Enter how much GEN to stake on your vote.");
+        setPendingVoteId(null);
+        return;
+      }
+      const contractAddress = proposalData.governance_contract_address;
+      if (!contractAddress) {
+        setVoteError("Governance contract address isn't configured.");
+        setPendingVoteId(null);
+        return;
+      }
+
+      try {
+        const txHash = await castVoteOnChain({
+          walletAddress: wallet.address,
+          provider: wallet.provider,
+          contractAddress: contractAddress as `0x${string}`,
+          onChainProposalId: proposalData.on_chain_proposal_id!,
+          choice: choice.toLowerCase() as "for" | "against" | "abstain",
+          amountGen,
+        });
+        wallet.refreshBalanceAfterTx();
+        const updated = await api.castVoteOnChainAck(id, txHash, choice, amountGen);
+        setProposals((prev) => prev.map((p) => (p.id === id ? mapProposal(updated) : p)));
+        setVoteAmounts((prev) => ({ ...prev, [id]: "" }));
+      } catch (err) {
+        setVoteError(describeWriteError(err));
+      } finally {
+        setPendingVoteId(null);
+      }
+      return;
+    }
+
+    // Legacy off-chain path — unchanged. Abstain was never offered here
+    // (governance-view.tsx's own off-chain buttons are For/Against only)
+    // — guard rather than silently mis-tallying if ever called with it.
+    if (choice === "Abstain") {
+      setVoteError("This market is off-chain — abstain isn't offered for it.");
+      setPendingVoteId(null);
+      return;
+    }
+    const target = proposals.find((p) => p.id === id);
+    if (!target || target.status !== "Active") {
+      setPendingVoteId(null);
+      return;
+    }
     const previous = target;
     // Optimistic update — reflected immediately, reconciled with the
     // server's authoritative tally below (or rolled back on failure).
@@ -1772,6 +1872,51 @@ export function NuanceApp() {
       setVoteError(errorText(err, "Failed to cast vote."));
     } finally {
       setPendingVoteId(null);
+    }
+  }
+
+  // The new unvote — the other half of "vote and unvote you will have to
+  // use Gen token." Refunds the caller's exact staked GEN as part of the
+  // same on-chain NuanceGovernance.retract_vote call (see that contract
+  // method's own docstring); nothing further is needed to receive it.
+  async function retractVote(id: number) {
+    if (pendingRetractId != null) return;
+    if (wallet.status !== "connected" || !wallet.provider) {
+      setVoteError("Connect your wallet to retract your vote.");
+      return;
+    }
+    setVoteError(null);
+    setPendingRetractId(id);
+
+    let proposalData: api.ApiProposal;
+    try {
+      proposalData = await api.getProposal(id);
+    } catch (err) {
+      setVoteError(errorText(err, "Failed to retract vote."));
+      setPendingRetractId(null);
+      return;
+    }
+    const contractAddress = proposalData.governance_contract_address;
+    if (!proposalData.on_chain_proposal_id || !contractAddress) {
+      setVoteError("This proposal isn't linked to the on-chain governance registry.");
+      setPendingRetractId(null);
+      return;
+    }
+
+    try {
+      const txHash = await retractVoteOnChain({
+        walletAddress: wallet.address,
+        provider: wallet.provider,
+        contractAddress: contractAddress as `0x${string}`,
+        onChainProposalId: proposalData.on_chain_proposal_id,
+      });
+      wallet.refreshBalanceAfterTx();
+      const updated = await api.retractVoteOnChainAck(id, txHash);
+      setProposals((prev) => prev.map((p) => (p.id === id ? mapProposal(updated) : p)));
+    } catch (err) {
+      setVoteError(describeWriteError(err));
+    } finally {
+      setPendingRetractId(null);
     }
   }
 
@@ -2118,6 +2263,10 @@ export function NuanceApp() {
                 walletConnected={wallet.status === "connected"}
                 pendingVoteId={pendingVoteId}
                 onVote={vote}
+                voteAmounts={voteAmounts}
+                onVoteAmountChange={setVoteAmount}
+                pendingRetractId={pendingRetractId}
+                onRetractVote={retractVote}
                 pendingExecuteId={pendingExecuteId}
                 onExecute={executeProposal}
               />
