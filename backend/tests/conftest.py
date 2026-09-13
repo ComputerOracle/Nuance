@@ -91,6 +91,9 @@ os.environ.setdefault("AUTO_DEPLOY_PREDICTION_CONTRACTS", "false")
 # auto-deploy hook, real testnet GEN spent) firing just because a test
 # happened to instantiate the app.
 os.environ.setdefault("ENABLE_MARKET_INGESTION_SCHEDULER", "false")
+# services/governance_ingestion_scheduler.py's own recurring sweep — same
+# race, same reasoning as ENABLE_MARKET_INGESTION_SCHEDULER just above.
+os.environ.setdefault("ENABLE_GOVERNANCE_INGESTION_SCHEDULER", "false")
 # routers/governance.py::create_proposal queues services/genlayer_indexer.
 # create_proposal_on_chain as a background task whenever settings.
 # auto_create_proposals_on_chain is true (the .env default) — same race
@@ -175,6 +178,18 @@ def _disable_market_ingestion_scheduler_by_default(monkeypatch):
     from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "enable_market_ingestion_scheduler", False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_governance_ingestion_scheduler_by_default(monkeypatch):
+    """app.main's lifespan launches services/governance_ingestion_
+    scheduler.run_forever as a background task whenever settings.
+    enable_governance_ingestion_scheduler is true (the .env default) —
+    same pattern, same real risk, as
+    _disable_market_ingestion_scheduler_by_default above."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "enable_governance_ingestion_scheduler", False)
 
 
 @pytest.fixture(autouse=True)

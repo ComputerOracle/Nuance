@@ -525,6 +525,35 @@ class MarketEventLog(Base):
     processed_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class GovernanceEventLog(Base):
+    """Dedup ledger for services/governance_generator.py — the governance
+    equivalent of MarketEventLog just above, kept as a genuinely separate
+    table rather than a shared one with a "kind" discriminator column.
+    Reason: both generators draw from the SAME underlying event stream
+    (GenLayer's own accounts/RSS/web sources — services/market_generator.
+    py's own _ingest_events, reused directly, not re-implemented), but
+    decide independently whether a given event is worth turning into
+    THEIR kind of content. The two generators run on their own,
+    independently-scheduled sweeps (services/market_ingestion_scheduler.py
+    and services/governance_ingestion_scheduler.py — two separate
+    background tasks, not one shared sweep), so either can genuinely run
+    first. A shared dedup log would mean whichever one happens to process
+    an event first permanently starves the other of that same source
+    content, even though "already made a prediction from this tweet" and
+    "already made a governance proposal from this tweet" are genuinely
+    independent facts about the exact same event.
+    """
+
+    __tablename__ = "governance_event_log"
+
+    source_id: Mapped[str] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(default="unknown")  # "twitter" | "rss" | "web"
+    source_url: Mapped[str | None] = mapped_column(Text, default=None)
+    outcome: Mapped[str] = mapped_column(default="skipped")  # "created" | "skipped" | "error"
+    proposal_id: Mapped[int | None] = mapped_column(ForeignKey("proposals.id"), default=None)
+    processed_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class IdempotencyRecord(Base):
     """Cache row backing app/middleware/idempotency.py's dedup + in-flight
     lock guard on financial/state-changing write routes (POST /escrows,

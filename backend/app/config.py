@@ -93,6 +93,35 @@ class Settings(BaseSettings):
     # happens within an hour of becoming due, without polling pointlessly
     # often for a job that fires roughly once a week.
     market_ingestion_check_interval_seconds: int = 60 * 60
+    # Same idea, same reasoning, as the three settings just above — the
+    # governance equivalent, added when the identical weekly-refresh
+    # request was made specifically for Governance ("build a real proposal
+    # generator (like predictions have)"). Deliberately its own trio of
+    # settings rather than reusing the market_ingestion_* ones above, same
+    # per-entity-type convention the rest of this config file already
+    # follows (auto_deploy_escrow_contracts / auto_deploy_prediction_
+    # contracts are two settings, not one shared flag, for the identical
+    # reason) — so governance's cadence can be tuned independently of
+    # predictions' even though both currently default to the same weekly
+    # shape. See services/governance_ingestion_scheduler.py.
+    enable_governance_ingestion_scheduler: bool = True
+    governance_ingestion_interval_seconds: int = 7 * 24 * 60 * 60
+    governance_ingestion_check_interval_seconds: int = 60 * 60
+    # services/governance_generator.py auto-creates Proposal rows, and
+    # Proposal.proposer_address is a real FK into users.wallet_address
+    # (unlike Prediction, which has no creator/proposer column at all —
+    # see that model). Rather than requiring an operator to have already
+    # signed in with this exact wallet once before the generator's first
+    # run ever fires, governance_generator.py get-or-creates a User row
+    # for this address itself the first time it's needed. Deliberately
+    # NOT the zero address (0x000...0) — that value reads as "burned/
+    # nobody" everywhere else in this codebase and in most block
+    # explorers, which is a confusing thing for a real, intentionally-
+    # authored proposal to be attributed to; 0xff...ff is exactly as
+    # inert on-chain (nobody holds its key) but doesn't carry that
+    # existing "nothing" connotation. No real GEN ever needs to move from
+    # this address — it never votes, stakes, or executes anything itself.
+    governance_generator_proposer_address: str = "0xffffffffffffffffffffffffffffffffffffffff"
 
     # --- used starting the idempotency/rate-limit prompt ---
     # How long a completed Idempotency-Key response stays cached and

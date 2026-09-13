@@ -36,6 +36,9 @@ from app.routers import (
 )
 from app.services.consensus import ChainUnavailableError
 from app.services.genlayer_indexer import run_forever as run_chain_indexer
+from app.services.governance_ingestion_scheduler import (
+    run_forever as run_governance_ingestion_scheduler,
+)
 from app.services.market_ingestion_scheduler import run_forever as run_market_ingestion_scheduler
 
 settings = get_settings()
@@ -78,6 +81,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_market_ingestion_scheduler(), name="market-ingestion-scheduler"
         )
 
+    # services/governance_ingestion_scheduler.py's own recurring sweep —
+    # same pattern/reasoning as market_ingestion_task just above, its own
+    # settings.enable_governance_ingestion_scheduler (default True) so
+    # conftest.py's autouse fixture can force it off the same way.
+    governance_ingestion_task: asyncio.Task[None] | None = None
+    if settings.enable_governance_ingestion_scheduler:
+        governance_ingestion_task = asyncio.create_task(
+            run_governance_ingestion_scheduler(), name="governance-ingestion-scheduler"
+        )
+
     yield
 
     # Shutdown: cancel the indexer cleanly before tearing down the engine
@@ -108,6 +121,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception:  # noqa: BLE001 — shutdown must not crash on this
             logger.exception("market-ingestion-scheduler task raised during shutdown")
+
+    # Same cancel-before-dispose reasoning as the two schedulers above.
+    if governance_ingestion_task is not None:
+        governance_ingestion_task.cancel()
+        try:
+            await governance_ingestion_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 — shutdown must not crash on this
+            logger.exception("governance-ingestion-scheduler task raised during shutdown")
 
     await dispose_engine()
 
