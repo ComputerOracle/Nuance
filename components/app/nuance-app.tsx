@@ -174,6 +174,13 @@ function mapPrediction(p: api.ApiPrediction): Prediction {
     contractAddress: p.contract_address,
     chainStatus: p.chain_status,
     resolutionTriggerTxHash: p.resolution_trigger_tx_hash,
+    // See routers/predictions.py::place_bet's 2026-09-13 fix — the backend
+    // now refuses an off-chain bet on any market that's queued for
+    // auto-deploy, not just ones already linked, to close a real race that
+    // orphaned two live bets (predictions 11/14) seconds before they went
+    // on-chain. This mirrors that same condition so the bet panel shows
+    // "deploying" instead of a button the backend will now 503.
+    isDeployingOnChain: !p.contract_address && !!p.resolution_source_url,
   };
 }
 
@@ -1434,7 +1441,27 @@ export function NuanceApp() {
       return;
     }
 
-    // Legacy off-chain path — unchanged.
+    // FIXED 2026-09-13 — checked client-side too, not just left to the
+    // backend's new 503 (see routers/predictions.py::place_bet): a market
+    // with resolution_source_url set is queued for auto-deploy and will
+    // get a real contract soon, often within minutes — betting into the
+    // off-chain ledger for it is never actually safe (see that endpoint's
+    // own docstring on predictions 11/14, where exactly that race orphaned
+    // two real bets). Failing fast here avoids a round trip for a call
+    // that's now guaranteed to be refused, and gives a clearer message
+    // than describeWriteError would extract from a raw 503 body.
+    if (predictionData.resolution_source_url) {
+      setBettingError(
+        "This market is deploying on-chain — betting opens automatically once " +
+          "the contract is live (usually within a few minutes). Try again shortly."
+      );
+      setIsBetting(false);
+      return;
+    }
+
+    // Legacy off-chain path — only reachable for a market with no
+    // resolution_source_url at all, i.e. one that predates that field
+    // being required and will never auto-deploy (see PredictionCreate).
     try {
       const updatedApi = await api.placeBet(predictionId, betSide, amountMilliGen);
       const updatedPred = mapPrediction(updatedApi);

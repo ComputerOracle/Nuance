@@ -123,6 +123,13 @@ export interface Prediction {
   contractAddress?: string | null;
   chainStatus?: import("@/lib/chain-status").ChainStatus;
   resolutionTriggerTxHash?: string | null;
+  // True once this market is queued for auto-deploy but not linked yet —
+  // see api.ts's ApiPrediction.resolution_source_url doc. Distinct from
+  // "will never be on-chain": nothing in this app creates that case
+  // anymore (PredictionCreate always requires a resolution source), so a
+  // market with this true will get a contractAddress eventually, usually
+  // within minutes, not on a schedule the user controls.
+  isDeployingOnChain?: boolean;
 }
 
 export interface Position {

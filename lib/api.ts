@@ -320,6 +320,16 @@ export interface ApiPrediction {
   contract_address: string | null;
   chain_status: ApiChainStatus;
   resolution_trigger_tx_hash?: string | null;
+  // Present whenever this market has something to resolve against —
+  // which per backend/app/schemas/core.py::PredictionCreate is every
+  // market created going forward. A market with this set and
+  // contract_address still null isn't "permanently off-chain" — see
+  // routers/predictions.py::place_bet's 2026-09-13 fix note — it's mid
+  // auto-deploy (services/genlayer_deploy.py's retry_undeployed_predictions
+  // retries it indefinitely until it lands). The frontend uses this to
+  // show "deploying" instead of offering a bet that the backend will now
+  // refuse anyway.
+  resolution_source_url?: string | null;
 }
 
 export type ApiVoteChoice = "for" | "against" | "abstain";

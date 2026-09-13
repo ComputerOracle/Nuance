@@ -19,6 +19,12 @@ Also confirms resolve_prediction's pre-existing linked-market guard was
 upgraded from a plain 400 to the same 503/ChainUnavailableError shape —
 see test_prediction_on_chain_endpoints.py's own
 test_resolve_prediction_rejects_on_chain_linked_market for that one.
+
+Extended 2026-09-13 with a second, distinct guard on place_bet: a market
+with resolution_source_url set but no contract_address YET is queued for
+auto-deploy (see genlayer_deploy.retry_undeployed_predictions), not
+permanently off-chain — see test_place_bet_rejects_market_pending_auto_deploy
+for the real live incident that motivated it.
 """
 
 from __future__ import annotations
@@ -107,7 +113,9 @@ async def _create_dispute(escrow_id: int, opened_by: str, on_chain_tx_hash: str 
         return dispute.id
 
 
-async def _create_prediction(contract_address: str | None) -> int:
+async def _create_prediction(
+    contract_address: str | None, resolution_source_url: str | None = None
+) -> int:
     async with AsyncSessionLocal() as db:
         prediction = Prediction(
             title="Will this guard hold?",
@@ -116,6 +124,7 @@ async def _create_prediction(contract_address: str | None) -> int:
             status_key="open",
             resolution_date=datetime.now(timezone.utc) + timedelta(days=1),
             contract_address=contract_address,
+            resolution_source_url=resolution_source_url,
         )
         db.add(prediction)
         await db.commit()
@@ -264,6 +273,62 @@ def test_place_bet_allows_unlinked_market(client: TestClient):
     wallet = Account.create()
     token = _get_token(client, wallet)
     prediction_id = asyncio.run(_create_prediction(None))
+
+    resp = client.post(
+        f"/predictions/{prediction_id}/bet",
+        json={"side": "YES", "amount": 500},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_place_bet_rejects_market_pending_auto_deploy(client: TestClient, monkeypatch):
+    """FIXED 2026-09-13 — a real race found live, not hypothesized: a
+    market with resolution_source_url set but no contract_address yet is
+    queued for auto-deploy (services/genlayer_deploy.py::
+    retry_undeployed_predictions retries it indefinitely until it lands —
+    see that function's own docstring), not permanently off-chain. A bet
+    placed in that window used to land in the off-chain ledger and become
+    a permanently-orphaned notional PredictionPosition the moment the
+    contract linked seconds later — this caught two real bets live on
+    predictions 11 and 14. Distinct from test_place_bet_allows_unlinked_
+    market above: that one has no resolution_source_url at all, so it can
+    never auto-deploy and off-chain betting for it is genuinely safe."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "auto_deploy_prediction_contracts", True)
+    wallet = Account.create()
+    token = _get_token(client, wallet)
+    prediction_id = asyncio.run(
+        _create_prediction(None, resolution_source_url="https://example.com/result")
+    )
+
+    resp = client.post(
+        f"/predictions/{prediction_id}/bet",
+        json={"side": "YES", "amount": 500},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 503
+    assert "deploying on-chain" in resp.json()["detail"]
+
+
+def test_place_bet_allows_market_pending_deploy_when_auto_deploy_disabled(
+    client: TestClient,
+):
+    """The flip side of the fix above: with auto-deploy off (the .env
+    default until a deployer key/testnet gas is actually configured), a
+    market with resolution_source_url set will never actually get
+    deployed by this app, so the off-chain path stays legitimate for it —
+    the new guard only fires when a real deploy is actually going to
+    happen. Also the everyday shape of every existing test in this suite
+    (conftest.py's _disable_prediction_auto_deploy_by_default forces this
+    off by default) — this test makes that reliance explicit instead of
+    leaving it implicit."""
+    wallet = Account.create()
+    token = _get_token(client, wallet)
+    prediction_id = asyncio.run(
+        _create_prediction(None, resolution_source_url="https://example.com/result")
+    )
 
     resp = client.post(
         f"/predictions/{prediction_id}/bet",

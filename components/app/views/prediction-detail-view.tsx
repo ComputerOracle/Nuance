@@ -86,8 +86,18 @@ export function PredictionDetailView({
   const isMatured = resTimestamp > 0 && now >= resTimestamp;
 
   const noPrice = 100 - prediction.yesPrice;
+  // FIXED 2026-09-13 — see nuance-app.tsx::placeBet's own note: a market
+  // queued for auto-deploy (resolution_source_url set, no contractAddress
+  // yet) is never actually safe to bet on off-chain — the backend now
+  // refuses it outright. Disabling here matches that instead of letting
+  // someone click "Place Bet" into a guaranteed 503.
+  const isDeploying = Boolean(prediction.isDeployingOnChain);
   const betDisabled =
-    !(betAmountMilliGen != null && betSide) || isBetting || isResolved || isMatured;
+    !(betAmountMilliGen != null && betSide) ||
+    isBetting ||
+    isResolved ||
+    isMatured ||
+    isDeploying;
 
   const sideClasses = (side: "yes" | "no") => {
     const active = betSide === side;
@@ -212,6 +222,8 @@ export function PredictionDetailView({
               <span className="text-xs font-mono text-fg-meta uppercase">Closed</span>
             ) : isMatured ? (
               <span className="text-xs font-mono text-review-text uppercase">Matured</span>
+            ) : isDeploying ? (
+              <span className="text-xs font-mono text-review-text uppercase">Deploying</span>
             ) : (
               <span className="text-xs font-mono text-positive-text uppercase">Open</span>
             )}
@@ -293,14 +305,14 @@ export function PredictionDetailView({
               <div className="mb-3.5 flex gap-2">
                 <button
                   onClick={onSelectYes}
-                  disabled={isBetting || isMatured}
+                  disabled={isBetting || isMatured || isDeploying}
                   className={`flex-1 cursor-pointer rounded-lg border px-2 py-2.5 text-[13px] font-semibold ${sideClasses("yes")}`}
                 >
                   YES {prediction.yesPrice}¢
                 </button>
                 <button
                   onClick={onSelectNo}
-                  disabled={isBetting || isMatured}
+                  disabled={isBetting || isMatured || isDeploying}
                   className={`flex-1 cursor-pointer rounded-lg border px-2 py-2.5 text-[13px] font-semibold ${sideClasses("no")}`}
                 >
                   NO {noPrice}¢
@@ -319,7 +331,7 @@ export function PredictionDetailView({
                   <button
                     key={milliGen}
                     onClick={() => onSelectAmount(milliGen)}
-                    disabled={isBetting || isMatured}
+                    disabled={isBetting || isMatured || isDeploying}
                     className={`cursor-pointer rounded-lg border px-2 py-2.5 text-[13px] font-semibold transition-colors disabled:cursor-default ${
                       betAmountMilliGen === milliGen
                         ? "border-positive/60 bg-positive/15 text-positive-text"
@@ -331,6 +343,12 @@ export function PredictionDetailView({
                 ))}
               </div>
 
+              {isDeploying && !bettingError && (
+                <div className="mt-2.5 rounded-lg border border-review/30 bg-review/10 p-2.5 text-xs text-review-text">
+                  ⏳ This market is deploying on-chain — betting opens automatically once
+                  the real GenVM contract is live (usually within a few minutes).
+                </div>
+              )}
               {bettingError && (
                 <div className="mt-2.5 rounded-lg border border-negative/35 bg-negative/12 p-2.5 text-xs text-negative-text">
                   {bettingError}
@@ -342,7 +360,13 @@ export function PredictionDetailView({
                 className="mt-3 w-full cursor-pointer rounded-lg border border-border-6 bg-chip-hover py-2.5 text-[13px] font-semibold transition-colors hover:bg-chip-hover-2 disabled:cursor-default"
                 style={{ opacity: betDisabled ? 0.5 : 1 }}
               >
-                {isBetting ? "Placing Bet…" : isMatured ? "Betting Closed" : "Place Bet"}
+                {isBetting
+                  ? "Placing Bet…"
+                  : isMatured
+                    ? "Betting Closed"
+                    : isDeploying
+                      ? "Deploying On-Chain…"
+                      : "Place Bet"}
               </button>
 
               {position && (

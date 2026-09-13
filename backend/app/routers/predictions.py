@@ -220,6 +220,33 @@ async def place_bet(
             f"({prediction.contract_address}) — use POST /predictions/{prediction_id}"
             "/bet/on-chain instead of this off-chain endpoint."
         )
+    # FIXED 2026-09-13 — a real race found live, not hypothesized: services/
+    # genlayer_deploy.py::deploy_prediction_contract commits Prediction.
+    # deploy_attempted_at immediately, then makes a real, multi-minute
+    # deploy call *before* contract_address is ever set. A bet placed in
+    # that window sailed through this off-chain branch (contract_address
+    # was still None) and became a permanently-orphaned notional
+    # PredictionPosition — real stake nobody actually collected — seconds
+    # before the market flipped to a live on-chain contract. Caught live on
+    # predictions 11 and 14: one 0.5 GEN "NO" bet each landed off-chain at
+    # 10:47:42/10:49:10, right as those same two markets were completing
+    # their auto-deploy (contract linked ~10:43-10:50). Once
+    # resolution_source_url is set, retry_undeployed_predictions (see that
+    # function's docstring) will keep retrying the deploy indefinitely
+    # until it succeeds — there is no stable "will stay off-chain forever"
+    # state left for a market like that, deploy in-flight or not, so
+    # letting a bet land in the off-chain ledger is never actually safe
+    # for it. `_get_prediction_for_update_or_404`'s row lock doesn't close
+    # this on its own — deploy_prediction_contract's slow external call
+    # happens without holding this row's lock across it, so the two
+    # commits (deploy_attempted_at, then contract_address) are genuinely
+    # separated in time, lock or no lock.
+    if prediction.resolution_source_url and get_settings().auto_deploy_prediction_contracts:
+        raise ChainUnavailableError(
+            f"Prediction {prediction_id} is deploying on-chain — betting opens "
+            "automatically once the contract is live (usually within a few "
+            "minutes). Please try again shortly."
+        )
     _assert_market_open_for_betting(prediction)
 
     position = PredictionPosition(
