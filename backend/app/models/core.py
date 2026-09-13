@@ -431,6 +431,22 @@ class Prediction(Base):
     # failed *send* (network/rate-limit, no tx hash back) leaves this null
     # and is safe to retry next cycle.
     resolution_trigger_tx_hash: Mapped[str | None] = mapped_column(default=None)
+    # FIXED 2026-09-13 — a real gap found live: any already-"open" market
+    # with no deployed contract (e.g. pre-rebrand rows from services/
+    # market_generator.py's now-retired auto-publish pipeline — see
+    # genlayer_deploy.deploy_prediction_contract's own docstring) stayed
+    # bettable through the plain off-chain POST /predictions/{id}/bet
+    # forever: no real GEN ever changes hands for those bets, only
+    # notional PredictionPosition bookkeeping. deploy_prediction_contract
+    # itself was a one-shot fire-and-forget task queued exactly once at
+    # creation time (same gap Escrow.deploy_attempted_at's own docstring
+    # describes for escrows, fixed 2026-09-12) — a market whose one shot
+    # failed, or one created before this field existed at all, had no way
+    # for this app to ever try deploying it again. Same fix, same field:
+    # set right before deploy_prediction_contract's own real deploy call,
+    # read by genlayer_deploy.retry_undeployed_predictions to find markets
+    # worth retrying without double-submitting a still-in-flight attempt.
+    deploy_attempted_at: Mapped[datetime | None] = mapped_column(default=None)
 
     positions: Mapped[list["PredictionPosition"]] = relationship(
         back_populates="prediction",

@@ -81,6 +81,7 @@ _SQLITE_COLUMN_PATCHES: dict[str, list[tuple[str, str]]] = {
         ("on_chain_raw_status", "TEXT"),
         ("on_chain_tx_hash", "TEXT"),
         ("resolution_trigger_tx_hash", "TEXT"),
+        ("deploy_attempted_at", "TIMESTAMP"),
     ],
     "proposals": [("executed_by", "TEXT"), ("executed_at", "TIMESTAMP")],
     "escrows": [

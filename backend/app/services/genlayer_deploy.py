@@ -384,6 +384,18 @@ async def deploy_prediction_contract(prediction_id: int) -> None:
             )
             return
 
+        # Set BEFORE the actual (slow) deploy call below, and committed
+        # immediately — see Escrow.deploy_attempted_at's own docstring for
+        # the identical reasoning (deploy_escrow_contract does the exact
+        # same thing right before its own deploy_contract call). This is
+        # the guard retry_undeployed_predictions reads to avoid double-
+        # submitting a real deploy transaction while this exact attempt
+        # could still be in flight. Not rolled back on failure further
+        # down: a failed attempt still counts as "attempted," subject to
+        # the same cooldown as any other attempt before being retried.
+        prediction.deploy_attempted_at = datetime.now(timezone.utc)
+        await db.commit()
+
         address = await deploy_contract(
             "nuance_prediction_market.py",
             [
@@ -413,3 +425,56 @@ async def deploy_prediction_contract(prediction_id: int) -> None:
             prediction.status_key = "open"
         await db.commit()
         logger.info("Deployed NuancePredictionMarket for prediction id=%s -> %s", prediction_id, address)
+
+
+async def retry_undeployed_predictions() -> None:
+    """The predictions equivalent of retry_undeployed_escrows above — same
+    gap, same fix. Reported live (2026-09-13): a user asked that every bet
+    on a prediction market use real GEN, "like a real Prediction Markets."
+    Checked the actual database rather than assuming the on-chain betting
+    path (already built — routers/predictions.py's place_bet refuses a
+    contract-linked market's off-chain endpoint outright) covered
+    everything: it found 8 markets already `status_key == "open"` —
+    genuinely accepting real bets right now — with `contract_address`
+    still null, most from services/market_generator.py's now-retired
+    auto-publish pipeline (see deploy_prediction_contract's own docstring)
+    predating deploy_prediction_contract's per-market background task, a
+    couple more from a create_prediction deploy that simply never got
+    retried after failing once. Every bet placed against any of them goes
+    through the plain off-chain POST /predictions/{id}/bet — notional
+    PredictionPosition bookkeeping with no real GEN behind it at all,
+    exactly the gap being asked about.
+
+    Deliberately scoped to `status_key == "open"` only, NOT
+    "pending_review" — a pending_review row from market_generator's
+    pipeline is an unreviewed draft nobody chose to publish (see that
+    function's own docstring on why deploying a real contract for one
+    isn't worth the real testnet GEN); this only targets markets ALREADY
+    live and ALREADY accepting bets, which is the actual gap. A
+    create_prediction row past its own initial deploy attempt reaches
+    "open" only on success, so by definition never needs retrying via
+    this path — this exists for the failure case of that same flow, same
+    as retry_undeployed_escrows exists for deploy_escrow_contract's.
+
+    Same idempotency reasoning as retry_undeployed_escrows: deploy_
+    prediction_contract's own guards (contract_address is None,
+    resolution_source_url set) are exactly what a safe retry needs, so
+    this only decides *when* to call it again, same cooldown constant.
+    Once a market like this gets linked, routers/predictions.py's
+    place_bet's existing contract_address check starts refusing new
+    off-chain bets on it automatically — no change needed there at all.
+    """
+    cutoff = datetime.now(timezone.utc) - _DEPLOY_RETRY_COOLDOWN
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Prediction.id).where(
+                Prediction.contract_address.is_(None),
+                Prediction.status_key == "open",
+                Prediction.resolution_source_url.isnot(None),
+                (Prediction.deploy_attempted_at.is_(None)) | (Prediction.deploy_attempted_at < cutoff),
+            )
+        )
+        prediction_ids = [row[0] for row in result.all()]
+
+    for prediction_id in prediction_ids:
+        await deploy_prediction_contract(prediction_id)

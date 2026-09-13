@@ -861,6 +861,18 @@ async def run_once(db: AsyncSession) -> None:
     if settings.auto_deploy_escrow_contracts:
         await genlayer_deploy.retry_undeployed_escrows()
 
+    # Same fix, same reasoning, for prediction markets — see
+    # genlayer_deploy.retry_undeployed_predictions's own docstring (found
+    # 2026-09-13 auditing "does every bet actually use real GEN"):
+    # deploy_prediction_contract was equally a one-shot fire-and-forget
+    # task, and several already-"open" (already bettable) markets predate
+    # it running at all. Gated off in tests the same way (tests/
+    # conftest.py forces auto_deploy_prediction_contracts False for the
+    # whole suite) for the identical reason: no ordinary indexer test
+    # should fire a real Bradbury deployment.
+    if settings.auto_deploy_prediction_contracts:
+        await genlayer_deploy.retry_undeployed_predictions()
+
     # Resolve any dispute ids still pending first — a row this fills in
     # becomes visible to _load_linked_rows below in the same cycle
     # (SQLAlchemy autoflushes the pending UPDATE before that SELECT runs),
