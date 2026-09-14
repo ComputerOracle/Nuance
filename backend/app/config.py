@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +25,26 @@ class Settings(BaseSettings):
     # --- used starting this prompt ---
     database_url: str = "sqlite+aiosqlite:///./nuance.db"
     cors_origins: str = "http://localhost:3000"
+
+    # Render's managed Postgres (Railway/Supabase/Heroku too) hands you a
+    # plain `postgres://` or `postgresql://` connection string — the
+    # psycopg2-style scheme every non-Python consumer expects. Both
+    # db.py's create_async_engine and alembic/env.py read database_url
+    # verbatim into SQLAlchemy, which resolves a DBAPI driver purely from
+    # the URL scheme: an unsuffixed postgres(ql):// resolves to the sync
+    # psycopg2 dialect (not installed here, and wrong for an AsyncEngine
+    # regardless) instead of asyncpg. Normalizing here, once, at settings
+    # load, means neither call site — nor whoever pastes a host's
+    # connection string straight into .env's DATABASE_URL — has to
+    # remember to add +asyncpg by hand. sqlite URLs pass through
+    # untouched, as does a URL that already names a driver.
+    @field_validator("database_url")
+    @classmethod
+    def _add_asyncpg_driver(cls, value: str) -> str:
+        for prefix in ("postgres://", "postgresql://"):
+            if value.startswith(prefix):
+                return "postgresql+asyncpg://" + value[len(prefix) :]
+        return value
 
     # --- used starting the auth prompt ---
     jwt_secret: str = "change-me-to-a-long-random-string"

@@ -66,7 +66,26 @@ def upgrade() -> None:
         batch_op.add_column(
             sa.Column(
                 'chain_status',
-                sa.String(),
+                # Real drift `alembic check` caught (Part 4 deploy pass):
+                # this was plain sa.String() before, but the model
+                # (Proposal.chain_status: Mapped[ChainStatus], bare — no
+                # values_callable/native_enum=False) makes SQLAlchemy emit
+                # a real Postgres ENUM here, same as the baseline
+                # migration already did for disputes/milestones/
+                # predictions.chain_status (the identical column shape,
+                # same shared 'chainstatus' type name). create_type=False
+                # because that type already exists in the DB by the time
+                # this migration runs — baseline created it first; adding
+                # a second CREATE TYPE for the same name would fail.
+                sa.Enum(
+                    'LEGACY_OFFCHAIN',
+                    'PROCESSING',
+                    'DECIDED',
+                    'FINALIZED',
+                    'CANCELED',
+                    name='chainstatus',
+                    create_type=False,
+                ),
                 server_default='LEGACY_OFFCHAIN',
                 nullable=False,
             )
