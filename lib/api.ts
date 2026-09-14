@@ -10,7 +10,18 @@
 
 import type { StatusKey } from "@/components/app/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8010";
+// FOUND 2026-09-14, live on the first real Vercel/Render deploy: every
+// path passed to apiFetch below already starts with "/" (see every
+// call site in this file), and NEXT_PUBLIC_API_URL is exactly what a
+// host's dashboard (Render's included) tends to hand you WITH a
+// trailing slash when you copy it. `${API_BASE}${path}` then builds a
+// real double-slash URL ("https://host.example//proposals") — FastAPI
+// treats that as a different, nonexistent route and 404s it. That one
+// stray trailing slash silently broke every single request the entire
+// deployed app made, not just one page — replace() here so a trailing
+// slash in the configured URL (or one added by a future host, or a
+// stray edit) can never do that again.
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8010").replace(/\/+$/, "");
 
 const TOKEN_STORAGE_KEY = "nuance_token";
 
