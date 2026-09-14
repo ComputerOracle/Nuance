@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from datetime import datetime
 
+from sqlalchemy import DateTime
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -40,7 +42,25 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 class Base(DeclarativeBase):
-    """Declarative base every model in models.py inherits from."""
+    """Declarative base every model in models.py inherits from.
+
+    type_annotation_map: found live deploying to Render — every bare
+    `Mapped[datetime]` column (created_at, resolved_at, nonce_issued_at,
+    ~30 of them across core.py/governance.py) defaulted to a
+    timezone-NAIVE `DateTime()`, but every call site that actually sets
+    one explicitly uses `datetime.now(timezone.utc)` (tz-aware). SQLite
+    doesn't distinguish the two (both just become an ISO string), which
+    is exactly why this was invisible in dev/tests — Postgres does, and
+    asyncpg refuses the insert outright: `DataError: ... can't subtract
+    offset-naive and offset-aware datetimes`, confirmed reproducing
+    POST /auth/nonce against a real Postgres. Mapping datetime -> a
+    timezone-aware DateTime here, once, fixes every such column at once
+    (new Alembic migration widens the existing ones to
+    TIMESTAMP WITH TIME ZONE) rather than annotating each of ~30 columns
+    individually.
+    """
+
+    type_annotation_map = {datetime: DateTime(timezone=True)}
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
