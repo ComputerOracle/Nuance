@@ -47,10 +47,13 @@ COPY backend ./backend
 
 WORKDIR /app/backend
 
-# Migrations run as render.yaml's preDeployCommand (`alembic upgrade
-# head`), not here — Render runs that once against the built image
-# before routing traffic to it, rather than every container racing to
-# migrate on its own boot (moot at 1 instance, not once this ever scales
-# past that).
+# `alembic upgrade head` runs here, on every boot, rather than as
+# render.yaml's preDeployCommand — Render's free tier doesn't support
+# preDeployCommand at all ("pre-deploy command is not supported for free
+# tier services", confirmed live). Idempotent (a second `upgrade head`
+# against an already-current schema is a no-op) and harmless at the
+# single instance the free plan gives you; see render.yaml's own comment
+# on switching this back once/if this moves to a paid, multi-instance
+# plan.
 EXPOSE 8000
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

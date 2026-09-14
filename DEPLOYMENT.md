@@ -34,10 +34,14 @@ Nothing here has happened yet as of this writing; this is the actual
   installed here). Covered by `backend/tests/test_config.py`; full suite
   (314/314) still passes.
 - **`render.yaml`** (repo root) — the actual Blueprint. Provisions a free
-  Postgres instance and the web service together, wires `DATABASE_URL`
-  from the former to the latter automatically, and runs `alembic upgrade
-  head` as a `preDeployCommand` (once, against the built image, before
-  it takes traffic — not baked into the container's boot command).
+  Postgres instance and the web service together, and wires `DATABASE_URL`
+  from the former to the latter automatically. `alembic upgrade head`
+  runs from `Dockerfile.backend`'s own `CMD` on every boot, not as a
+  `preDeployCommand` — Render's free tier doesn't support
+  `preDeployCommand` at all (confirmed live: "pre-deploy command is not
+  supported for free tier services"). Idempotent, and harmless at the
+  single instance the free plan gives you; see the Dockerfile's own
+  comment on moving it back once/if this goes multi-instance.
 
 ### Steps
 
@@ -58,9 +62,9 @@ Nothing here has happened yet as of this writing; this is the actual
    addresses, ROADMAP.md §4.4's table), the second is Render-generated.
 3. First deploy will be slow-ish (a few minutes) — it's building Node +
    Python + both dependency trees from scratch, not a cached buildpack.
-   Watch the build log for the `preDeployCommand` step specifically:
-   `alembic upgrade head` running clean against a brand-new Postgres is
-   the real first proof this works, not just "the container started."
+   Watch the boot log for the `alembic upgrade head` line specifically:
+   it running clean against a brand-new Postgres is the real first proof
+   this works, not just "the container started."
 4. Verify against the real URL Render gives you
    (`https://nuance-backend-XXXX.onrender.com` or your chosen name):
    ```bash

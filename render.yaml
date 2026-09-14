@@ -24,10 +24,15 @@ services:
     plan: free
     healthCheckPath: /health
     # `alembic upgrade head` (app/db.py's own docstring: Postgres has no
-    # auto-migrate-on-boot the way sqlite does) against the freshly built
-    # image, before it takes traffic — a non-zero exit here cancels the
-    # deploy rather than routing to an unmigrated instance.
-    preDeployCommand: alembic upgrade head
+    # auto-migrate-on-boot the way sqlite does) runs from Dockerfile.
+    # backend's own CMD instead of a preDeployCommand here — Render
+    # confirmed live: "pre-deploy command is not supported for free tier
+    # services." Idempotent either way (a second `upgrade head` against
+    # an already-current schema is a no-op) and harmless at the single
+    # instance the free plan gives you; move it back to preDeployCommand
+    # (and drop it from the Dockerfile CMD) if this ever moves to a paid
+    # plan with more than one instance, so migrations run once per
+    # deploy rather than once per instance boot.
     envVars:
       - key: DATABASE_URL
         fromDatabase:
