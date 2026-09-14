@@ -335,9 +335,10 @@ async def resolve_pending_proposal_ids(db: AsyncSession, unresolved: list[Propos
     genlayer-js can't surface a plain call's return value from its
     receipt), same fix: once a tracked creation tx has actually reached
     the chain, scan the last governance_proposal_id_scan_window on-chain
-    proposals and match each unresolved local row by (proposer, title,
-    category) — the fields create_proposal_on_chain actually passed, so a
-    real match is a real match, not a guess."""
+    proposals and match each unresolved local row by (title, category,
+    description) — see the matching loop's own 2026-09-14 fix note below
+    for why proposer is deliberately NOT one of these fields, despite
+    being real on-chain data."""
     if not unresolved:
         return
     if not settings.governance_contract_address:
@@ -409,9 +410,28 @@ async def resolve_pending_proposal_ids(db: AsyncSession, unresolved: list[Propos
     # Each real on-chain proposal id can satisfy at most one local row —
     # same collision guard resolve_pending_dispute_ids' own claimed_ids
     # gives disputes.
+    #
+    # FIXED 2026-09-14, live on the first real production deploy: this
+    # used to also require onchain.proposer == proposal.proposer_address
+    # — but create_proposal_on_chain is UNCONDITIONALLY backend-signed
+    # (see its own docstring: "create_proposal has no sender restriction
+    # on-chain ... firing this from the backend ... is not a meaningfully
+    # different trust boundary than the proposer's own wallet doing it"),
+    # so the real on-chain `proposer` is always this deployment's own
+    # GENLAYER_PRIVATE_KEY-derived address — NEVER proposal.proposer_
+    # address, which is whichever real end user actually authored it.
+    # That comparison could only ever pass by coincidence (every local
+    # dev/test proposal tonight happened to reuse the same wallet as the
+    # deployer key) — for any real user, on a real deployment, it silently
+    # failed every single time: 5 real, successfully-created production
+    # proposals confirmed live on-chain (verified directly against
+    # get_proposal) with zero of them ever resolving on_chain_proposal_id.
+    # `description` is real, matching data create_proposal_on_chain
+    # actually passed (unlike proposer) — added as a third field so
+    # (title, category) alone isn't the only thing standing between two
+    # real proposals that happen to share both.
     claimed_ids: set[int] = set()
     for proposal in matchable:
-        proposer = proposal.proposer_address.lower()
         for i in scan_ids:
             if i in claimed_ids:
                 continue
@@ -420,9 +440,9 @@ async def resolve_pending_proposal_ids(db: AsyncSession, unresolved: list[Propos
                 continue
             onchain = item["result"]
             if (
-                str(onchain.get("proposer", "")).lower() == proposer
-                and str(onchain.get("title", "")) == proposal.title
+                str(onchain.get("title", "")) == proposal.title
                 and str(onchain.get("category", "")) == proposal.category
+                and str(onchain.get("description", "")) == proposal.description
             ):
                 proposal.on_chain_proposal_id = i
                 claimed_ids.add(i)
