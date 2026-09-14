@@ -33,6 +33,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db import AsyncSessionLocal
@@ -41,6 +43,66 @@ from app.models import Asset, Escrow, Prediction
 from app.services.genlayer_rpc import _repo_root
 
 logger = logging.getLogger(__name__)
+
+# FOUND 2026-09-14, live: a real NuanceEscrow deploy (real testnet GEN
+# spent, an irreversible on-chain fact from this point on) can succeed
+# and still get "lost" if the commit that records its address on the
+# Escrow row fails right after — this DB is SQLite, whose one-writer-at-a-
+# time lock made this a real, repeated live failure the moment anything
+# else (this exact incident: a second, manual debugging process) touched
+# the file concurrently. A plain retry — same 30s connect-level busy
+# timeout every session already gets (see engine's own connect_args
+# above in db.py) — usually clears a passing collision on its own; this
+# is a belt-and-suspenders second layer for whatever a single 30s window
+# didn't cover. Deliberately narrow: only wraps the commit that persists
+# an address we already paid real gas for, never the cheap, no-side-
+# effect-if-lost `deploy_attempted_at` commit earlier in the same
+# function.
+_COMMIT_RETRY_ATTEMPTS = 5
+_COMMIT_RETRY_BASE_DELAY_SECONDS = 2
+
+
+async def _commit_or_raise_loudly(db: AsyncSession, *, context: str) -> None:
+    """await db.commit(), retrying a few times (short backoff) if it fails
+    with a transient "database is locked" — see this module's own note
+    above on why this exists. If every attempt still fails, this does NOT
+    swallow the error the way deploy_contract's own failures are (a
+    normal failed deploy spent no gas and is safe to just retry from
+    scratch next cycle; this path is called only once a real deploy
+    already succeeded, so silently returning here would leave a real,
+    paid-for contract address nowhere any human or process could ever
+    find again). Logs CRITICAL with `context` (expected to already
+    contain the address/escrow id) and re-raises, so the caller's own
+    background-task machinery surfaces a real traceback instead of this
+    looking like an ordinary, safe-to-retry deploy failure.
+    """
+    last_exc: OperationalError | None = None
+    for attempt in range(1, _COMMIT_RETRY_ATTEMPTS + 1):
+        try:
+            await db.commit()
+            return
+        except OperationalError as exc:
+            last_exc = exc
+            await db.rollback()
+            logger.warning(
+                "%s: commit attempt %s/%s hit %s — retrying.",
+                context,
+                attempt,
+                _COMMIT_RETRY_ATTEMPTS,
+                exc,
+            )
+            if attempt < _COMMIT_RETRY_ATTEMPTS:
+                await asyncio.sleep(_COMMIT_RETRY_BASE_DELAY_SECONDS * attempt)
+    logger.critical(
+        "%s: could not be persisted after %s attempts — a real on-chain "
+        "action already happened and this local DB has no record of it. "
+        "Manual reconciliation needed. Last error: %s",
+        context,
+        _COMMIT_RETRY_ATTEMPTS,
+        last_exc,
+    )
+    assert last_exc is not None
+    raise last_exc
 
 # GEN has 18 decimals — same fact components/app/genlayer-chain.ts's
 # WEI_PER_GEN is pulled from (GENLAYER_BRADBURY.nativeCurrency.decimals).
@@ -278,7 +340,12 @@ async def deploy_escrow_contract(escrow_id: int) -> None:
 
         escrow.contract_address = address
         milestone.on_chain_index = 0
-        await db.commit()
+        # See _commit_or_raise_loudly's own docstring — this specific
+        # commit is the one moment a real, already-spent deploy could
+        # otherwise vanish from this app's view entirely.
+        await _commit_or_raise_loudly(
+            db, context=f"deploy_escrow_contract: escrow id={escrow_id} -> {address}"
+        )
         logger.info("Auto-deployed NuanceEscrow for escrow id=%s -> %s", escrow_id, address)
 
         # FIXED 2026-09-12 — a real gap found live: an already-open escrow
@@ -328,7 +395,19 @@ async def retry_undeployed_escrows() -> None:
         escrow_ids = [row[0] for row in result.all()]
 
     for escrow_id in escrow_ids:
-        await deploy_escrow_contract(escrow_id)
+        try:
+            await deploy_escrow_contract(escrow_id)
+        except OperationalError:
+            # _commit_or_raise_loudly already logged CRITICAL with the
+            # orphaned address — that's the signal this needs a human,
+            # not this loop. What this except IS responsible for: not
+            # letting one escrow's unrecorded deploy delay every other
+            # escrow queued in this same retry sweep by a full poll
+            # cycle. Each of those un-run escrows stays exactly as
+            # overdue as it already was and gets picked up again next
+            # cycle regardless — nothing about them depended on this one
+            # succeeding first.
+            continue
 
 
 async def deploy_prediction_contract(prediction_id: int) -> None:

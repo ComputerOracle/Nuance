@@ -14,7 +14,12 @@
 // is pre-mainnet and evolving, so re-check this against whatever version
 // is installed before relying on it again.
 
-import { TransactionStatus, TransactionResult, isDecidedState } from "genlayer-js/types";
+import {
+  TransactionStatus,
+  TransactionResult,
+  isDecidedState,
+  transactionsStatusNameToNumber,
+} from "genlayer-js/types";
 
 // A pre-cutover (or simply not-yet-on-chain) escrow/dispute/prediction —
 // the existing FastAPI + services/consensus.py path, nothing about it is
@@ -80,6 +85,34 @@ export function chainStatusMeta(status: ChainStatus): ChainStatusMeta {
 // isDecidedState(status), genlayer-js's own export, rather than
 // hand-listing which of the 14 raw values counts as "decided"; that list
 // is the SDK's to maintain, not ours to duplicate and let drift.
+//
+// FIXED 2026-09-14 — a real, live bug found verifying real GEN-staked
+// governance voting end-to-end: a freshly created on-chain proposal's
+// create_proposal tx reached ACCEPTED (5/5 validators AGREE — a genuine
+// decision, still inside the appeal window) and sat there, never
+// bucketed past "processing", so resolve_pending_proposal_ids (backend/
+// app/services/genlayer_indexer.py) never got to resolve its
+// on_chain_proposal_id until the tx reached FINALIZED outright — and the
+// UI's "Accepted, finalizing…" badge above could never actually appear
+// for ANY escrow/dispute/prediction/proposal transaction, on any of the
+// four detail views that render it.
+//
+// Root cause, confirmed directly against the installed genlayer-js@1.1.8
+// source (node_modules/genlayer-js/dist/chunk-EY35NPSE.js): despite its
+// .d.ts declaring `isDecidedState(status: string)`, the real
+// implementation is `DECIDED_STATES.some(state =>
+// transactionsStatusNameToNumber[state] === status)` — it compares
+// against the STRINGIFIED NUMERIC code ("5"), not the status NAME
+// ("ACCEPTED") this file (correctly, per the .d.ts) was passing it.
+// isDecidedState("ACCEPTED") is unconditionally false in this version;
+// isDecidedState("5") is true. Re-verify this exact behavior before
+// trusting it again if genlayer-js is ever upgraded — a fixed .d.ts/impl
+// mismatch would make this translation step dead weight, not wrong.
+function isDecidedStatusName(statusName: TransactionStatus): boolean {
+  const numericCode = transactionsStatusNameToNumber[statusName];
+  return numericCode !== undefined && isDecidedState(numericCode);
+}
+
 export function bucketFromStatusName(statusName: TransactionStatus): ChainStatusBucket {
   if (statusName === TransactionStatus.FINALIZED) return "finalized";
   if (
@@ -89,7 +122,7 @@ export function bucketFromStatusName(statusName: TransactionStatus): ChainStatus
   ) {
     return "canceled";
   }
-  if (isDecidedState(statusName)) return "decided";
+  if (isDecidedStatusName(statusName)) return "decided";
   return "processing"; // UNINITIALIZED, PENDING, PROPOSING, COMMITTING, REVEALING
 }
 

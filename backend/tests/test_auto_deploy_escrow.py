@@ -37,6 +37,7 @@ from eth_account import Account  # noqa: E402
 from eth_account.messages import encode_defunct  # noqa: E402
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy.exc import OperationalError  # noqa: E402
 
 import app.services.genlayer_deploy as genlayer_deploy  # noqa: E402
 from app.db import AsyncSessionLocal  # noqa: E402
@@ -420,3 +421,69 @@ def test_retry_undeployed_escrows_skips_already_linked(monkeypatch):
 
     escrow = asyncio.run(_get_escrow(escrow_id))
     assert escrow.contract_address == "0xAlreadyLinked000000000000000000000002"
+
+
+class _FlakyCommitDb:
+    """Duck-typed stand-in for the one thing genlayer_deploy._commit_or_
+    raise_loudly actually calls (db.commit()/db.rollback()) — deliberately
+    NOT a real AsyncSession, since patching every SQLAlchemy session's
+    commit() globally would also break the unrelated deploy_attempted_at
+    commit earlier in deploy_escrow_contract (by design not wrapped in
+    retry logic — see that function's own comment on why losing it is
+    cheap). This isolates the one commit this test suite actually needs
+    to make flaky."""
+
+    def __init__(self, fail_times: int):
+        self.fail_times = fail_times
+        self.commit_calls = 0
+        self.rollback_calls = 0
+
+    async def commit(self):
+        self.commit_calls += 1
+        if self.commit_calls <= self.fail_times:
+            raise OperationalError("UPDATE escrows ...", {}, Exception("database is locked"))
+
+    async def rollback(self):
+        self.rollback_calls += 1
+
+
+def test_commit_or_raise_loudly_recovers_from_transient_lock(monkeypatch):
+    """FOUND 2026-09-14, live: a real NuanceEscrow deploy (real gas spent)
+    got its address commit dropped by a transient 'database is locked' —
+    _commit_or_raise_loudly exists so that a passing collision like this
+    one doesn't lose a real on-chain fact. No sleep in this test — the
+    retry backoff would make this test slow for no reason; the actual
+    delay math isn't what's under test here."""
+    monkeypatch.setattr(genlayer_deploy.asyncio, "sleep", _instant_sleep)
+    db = _FlakyCommitDb(fail_times=2)
+
+    asyncio.run(genlayer_deploy._commit_or_raise_loudly(db, context="test"))
+
+    assert db.commit_calls == 3  # 2 failures + 1 success
+    assert db.rollback_calls == 2
+
+
+def test_commit_or_raise_loudly_raises_after_exhausting_retries(monkeypatch):
+    """The other half: if the lock never clears, this must NOT behave
+    like an ordinary failed deploy (deploy_contract returning None,
+    silently left for the next retry sweep) — that would permanently
+    lose track of a contract address real testnet GEN already paid for.
+    Raising is what makes retry_undeployed_escrows' own try/except
+    (genlayer_deploy.py) — not this function — the one place that
+    decides what happens next, and makes deploy_escrow_contract's own
+    background-task failure show up as a real traceback instead of a
+    quiet, misleading 'deploy failed' log line."""
+    monkeypatch.setattr(genlayer_deploy.asyncio, "sleep", _instant_sleep)
+    db = _FlakyCommitDb(fail_times=999)
+
+    with pytest.raises(OperationalError):
+        asyncio.run(
+            genlayer_deploy._commit_or_raise_loudly(db, context="test-always-fails")
+        )
+
+    assert db.commit_calls == genlayer_deploy._COMMIT_RETRY_ATTEMPTS
+    assert db.rollback_calls == genlayer_deploy._COMMIT_RETRY_ATTEMPTS
+
+
+async def _instant_sleep(_seconds):
+    return None
