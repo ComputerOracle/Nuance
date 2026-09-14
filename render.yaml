@@ -1,0 +1,99 @@
+# Render Blueprint for the Nuance backend. Create via Render's dashboard
+# -> New -> Blueprint, pointing at this repo; Render reads this file and
+# provisions everything below in one go. See DEPLOYMENT.md for the full
+# walkthrough, including which prompted values (sync: false below) to
+# paste in from backend/.env, and what to update once Emma's frontend
+# has a real URL.
+#
+# Only the backend is defined here — the Next.js frontend (repo root) is
+# Emma's own deploy, typically to Vercel, which reads next.config.ts/
+# package.json directly and has no use for a Render blueprint.
+databases:
+  - name: nuance-db
+    plan: free
+    region: oregon
+    postgresMajorVersion: "17"
+
+services:
+  - type: web
+    name: nuance-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile.backend
+    dockerContext: .
+    region: oregon
+    plan: free
+    healthCheckPath: /health
+    # `alembic upgrade head` (app/db.py's own docstring: Postgres has no
+    # auto-migrate-on-boot the way sqlite does) against the freshly built
+    # image, before it takes traffic — a non-zero exit here cancels the
+    # deploy rather than routing to an unmigrated instance.
+    preDeployCommand: alembic upgrade head
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nuance-db
+          property: connectionString
+      # postgres:// from the line above gets its +asyncpg driver added by
+      # Settings._add_asyncpg_driver (app/config.py) — nothing to hand-edit.
+
+      # Comma-separated, no spaces (Settings.cors_origins_list splits on
+      # ","). Start with the frontend origin(s) you already have; add
+      # Emma's real deployed URL here once it exists (Render dashboard ->
+      # this service -> Environment -> edit, no redeploy needed for env
+      # var changes alone... a restart is still triggered, but not a
+      # rebuild).
+      - key: CORS_ORIGINS
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_MINUTES
+        value: "1440"
+
+      # --- AI validator providers (consensus engine) — optional, but at
+      # least one real key is what makes a verdict a real judgment
+      # instead of the labeled offline heuristic stand-in. Paste the
+      # values already in backend/.env. ---
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOVERNANCE_GEMINI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+
+      # --- market-generator ingestion — optional ---
+      - key: TWITTERAPI_IO_KEY
+        sync: false
+      - key: TWITTER_BEARER_TOKEN
+        sync: false
+
+      # --- GenLayer Bradbury testnet — the deployer key and the six live
+      # contract addresses from ROADMAP.md 4.4's table. The addresses
+      # aren't secret (they're public on-chain); the private key is —
+      # paste it from backend/.env, never commit it. ---
+      - key: GENLAYER_PRIVATE_KEY
+        sync: false
+      - key: DISPUTE_COURT_CONTRACT_ADDRESS
+        value: "0xf7b4C186fF9d69701F41AA3Aa1aCF8cED0c9b057"
+      - key: ESCROW_CONTRACT_ADDRESS
+        value: "0xDB6939bD12775e5F77e48138F0DE103D804268f7"
+      - key: PREDICTION_MARKET_CONTRACT_ADDRESS
+        value: "0xF34c75330bEd61B7e559e554a5628b4fa50CDd24"
+      - key: GOVERNANCE_CONTRACT_ADDRESS
+        value: "0x37303291cA1438F05b2236b7Dd9667aEeFA8f310"
+      - key: VALIDATORS_CONTRACT_ADDRESS
+        value: "0x4E2B213a80c5e20CEB45Ce444cC59dB593D704FE"
+      - key: AGENT_DIRECTORY_CONTRACT_ADDRESS
+        value: "0x3EF04900e7c535dDEfb771664FE04541d8b6D463"
+
+      # --- monitoring — optional, a true no-op until set (app/
+      # observability.py::init_sentry) ---
+      - key: SENTRY_DSN
+        sync: false
+
+      # REDIS_URL deliberately not set: unreachable Redis degrades the
+      # consensus WS channel to plain DB polling (same shape as every
+      # other unset-optional-integration above) — fine for a first
+      # deploy. Add a Render Key Value instance and this env var later if
+      # the WS channel needs multi-instance fan-out.

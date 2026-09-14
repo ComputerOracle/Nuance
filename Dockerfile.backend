@@ -1,0 +1,56 @@
+# Deployable unit for the FastAPI backend (see render.yaml). Lives at the
+# repo root, not backend/, because the backend isn't actually
+# Python-only at runtime: backend/app/services/genlayer_{rpc,write,
+# deploy}.py all shell out to `npx tsx scripts/genlayer-*.ts` for every
+# GenLayer chain read/write/deploy — there's no verified Python GenLayer
+# SDK (see genlayer_rpc.py's own docstring), so genlayer-js (Node) does
+# the actual RPC leg. That means the image needs Node + this repo's root
+# node_modules alongside Python + backend/'s own deps; a plain Render
+# "Python" runtime environment doesn't give you Node, so Docker is the
+# deployment target, not the native Python runtime.
+FROM python:3.13-slim
+
+# Node 22 — matches .github/workflows/ci.yml's own pinned node-version,
+# via NodeSource (Debian's own apt repo only carries much older Node).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Root npm deps in their own layer, cached independently of backend/'s
+# Python deps below. --omit=dev installs exactly `genlayer-js` + `tsx`
+# (the only two dependencies the subprocess bridge above needs) — `tsx`
+# was moved out of devDependencies in package.json for exactly this
+# reason; `next`/`react` build the frontend Emma deploys separately and
+# are unused here, but cost nothing extra to install alongside the two
+# that matter.
+COPY package.json package-lock.json tsconfig.json ./
+RUN npm ci --omit=dev
+
+# Python deps, own layer.
+COPY backend/requirements.txt backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt
+
+# Everything genlayer_rpc.py's _repo_root() walk (looking for
+# package.json, already copied above) and the scripts it invokes need to
+# resolve: scripts/ itself, contracts/ (genlayer_deploy.py deploys
+# contracts/<file> per new escrow/market — see that module's docstring,
+# not just a one-off CLI path), lib/ (genlayer-read.ts imports
+# lib/chain-status.ts), then the backend app itself.
+COPY scripts ./scripts
+COPY contracts ./contracts
+COPY lib ./lib
+COPY backend ./backend
+
+WORKDIR /app/backend
+
+# Migrations run as render.yaml's preDeployCommand (`alembic upgrade
+# head`), not here — Render runs that once against the built image
+# before routing traffic to it, rather than every container racing to
+# migrate on its own boot (moot at 1 instance, not once this ever scales
+# past that).
+EXPOSE 8000
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
