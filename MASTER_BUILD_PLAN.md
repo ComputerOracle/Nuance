@@ -98,7 +98,25 @@ NEXT_PUBLIC_VALIDATORS_CONTRACT_ADDRESS=0x...
 NEXT_PUBLIC_AGENT_DIRECTORY_CONTRACT_ADDRESS=0x...
 ```
 
-### 5.2 Actionable Resolution UX
+### 5.2 Full On-Chain Cutover & Wallet Signing Restoration (Escaping Demo Mode)
+
+**Diagnosis of the "Demo Mode" Behavior**:
+Currently, Governance and Dispute Court do not prompt MetaMask to sign transactions because the frontend employs safety fallbacks:
+- **Governance**: Evaluates `const isOnChain = pr.onChainProposalId != null`. If `onChainProposalId` is absent (due to stale Bradbury testnet addresses or unlinked database rows), it falls back to the off-chain mock vote button to avoid breaking the UI.
+- **Dispute Court**: Evaluates `const isOnChainFiled = disputeData.chain_status !== "legacy_offchain"`. Unlinked disputes default to `legacy_offchain`, bypassing wallet signatures for evidence and escalation.
+
+**Action Plan to Activate Live Wallet Signing**:
+1. **Redeploy & Bind Contract Registries**: Deploy fresh `NuanceGovernance` and `NuanceDisputeCourt` contracts to Bradbury testnet and record their addresses in Vercel (`NEXT_PUBLIC_GOVERNANCE_CONTRACT_ADDRESS`, `NEXT_PUBLIC_DISPUTE_COURT_CONTRACT_ADDRESS`) and Render (`backend/.env`).
+2. **On-Chain Seed & Indexer Synchronization**:
+   - Run `create_proposal_on_chain` so each proposal receives a valid index on the `NuanceGovernance` contract (`on_chain_proposal_id >= 0`).
+   - Run `file_dispute_on_chain` for disputes so they obtain on-chain tracking IDs (`on_chain_dispute_id >= 0`).
+3. **Frontend Wallet Signing Triggers**:
+   - **Governance**: Instantly unlocks "Stake GEN to vote" preset chips (0.5, 1, 2, 5 GEN) and prompts MetaMask via `castVoteOnChain()` (`@gl.public.write.payable`).
+   - **Dispute Court**: Prompts MetaMask via `fileDisputeOnChain()` and `submitEvidenceOnChain()` against the real GenVM validator committee.
+   - **Escrows**: Prompts MetaMask via `fundEscrowOnChain()` payable deposits.
+   - **Prediction Markets**: Prompts MetaMask via `placeBetOnChain()` payable odds staking.
+
+### 5.3 Actionable Resolution UX
 - Replace static "stuck" notices in `escrow-detail-view.tsx` and `prediction-detail-view.tsx` with live status indicators and a one-click **"Request Faucet Relayer"** / **"Retry On-Chain Claim"** button.
 
 ---
@@ -108,7 +126,8 @@ NEXT_PUBLIC_AGENT_DIRECTORY_CONTRACT_ADDRESS=0x...
 | Milestone | Deliverables | Est. Timeline | Status |
 |---|---|---|---|
 | **M1: Smart Contract Patches** | Emergency refund, dispute hook, market cancel | Days 1–2 | Ready to patch |
-| **M2: Contract Redeployment** | Deploy all 6 contracts via `scripts/deploy.ts` | Day 2 | Pending M1 |
-| **M3: Native RPC Indexer** | Replace subprocess calls with Python `httpx` RPC | Day 3 | Planned |
-| **M4: Payout Relayer** | Automatic faucet disbursement for stuck claims | Day 4 | Planned |
-| **M5: Production Release** | Live E2E tests, Vercel & Render production cutover | Day 5 | Ready |
+| **M2: Contract Redeployment** | Deploy all 6 contracts via `scripts/deploy.ts` & update Vercel/Render envs | Day 2 | Pending M1 |
+| **M3: On-Chain Cutover** | Bind Governance & Court to chain IDs; restore MetaMask signing flows | Days 2–3 | Planned |
+| **M4: Native RPC Indexer** | Replace subprocess calls with Python `httpx` RPC | Day 3 | Planned |
+| **M5: Payout Relayer** | Automatic faucet disbursement for stuck claims | Day 4 | Planned |
+| **M6: Production Release** | Live E2E tests, Vercel & Render production cutover | Day 5 | Ready |
