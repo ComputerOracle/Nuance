@@ -1616,12 +1616,22 @@ export function NuanceApp() {
     if (!evidenceText.trim() || selectedDisputeId == null || isSubmittingEvidence) return;
     const disputeId = selectedDisputeId;
     setDisputeActionError(null);
+    // FIXED 2026-09-15 — this used to only flip on after the getDispute
+    // round-trip below resolved, so on a slow connection the button sat
+    // visually dead (no disabled state, no "Submitting…" label) for
+    // however long that fetch took, reading as broken even though the
+    // click had registered and the flow was already running underneath.
+    // Setting it here makes the button respond the instant it's clicked.
+    // Every early return between here and the real submission below now
+    // has to flip it back off, since nothing was actually submitted yet.
+    setIsSubmittingEvidence(true);
 
     let disputeData: api.ApiDispute;
     try {
       disputeData = await api.getDispute(disputeId);
     } catch (err) {
       setDisputeActionError(errorText(err, "Failed to submit evidence."));
+      setIsSubmittingEvidence(false);
       return;
     }
     const disputeCourtAddress = disputeCourtContractAddress();
@@ -1640,6 +1650,7 @@ export function NuanceApp() {
         setDisputeActionError(
           "This dispute was filed on-chain — connect your wallet to submit evidence for it."
         );
+        setIsSubmittingEvidence(false);
         return;
       }
       // On-chain path — requires the real numeric dispute id, which only
@@ -1652,6 +1663,7 @@ export function NuanceApp() {
           "This dispute was filed on-chain, but hasn't finished linking to its on-chain id yet " +
             "(usually a few minutes) — try again shortly rather than submitting off-chain evidence for it."
         );
+        setIsSubmittingEvidence(false);
         return;
       }
       // The contract's own add_evidence only accepts a URL — there's
@@ -1661,10 +1673,10 @@ export function NuanceApp() {
           "This dispute is on-chain — evidence needs a real link (URL) for validators to fetch. " +
             "A description with no link can't be submitted on-chain."
         );
+        setIsSubmittingEvidence(false);
         return;
       }
 
-      setIsSubmittingEvidence(true);
       try {
         const txHash = await addEvidenceOnChain({
           walletAddress: wallet.address,
@@ -1686,7 +1698,6 @@ export function NuanceApp() {
     }
 
     // Legacy off-chain path — unchanged: Nuance's own AI review judges it.
-    setIsSubmittingEvidence(true);
     try {
       const submission = await api.submitEvidence(disputeId, evidenceText, evidenceLink.trim() || null);
       setEvidenceText("");

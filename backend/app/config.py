@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # --- used starting this prompt ---
     database_url: str = "sqlite+aiosqlite:///./nuance.db"
     cors_origins: str = "http://localhost:3000"
+    cors_origin_regex: str | None = r"^https://.*\.vercel\.app$"
 
     # Render's managed Postgres (Railway/Supabase/Heroku too) hands you a
     # plain `postgres://` or `postgresql://` connection string — the
