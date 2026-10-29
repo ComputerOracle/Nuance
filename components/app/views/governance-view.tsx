@@ -44,8 +44,19 @@ export function GovernanceView({
         Plain-language proposals interpreted and enforced by AI consensus.
       </div>
 
-      <div className="flex flex-col gap-3">
-        {proposals.map((pr) => {
+      {proposals.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-[16px] border border-dashed border-border-4 bg-surface-1/50 px-6 py-16 text-center">
+          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full border border-border-4 bg-surface-2 text-xl text-fg-meta">
+            🏛
+          </div>
+          <div className="text-base font-semibold text-fg">No proposals available</div>
+          <p className="mt-1 max-w-md text-sm text-fg-meta">
+            Active DAO governance proposals and community initiatives will appear here for voting.
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {proposals.map((pr) => {
           // FIXED 2026-09-13 — real, GEN-staked on-chain voting (asked
           // directly: "any user that vote and unvote you will have to
           // use Gen token ... like a real Governance"). A proposal
@@ -281,7 +292,8 @@ export function GovernanceView({
             </div>
           );
         })}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
