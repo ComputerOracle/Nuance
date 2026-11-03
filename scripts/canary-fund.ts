@@ -99,7 +99,10 @@ async function main() {
     })
   );
 
-  const statusName = (receipt as any).statusName ?? (receipt as any).status_name ?? receipt.status;
+  const statusName =
+    receipt.statusName ??
+    (receipt as unknown as { status_name?: string }).status_name ??
+    receipt.status;
   console.log(`  Transaction status: ${statusName}`);
 
   const contractBalAfter = BigInt(await client.getBalance({ address: contractAddress }));

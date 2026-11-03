@@ -44,7 +44,7 @@ function formatGen(wei: bigint): string {
 }
 
 async function sweepContract(
-  client: any,
+  client: ReturnType<typeof createClient>,
   contractAddress: `0x${string}`,
   amount: bigint = BigInt(0)
 ) {
@@ -86,7 +86,10 @@ async function sweepContract(
     interval: 3000,
   });
 
-  const statusName = (receipt as any).statusName ?? (receipt as any).status_name ?? receipt.status;
+  const statusName =
+    receipt.statusName ??
+    (receipt as unknown as { status_name?: string }).status_name ??
+    receipt.status;
   console.log(`  Receipt Status: ${statusName}`);
 
   // 4. Read after balances
