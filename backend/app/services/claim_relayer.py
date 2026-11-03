@@ -61,3 +61,27 @@ async def check_claim_status(
             else "No stuck funds detected on-chain."
         ),
     }
+
+
+async def trigger_contract_sweep(contract_address: str) -> None:
+    """Spawns scripts/sweep-and-finalize.ts to sweep stuck funds back to Master Treasury."""
+    import asyncio
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent.parent.parent
+    cmd = ["npx", "tsx", "scripts/sweep-and-finalize.ts", contract_address]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(repo_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            logger.info("Sweep script succeeded for %s: %s", contract_address, stdout.decode())
+        else:
+            logger.warning("Sweep script failed for %s: %s", contract_address, stderr.decode())
+    except Exception as exc:
+        logger.error("Failed to trigger sweep script: %s", exc)
+

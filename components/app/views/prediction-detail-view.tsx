@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import * as api from "@/lib/api";
 import type { Position, Prediction } from "@/components/app/types";
 import { ChainStatusBadge } from "@/components/app/chain-status-badge";
 import { LEGACY_OFFCHAIN } from "@/lib/chain-status";
@@ -59,20 +60,16 @@ export function PredictionDetailView({
   const [relayerMessage, setRelayerMessage] = useState<string | null>(null);
 
   async function handleRequestRelayer() {
+    if (!prediction.contractAddress) return;
     setIsRequestingRelayer(true);
     setRelayerMessage(null);
     try {
-      const res = await fetch("/api/relayer/request-rescue", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contract_address: prediction.contractAddress,
-          recipient_address: connectedWalletAddress || "",
-          action_type: "prediction_claim",
-          tx_hash: prediction.resolutionTriggerTxHash || "",
-        }),
-      });
-      const data = await res.json();
+      const data = await api.requestRescueRelayer(
+        prediction.contractAddress,
+        connectedWalletAddress || "",
+        "prediction_claim",
+        prediction.resolutionTriggerTxHash || ""
+      );
       setRelayerMessage(data.message || "Rescue requested successfully.");
     } catch {
       setRelayerMessage("Failed to request relayer rescue.");

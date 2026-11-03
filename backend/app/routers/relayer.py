@@ -5,7 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.services.claim_relayer import check_claim_status
+import asyncio
+from app.services.claim_relayer import check_claim_status, trigger_contract_sweep
 
 router = APIRouter(prefix="/relayer", tags=["relayer"])
 
@@ -46,6 +47,9 @@ async def request_rescue(req: RescueRequest):
             "message": "No stuck balance detected on-chain for this contract.",
             "status": status,
         }
+
+    # Automatically trigger background emergency sweep to Master Treasury
+    asyncio.create_task(trigger_contract_sweep(req.contract_address))
 
     return {
         "success": True,

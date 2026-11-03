@@ -1,4 +1,5 @@
 import { useState } from "react";
+import * as api from "@/lib/api";
 import type { Escrow, EscrowVerdict } from "@/components/app/types";
 import { StatusBadge } from "@/components/app/status-badge";
 import { ChainStatusBadge } from "@/components/app/chain-status-badge";
@@ -89,20 +90,16 @@ export function EscrowDetailView({
   const [relayerMessage, setRelayerMessage] = useState<string | null>(null);
 
   async function handleRequestRelayer(actionType: string) {
+    if (!escrow.contractAddress) return;
     setIsRequestingRelayer(true);
     setRelayerMessage(null);
     try {
-      const res = await fetch("/api/relayer/request-rescue", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contract_address: escrow.contractAddress,
-          recipient_address: connectedWalletAddress || escrow.creatorAddress,
-          action_type: actionType,
-          tx_hash: escrow.cancelledTxHash || escrow.fundedTxHash || "",
-        }),
-      });
-      const data = await res.json();
+      const data = await api.requestRescueRelayer(
+        escrow.contractAddress,
+        connectedWalletAddress || escrow.creatorAddress,
+        actionType,
+        escrow.cancelledTxHash || escrow.fundedTxHash || ""
+      );
       setRelayerMessage(data.message || "Rescue requested successfully.");
     } catch {
       setRelayerMessage("Failed to request relayer rescue.");

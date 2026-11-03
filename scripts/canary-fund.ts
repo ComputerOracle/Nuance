@@ -78,12 +78,14 @@ async function main() {
 
   console.log(`\nSubmitting fund_escrow(value=${formatGen(amountWei)})…`);
 
+  const distribution = await client.estimateFeesDistribution({});
   const txHash = await withRateLimitRetry("canary fund_escrow", () =>
     client.writeContract({
       address: contractAddress,
       functionName: "fund_escrow",
       args: [] as never,
       value: amountWei,
+      fees: { distribution },
     })
   );
 

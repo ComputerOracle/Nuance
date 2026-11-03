@@ -68,11 +68,13 @@ async function sweepContract(
   console.log(`\nInitiating emergency_withdraw(amount=${amount}, to_address="${MASTER_TREASURY}")…`);
 
   // 2. Dispatch emergency_withdraw
+  const distribution = await client.estimateFeesDistribution({});
   const txHash = await client.writeContract({
     address: contractAddress,
     functionName: "emergency_withdraw",
     args: [amount, MASTER_TREASURY] as never,
     value: BigInt(0),
+    fees: { distribution },
   });
 
   console.log(`  Tx Hash: ${txHash}`);

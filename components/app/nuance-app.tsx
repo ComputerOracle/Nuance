@@ -2301,6 +2301,7 @@ export function NuanceApp() {
             autoEscalateOn={autoEscalateOn}
             onToggleNotify={handleToggleNotify}
             onToggleAutoEscalate={handleToggleAutoEscalate}
+            connectedWalletAddress={wallet.status === "connected" ? wallet.address : null}
           />
         )}
       </div>

@@ -98,6 +98,18 @@ function createWriteClient(walletAddress: string, provider: Eip1193Provider) {
 // wallet-connection.ts's formatNativeBalance already documents.
 const ZERO_VALUE = BigInt(0);
 
+/** Safe estimation of GenVM Bradbury transaction fee distribution,
+ * required by consensusMainContract to prevent FeeValueMustBeNonZero errors. */
+async function resolveFees(client: ReturnType<typeof createWriteClient>) {
+  try {
+    const distribution = await client.estimateFeesDistribution({});
+    return { distribution };
+  } catch (err) {
+    console.warn("estimateFeesDistribution warning, falling back:", err);
+    return undefined;
+  }
+}
+
 /** Signs and sends a real NuanceEscrow.submit_deliverable transaction
  * through the connected wallet. Resolves to the transaction hash — throws
  * (via describeWriteError-translatable errors) on rejection or an RPC
@@ -106,12 +118,14 @@ export async function submitDeliverableOnChain(
   args: SubmitDeliverableOnChainArgs
 ): Promise<string> {
   const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
 
   const txHash = await client.writeContract({
     address: args.contractAddress,
     functionName: "submit_deliverable",
     args: [args.milestoneIndex, args.deliverableText, args.deliverableUrl] as never,
     value: ZERO_VALUE,
+    fees,
   });
 
   return String(txHash);
@@ -132,6 +146,7 @@ export async function submitDeliverableOnChain(
  * (exact string equality is what the indexer matches on). */
 export async function fileDisputeOnChain(args: FileDisputeOnChainArgs): Promise<string> {
   const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
 
   const txHash = await client.writeContract({
     address: args.disputeCourtAddress,
@@ -143,6 +158,7 @@ export async function fileDisputeOnChain(args: FileDisputeOnChainArgs): Promise<
       args.evidenceUrl,
     ] as never,
     value: ZERO_VALUE,
+    fees,
   });
 
   return String(txHash);
@@ -174,12 +190,14 @@ export interface AddEvidenceOnChainArgs {
  * the fund-loss risk fund_escrow's own sender check carries. */
 export async function addEvidenceOnChain(args: AddEvidenceOnChainArgs): Promise<string> {
   const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
 
   const txHash = await client.writeContract({
     address: args.disputeCourtAddress,
     functionName: "add_evidence",
     args: [args.onChainDisputeId, args.evidenceUrl] as never,
     value: ZERO_VALUE,
+    fees,
   });
 
   return String(txHash);
@@ -268,12 +286,14 @@ export interface ReleaseMilestoneOnChainArgs {
  * bettors' on-chain stakes, only the market's own state as a whole). */
 export async function betOnChain(args: BetOnChainArgs): Promise<string> {
   const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
 
   const txHash = await client.writeContract({
     address: args.contractAddress,
     functionName: "bet",
     args: [args.outcome] as never,
     value: milliGenToWei(args.amountMilliGen),
+    fees,
   });
 
   return String(txHash);
@@ -288,12 +308,14 @@ export async function betOnChain(args: BetOnChainArgs): Promise<string> {
  * for the indexer's own poll cycle), not the primary mechanism. */
 export async function resolveMarketOnChain(args: ResolveMarketOnChainArgs): Promise<string> {
   const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
 
   const txHash = await client.writeContract({
     address: args.contractAddress,
     functionName: "resolve_market",
     args: [] as never,
     value: ZERO_VALUE,
+    fees,
   });
 
   return String(txHash);
@@ -306,12 +328,14 @@ export async function resolveMarketOnChain(args: ResolveMarketOnChainArgs): Prom
  * server-side ever calls this on a bettor's behalf. */
 export async function claimWinningsOnChain(args: ClaimWinningsOnChainArgs): Promise<string> {
   const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
 
   const txHash = await client.writeContract({
     address: args.contractAddress,
     functionName: "claim_winnings",
     args: [] as never,
     value: ZERO_VALUE,
+    fees,
   });
 
   return String(txHash);
@@ -330,12 +354,14 @@ export async function claimWinningsOnChain(args: ClaimWinningsOnChainArgs): Prom
  * thrown error, same as any other reverted write here. */
 export async function castVoteOnChain(args: CastVoteOnChainArgs): Promise<string> {
   const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
 
   const txHash = await client.writeContract({
     address: args.contractAddress,
     functionName: "cast_vote",
     args: [args.onChainProposalId, args.choice] as never,
     value: parseGenToWei(args.amountGen),
+    fees,
   });
 
   return String(txHash);
@@ -350,12 +376,14 @@ export async function castVoteOnChain(args: CastVoteOnChainArgs): Promise<string
  * value back. */
 export async function retractVoteOnChain(args: RetractVoteOnChainArgs): Promise<string> {
   const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
 
   const txHash = await client.writeContract({
     address: args.contractAddress,
     functionName: "retract_vote",
     args: [args.onChainProposalId] as never,
     value: ZERO_VALUE,
+    fees,
   });
 
   return String(txHash);
@@ -371,12 +399,14 @@ export async function retractVoteOnChain(args: RetractVoteOnChainArgs): Promise<
  * contract's own checks rather than duplicating them client-side. */
 export async function fundEscrowOnChain(args: FundEscrowOnChainArgs): Promise<string> {
   const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
 
   const txHash = await client.writeContract({
     address: args.contractAddress,
     functionName: "fund_escrow",
     args: [] as never,
     value: parseGenToWei(args.amountGen),
+    fees,
   });
 
   return String(txHash);
@@ -391,12 +421,14 @@ export async function fundEscrowOnChain(args: FundEscrowOnChainArgs): Promise<st
  * has been approved — both enforced contract-side, not duplicated here. */
 export async function cancelEscrowOnChain(args: CancelEscrowOnChainArgs): Promise<string> {
   const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
 
   const txHash = await client.writeContract({
     address: args.contractAddress,
     functionName: "cancel_escrow",
     args: [] as never,
     value: ZERO_VALUE,
+    fees,
   });
 
   return String(txHash);
@@ -413,12 +445,40 @@ export async function cancelEscrowOnChain(args: CancelEscrowOnChainArgs): Promis
  * enforced contract-side, not duplicated here. */
 export async function releaseMilestoneOnChain(args: ReleaseMilestoneOnChainArgs): Promise<string> {
   const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
 
   const txHash = await client.writeContract({
     address: args.contractAddress,
     functionName: "release_milestone",
     args: [args.milestoneIndex] as never,
     value: ZERO_VALUE,
+    fees,
+  });
+
+  return String(txHash);
+}
+
+export interface EmergencyWithdrawOnChainArgs {
+  walletAddress: string;
+  provider: Eip1193Provider;
+  contractAddress: `0x${string}`;
+  amountWei?: bigint;
+  toAddress?: string;
+}
+
+/** Emergency sweep of native GEN back to Master Treasury or specified address. */
+export async function emergencyWithdrawOnChain(
+  args: EmergencyWithdrawOnChainArgs
+): Promise<string> {
+  const client = createWriteClient(args.walletAddress, args.provider);
+  const fees = await resolveFees(client);
+
+  const txHash = await client.writeContract({
+    address: args.contractAddress,
+    functionName: "emergency_withdraw",
+    args: [args.amountWei ?? ZERO_VALUE, args.toAddress ?? ""] as never,
+    value: ZERO_VALUE,
+    fees,
   });
 
   return String(txHash);
