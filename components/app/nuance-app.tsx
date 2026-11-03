@@ -37,6 +37,7 @@ import {
   fundEscrowOnChain,
   cancelEscrowOnChain,
   releaseMilestoneOnChain,
+  waitForTransactionFinalized,
   castVoteOnChain,
   retractVoteOnChain,
   describeWriteError,
@@ -1119,16 +1120,16 @@ export function NuanceApp() {
       wallet.status === "connected" &&
       wallet.provider
     ) {
-      if (wallet.address.toLowerCase() !== escrowData.creator_address.toLowerCase()) {
-        setEscrowActionError("Connect the escrow creator's wallet to release payment.");
+      const isAuthorized =
+        wallet.address.toLowerCase() === escrowData.creator_address.toLowerCase() ||
+        wallet.address.toLowerCase() === escrowData.counterparty_address.toLowerCase();
+      if (!isAuthorized) {
+        setEscrowActionError("Connect the escrow creator or counterparty's wallet to release payment.");
         return;
       }
       // On-chain path: sign and send NuanceEscrow.release_milestone
       // directly from this browser via the connected wallet — real GEN
       // actually leaves the contract's balance once this confirms.
-      // released_at itself is only ever set once services/
-      // genlayer_indexer.py reads the confirmed `released: true` back
-      // from the contract's own get_milestone, not from this ack.
       setIsReleasingPayment(true);
       try {
         const txHash = await releaseMilestoneOnChain({
@@ -1143,9 +1144,18 @@ export function NuanceApp() {
         setActiveEscrowJobId(null);
         setDeliverableText("");
         setOnChainSubmitNotice(
-          `Release submitted on-chain — tx ${txHash.slice(0, 10)}…${txHash.slice(-6)}. ` +
-            "Funds move once GenLayer confirms this transaction."
+          `Payout Pending — tx ${txHash.slice(0, 10)}…${txHash.slice(-6)}. Waiting for finality on GenLayer…`
         );
+
+        // Track through finality: Payout Pending -> Settled
+        waitForTransactionFinalized(wallet.address, wallet.provider, txHash)
+          .then(() => {
+            wallet.refreshBalanceAfterTx();
+            setOnChainSubmitNotice("Payout Settled! On-chain balance updated.");
+          })
+          .catch((err) => {
+            console.warn("Finality tracking:", err);
+          });
       } catch (err) {
         setEscrowActionError(describeWriteError(err));
       } finally {
@@ -1284,6 +1294,19 @@ export function NuanceApp() {
       wallet.refreshBalanceAfterTx();
       const updated = mapEscrow(await api.cancelEscrowOnChainAck(escrowId, txHash));
       setEscrows((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+      setOnChainSubmitNotice(
+        `Refund Pending — tx ${txHash.slice(0, 10)}…${txHash.slice(-6)}. Waiting for finality on GenLayer…`
+      );
+
+      // Track through finality: Refund Pending -> Settled
+      waitForTransactionFinalized(wallet.address, wallet.provider, txHash)
+        .then(() => {
+          wallet.refreshBalanceAfterTx();
+          setOnChainSubmitNotice("Refund Settled! Creator refund received.");
+        })
+        .catch((err) => {
+          console.warn("Finality tracking:", err);
+        });
     } catch (err) {
       setEscrowActionError(describeWriteError(err));
     } finally {
@@ -1560,13 +1583,26 @@ export function NuanceApp() {
     }
 
     try {
-      await claimWinningsOnChain({
+      const txHash = await claimWinningsOnChain({
         walletAddress: wallet.address,
         provider: wallet.provider,
         contractAddress,
       });
       wallet.refreshBalanceAfterTx();
       setClaimedPredictionIds((prev) => new Set(prev).add(predictionId));
+      setOnChainSubmitNotice(
+        `Payout Pending — tx ${txHash.slice(0, 10)}…${txHash.slice(-6)}. Waiting for finality on GenLayer…`
+      );
+
+      // Track through finality: Payout Pending -> Settled
+      waitForTransactionFinalized(wallet.address, wallet.provider, txHash)
+        .then(() => {
+          wallet.refreshBalanceAfterTx();
+          setOnChainSubmitNotice("Payout Settled! Winnings received.");
+        })
+        .catch((err) => {
+          console.warn("Finality tracking:", err);
+        });
     } catch (err) {
       setBettingError(describeWriteError(err));
     } finally {
@@ -2148,6 +2184,7 @@ export function NuanceApp() {
             onPlaceBet={placeBet}
             onResolveMarket={resolveMarket}
             onClaimWinnings={claimWinnings}
+            connectedWalletAddress={wallet.address}
           />
         )}
 

@@ -69,18 +69,21 @@ async function main() {
   const request = JSON.parse(raw) as WriteRequest;
 
   const account = createAccount(privateKey as `0x${string}`);
-  const client = createClient({ chain: chains.testnetBradbury, account });
+  const client = createClient({
+    chain: chains.testnetBradbury,
+    account,
+    endpoint: "https://rpc-bradbury.genlayer.com",
+  });
 
   try {
+    const distribution = await client.estimateFeesDistribution({});
     const txHash = await withRateLimitRetry(`writeContract ${request.functionName}`, () =>
       client.writeContract({
         address: request.address as `0x${string}`,
         functionName: request.functionName,
         args: (request.args ?? []) as never,
-        // BigInt(0), not a `0n` literal — this project's TS target
-        // (ES2017) predates BigInt literal syntax, same reasoning
-        // components/app/genlayer-write-client.ts already documents.
         value: BigInt(0),
+        fees: { distribution },
       })
     );
     process.stdout.write(safeStringify({ ok: true, txHash: String(txHash) }));

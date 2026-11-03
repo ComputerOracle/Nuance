@@ -31,6 +31,7 @@ from app.routers import (
     escrows,
     governance,
     predictions,
+    relayer,
     validators,
     webhooks,
 )
@@ -168,6 +169,7 @@ app.include_router(consensus.router)
 app.include_router(predictions.router)
 app.include_router(governance.router)
 app.include_router(validators.router)
+app.include_router(relayer.router)
 app.include_router(agents.router)
 app.include_router(analytics.router)
 

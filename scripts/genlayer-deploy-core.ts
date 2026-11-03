@@ -190,37 +190,49 @@ export async function deployOne(
   // Raw bytes, not a UTF-8 string — see deploy.ts header's second-round note.
   const code = new Uint8Array(readFileSync(contractPath));
 
-  const txHash = await withRateLimitRetry(`${target.name} deployContract`, () =>
-    client.deployContract({
-      code,
-      args: target.args as never,
-    })
-  );
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const distribution = await client.estimateFeesDistribution({});
+    const txHash = await withRateLimitRetry(`${target.name} deployContract (attempt ${attempt})`, () =>
+      client.deployContract({
+        code,
+        args: target.args as never,
+        fees: { distribution },
+      })
+    );
 
-  // retries/interval set explicitly (60 * 3s = 3 minutes) — the default
-  // wasn't long enough to cover a real commit/reveal round on Bradbury;
-  // see deploy.ts header's second-round note.
-  const receipt = await withRateLimitRetry(`${target.name} waitForTransactionReceipt`, () =>
-    client.waitForTransactionReceipt({
-      hash: txHash as TransactionHash,
-      status: TransactionStatus.ACCEPTED,
-      retries: 60,
-      interval: 3000,
-    })
-  );
+    // retries/interval set explicitly (60 * 3s = 3 minutes) — the default
+    // wasn't long enough to cover a real commit/reveal round on Bradbury;
+    // see deploy.ts header's second-round note.
+    const receipt = await withRateLimitRetry(`${target.name} waitForTransactionReceipt`, () =>
+      client.waitForTransactionReceipt({
+        hash: txHash as TransactionHash,
+        status: TransactionStatus.ACCEPTED,
+        retries: 60,
+        interval: 3000,
+      })
+    );
 
-  const statusOk = isAcceptedOrFinalized(receipt);
-  const executionFailed = receipt.txExecutionResultName === ExecutionResult.FINISHED_WITH_ERROR;
-
-  if (!statusOk || executionFailed) {
+    const statusOk = isAcceptedOrFinalized(receipt);
+    const executionFailed = receipt.txExecutionResultName === ExecutionResult.FINISHED_WITH_ERROR;
     const observedStatus =
       receipt.statusName ?? (receipt as unknown as { status_name?: string }).status_name ?? receipt.status;
-    throw new Error(
-      `${target.name} deployment failed — status: ${observedStatus}, ` +
-        `execution: ${receipt.txExecutionResultName ?? "unknown"}. ` +
-        `Full receipt: ${safeStringify(receipt)}`
-    );
-  }
 
-  return extractDeployedAddress(receipt, target.name);
+    if (!statusOk && observedStatus === "LEADER_TIMEOUT" && attempt < 3) {
+      console.warn(`  ${target.name}: leader timeout on attempt ${attempt} — retrying deployment...`);
+      await sleep(3000);
+      continue;
+    }
+
+    if (!statusOk || executionFailed) {
+      throw new Error(
+        `${target.name} deployment failed — status: ${observedStatus}, ` +
+          `execution: ${receipt.txExecutionResultName ?? "unknown"}. ` +
+          `Full receipt: ${safeStringify(receipt)}`
+      );
+    }
+
+    return extractDeployedAddress(receipt, target.name);
+  }
+  throw new Error(`${target.name} deployment failed after retries.`);
 }
+

@@ -153,7 +153,10 @@ async function main() {
   const raw = await readStdin();
   const request: Request = raw.trim() ? JSON.parse(raw) : {};
 
-  const client = createClient({ chain: chains.testnetBradbury });
+  const client = createClient({
+    chain: chains.testnetBradbury,
+    endpoint: "https://rpc-bradbury.genlayer.com",
+  });
 
   const reads: Record<string, { ok: true; result: unknown } | { ok: false; error: string }> = {};
   for (const r of request.reads ?? []) {

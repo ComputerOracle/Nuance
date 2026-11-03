@@ -127,8 +127,14 @@ export function bucketFromStatusName(statusName: TransactionStatus): ChainStatus
 }
 
 // "Reached FINALIZED" doesn't by itself mean the contract call succeeded —
-// check resultName too (TransactionResult.SUCCESS | FAILURE), set once the
+// check resultName too (MAJORITY_AGREE / SUCCESS / FINISHED_WITH_RETURN), set once the
 // transaction has actually executed. Undefined until then.
-export function isSuccessfulResult(resultName: TransactionResult | undefined): boolean {
-  return resultName === TransactionResult.SUCCESS;
+export function isSuccessfulResult(resultName: TransactionResult | string | undefined): boolean {
+  return (
+    resultName === (TransactionResult as unknown as { SUCCESS?: string }).SUCCESS ||
+    resultName === TransactionResult.MAJORITY_AGREE ||
+    resultName === TransactionResult.AGREE ||
+    resultName === "SUCCESS" ||
+    resultName === "FINISHED_WITH_RETURN"
+  );
 }

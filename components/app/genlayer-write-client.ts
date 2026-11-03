@@ -31,6 +31,7 @@
 // version is installed before trusting this again if it's ever upgraded.
 
 import { createClient, chains } from "genlayer-js";
+import { TransactionStatus, type TransactionHash } from "genlayer-js/types";
 import type { Eip1193Provider } from "@/components/app/eip1193";
 import { isEip1193Error } from "@/components/app/eip1193";
 import { milliGenToWei, parseGenToWei } from "@/components/app/genlayer-chain";
@@ -81,6 +82,7 @@ function createWriteClient(walletAddress: string, provider: Eip1193Provider) {
   return createClient({
     chain: chains.testnetBradbury,
     account: walletAddress as `0x${string}`,
+    endpoint: "https://rpc-bradbury.genlayer.com",
     // EthereumProvider isn't resolvable from genlayer-js's own installed
     // .d.ts (a real gap in this pre-mainnet SDK's types, confirmed via
     // `tsc --noEmit` on this exact file — not this project's bug to fix)
@@ -420,4 +422,20 @@ export async function releaseMilestoneOnChain(args: ReleaseMilestoneOnChainArgs)
   });
 
   return String(txHash);
+}
+
+/** Waits for a submitted transaction to reach FINALIZED on GenLayer,
+ * ensuring asynchronous EOA transfers (_Recipient.emit_transfer) settle. */
+export async function waitForTransactionFinalized(
+  walletAddress: string,
+  provider: Eip1193Provider,
+  txHash: string
+): Promise<unknown> {
+  const client = createWriteClient(walletAddress, provider);
+  return await client.waitForTransactionReceipt({
+    hash: txHash as TransactionHash,
+    status: TransactionStatus.FINALIZED,
+    retries: 60,
+    interval: 3000,
+  });
 }
