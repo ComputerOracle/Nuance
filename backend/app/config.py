@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # --- used starting this prompt ---
     database_url: str = "sqlite+aiosqlite:///./nuance.db"
     cors_origins: str = "http://localhost:3000"
+    cors_origin_regex: str | None = r"^https://.*\.vercel\.app$"
 
     # Render's managed Postgres (Railway/Supabase/Heroku too) hands you a
     # plain `postgres://` or `postgresql://` connection string — the
@@ -250,7 +251,7 @@ class Settings(BaseSettings):
     # enable_chain_indexer) — an ordinary test creating an escrow has no
     # business firing a real ~3-minute Bradbury deployment costing real
     # testnet GEN from the deployer key.
-    auto_deploy_escrow_contracts: bool = True
+    auto_deploy_escrow_contracts: bool = False
     # Same idea as auto_deploy_escrow_contracts, for NuancePredictionMarket —
     # services/market_generator.py's _process_events deploys a fresh
     # instance for every market it auto-publishes (auto_publish=True,
@@ -261,7 +262,7 @@ class Settings(BaseSettings):
     # whole suite (same reasoning) — test_market_generator.py calls
     # _process_events directly, many times, and has no business firing
     # real deployments.
-    auto_deploy_prediction_contracts: bool = True
+    auto_deploy_prediction_contracts: bool = False
     # FIXED 2026-09-12 — found live the hard way: routers/escrows.py's
     # fund/cancel/submit/release-on-chain acks queue services/
     # genlayer_indexer.py::quick_sync_escrow as a background task (a

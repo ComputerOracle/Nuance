@@ -13,13 +13,13 @@ import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import AsyncSessionLocal, Base, engine
-from app.enums import StatusKey
+from app.enums import ChainStatus, ProposalStatus, StatusKey
 from app.models import (
     Dispute,
     DisputeEvidence,
@@ -27,6 +27,7 @@ from app.models import (
     Escrow,
     Milestone,
     Prediction,
+    Proposal,
     User,
     UserSettings,
 )
@@ -75,6 +76,78 @@ PREDICTION_SPECS = [
         resolution_date=datetime(2026, 4, 1, 0, 0, 0, tzinfo=timezone.utc),
         volume=25000,
         status_key="open",
+    ),
+]
+
+
+@dataclass
+class ProposalSpec:
+    title: str
+    description: str
+    category: str
+    days_active: int
+    days_remaining: int
+    quorum_threshold: int
+    quorum_threshold_gen: Decimal
+    pass_threshold: int
+    total_for: Decimal
+    total_against: Decimal
+    total_abstain: Decimal
+    status: ProposalStatus = ProposalStatus.ACTIVE
+
+
+PROPOSAL_SPECS = [
+    ProposalSpec(
+        title="Expand the GenVM Validator Committee for Intelligent Oracles",
+        description="Increase the default validator committee size from 5 to 11 for high-stakes prediction market resolutions and cross-contract dispute rulings, improving Byzantine fault tolerance and consensus resilience across Bradbury testnet.",
+        category="Protocol",
+        days_active=2,
+        days_remaining=5,
+        quorum_threshold=20,
+        quorum_threshold_gen=Decimal("1.0"),
+        pass_threshold=50,
+        total_for=Decimal("4.5"),
+        total_against=Decimal("0.8"),
+        total_abstain=Decimal("0.2"),
+    ),
+    ProposalSpec(
+        title="Allocate 50,000 GEN from Ecosystem Treasury to Fund Agent Tank Hackathon Grants",
+        description="Authorize a treasury disbursement of 50,000 GEN to match developer bounties for AI agents building autonomous escrow and predictive market arbitration contracts on GenLayer.",
+        category="Treasury",
+        days_active=3,
+        days_remaining=4,
+        quorum_threshold=20,
+        quorum_threshold_gen=Decimal("2.0"),
+        pass_threshold=60,
+        total_for=Decimal("8.2"),
+        total_against=Decimal("1.5"),
+        total_abstain=Decimal("0.5"),
+    ),
+    ProposalSpec(
+        title="Standardize Natural Language Dispute Settlement Rules for Nuance Escrows",
+        description="Ratify standard natural language milestone evaluation guidelines for GenLayer Internet Court validators, ensuring uniform interpretation of subjective delivery deliverables across all freelance and contractor escrows.",
+        category="Governance",
+        days_active=1,
+        days_remaining=6,
+        quorum_threshold=20,
+        quorum_threshold_gen=Decimal("1.5"),
+        pass_threshold=50,
+        total_for=Decimal("3.2"),
+        total_against=Decimal("0.4"),
+        total_abstain=Decimal("0.1"),
+    ),
+    ProposalSpec(
+        title="Deploy Uniswap V2 Outcome Token Liquidity Pools on Testnet Bradbury",
+        description="Deploy automated market maker pools for conditional outcome tokens (YES/NO) minted by Nuance prediction markets, enabling secondary market liquidity prior to GenVM Intelligent Oracle settlement.",
+        category="Integration",
+        days_active=4,
+        days_remaining=3,
+        quorum_threshold=20,
+        quorum_threshold_gen=Decimal("1.0"),
+        pass_threshold=50,
+        total_for=Decimal("6.1"),
+        total_against=Decimal("3.2"),
+        total_abstain=Decimal("0.0"),
     ),
 ]
 
@@ -201,93 +274,127 @@ async def seed_disputes() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as session:
-        already_seeded = await session.scalar(select(Dispute.id).limit(1))
-        if already_seeded is not None:
-            print("Disputes already seeded — nothing to do.")
-            return
+        # 2. Seed disputes and escrows if not present
+        dispute_count = await session.scalar(select(func.count(Dispute.id)))
+        if dispute_count == 0:
+            seeded_count = 0
+            for spec in DISPUTE_SPECS:
+                creator = await _get_or_create_user(
+                    session, spec.creator_wallet, spec.creator_name
+                )
+                counterparty = await _get_or_create_user(
+                    session, spec.counterparty_wallet, spec.counterparty_name
+                )
+                await session.flush()
 
-        seeded_count = 0
-        for spec in DISPUTE_SPECS:
-            creator = await _get_or_create_user(
-                session, spec.creator_wallet, spec.creator_name
-            )
-            counterparty = await _get_or_create_user(
-                session, spec.counterparty_wallet, spec.counterparty_name
-            )
-            await session.flush()
+                escrow = Escrow(
+                    creator_address=creator.wallet_address,
+                    counterparty_address=counterparty.wallet_address,
+                    title=spec.escrow_title,
+                    total=Decimal(spec.escrow_total),
+                    status_key=spec.status_key,
+                )
+                session.add(escrow)
+                await session.flush()
 
-            escrow = Escrow(
-                creator_address=creator.wallet_address,
-                counterparty_address=counterparty.wallet_address,
-                title=spec.escrow_title,
-                total=Decimal(spec.escrow_total),
-                status_key=spec.status_key,
-            )
-            session.add(escrow)
-            await session.flush()
+                milestone = Milestone(
+                    escrow_id=escrow.id,
+                    name="Milestone 1",
+                    amount=Decimal(spec.escrow_total),
+                    status_key=spec.status_key,
+                    criteria=spec.milestone_criteria,
+                    order_index=0,
+                )
+                session.add(milestone)
+                await session.flush()
 
-            milestone = Milestone(
-                escrow_id=escrow.id,
-                name="Milestone 1",
-                amount=Decimal(spec.escrow_total),
-                status_key=spec.status_key,
-                criteria=spec.milestone_criteria,
-                order_index=0,
-            )
-            session.add(milestone)
-            await session.flush()
+                dispute = Dispute(
+                    escrow_id=escrow.id,
+                    milestone_id=milestone.id,
+                    opened_by_address=creator.wallet_address,
+                    issue=spec.issue,
+                    status_key=spec.status_key,
+                    ruling=spec.ruling,
+                    enforced_by=spec.enforced_by,
+                )
+                session.add(dispute)
+                await session.flush()
 
-            dispute = Dispute(
-                escrow_id=escrow.id,
-                milestone_id=milestone.id,
-                opened_by_address=creator.wallet_address,
-                issue=spec.issue,
-                status_key=spec.status_key,
-                ruling=spec.ruling,
-                enforced_by=spec.enforced_by,
-            )
-            session.add(dispute)
-            await session.flush()
+                # Seed conversation messages
+                for msg_spec in spec.messages:
+                    session.add(
+                        DisputeMessage(
+                            dispute_id=dispute.id,
+                            sender_address=msg_spec.sender_wallet.lower(),
+                            content=msg_spec.content,
+                        )
+                    )
 
-            # Seed conversation messages
-            for msg_spec in spec.messages:
+                # Seed evidence
                 session.add(
-                    DisputeMessage(
+                    DisputeEvidence(
                         dispute_id=dispute.id,
-                        sender_address=msg_spec.sender_wallet.lower(),
-                        content=msg_spec.content,
+                        submitter_address=creator.wallet_address,
+                        description=spec.evidence_desc,
+                        link=spec.evidence_link,
                     )
                 )
+                seeded_count += 1
+            print(f"Seeded {seeded_count} dispute(s).")
+        else:
+            print(f"Disputes already seeded ({dispute_count} existing).")
 
-            # Seed evidence
-            session.add(
-                DisputeEvidence(
-                    dispute_id=dispute.id,
-                    submitter_address=creator.wallet_address,
-                    description=spec.evidence_desc,
-                    link=spec.evidence_link,
+        # 3. Seed prediction markets if not present
+        pred_count = await session.scalar(select(func.count(Prediction.id)))
+        if pred_count == 0:
+            for p_spec in PREDICTION_SPECS:
+                session.add(
+                    Prediction(
+                        title=p_spec.title,
+                        description=p_spec.description,
+                        category=p_spec.category,
+                        resolution_date=p_spec.resolution_date,
+                        volume=p_spec.volume,
+                        status_key=p_spec.status_key,
+                        outcome=p_spec.outcome,
+                    )
                 )
-            )
-            seeded_count += 1
+            print(f"Seeded {len(PREDICTION_SPECS)} prediction market(s).")
+        else:
+            print(f"Predictions already seeded ({pred_count} existing).")
 
-        # Seed prediction markets
-        pred_count = 0
-        for p_spec in PREDICTION_SPECS:
-            session.add(
-                Prediction(
-                    title=p_spec.title,
-                    description=p_spec.description,
-                    category=p_spec.category,
-                    resolution_date=p_spec.resolution_date,
-                    volume=p_spec.volume,
-                    status_key=p_spec.status_key,
-                    outcome=p_spec.outcome,
-                )
+        # 4. Seed governance proposals if not present
+        prop_count = await session.scalar(select(func.count(Proposal.id)))
+        if prop_count == 0:
+            proposer = await _get_or_create_user(
+                session, "0x1111111111111111111111111111111111111111", "GenLayer DAO"
             )
-            pred_count += 1
+            await session.flush()
+            now = datetime.now(timezone.utc)
+            for pr_spec in PROPOSAL_SPECS:
+                session.add(
+                    Proposal(
+                        title=pr_spec.title,
+                        description=pr_spec.description,
+                        category=pr_spec.category,
+                        proposer_address=proposer.wallet_address,
+                        status=pr_spec.status,
+                        start_time=now - timedelta(days=pr_spec.days_active),
+                        end_time=now + timedelta(days=pr_spec.days_remaining),
+                        quorum_threshold=pr_spec.quorum_threshold,
+                        quorum_threshold_gen=pr_spec.quorum_threshold_gen,
+                        pass_threshold=pr_spec.pass_threshold,
+                        total_for=pr_spec.total_for,
+                        total_against=pr_spec.total_against,
+                        total_abstain=pr_spec.total_abstain,
+                        chain_status=ChainStatus.LEGACY_OFFCHAIN,
+                    )
+                )
+            print(f"Seeded {len(PROPOSAL_SPECS)} governance proposal(s).")
+        else:
+            print(f"Proposals already seeded ({prop_count} existing).")
 
         await session.commit()
-        print(f"Seeded {seeded_count} dispute(s) and {pred_count} prediction market(s).")
 
 
 if __name__ == "__main__":

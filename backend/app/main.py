@@ -31,6 +31,7 @@ from app.routers import (
     escrows,
     governance,
     predictions,
+    relayer,
     validators,
     webhooks,
 )
@@ -153,6 +154,7 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -167,6 +169,7 @@ app.include_router(consensus.router)
 app.include_router(predictions.router)
 app.include_router(governance.router)
 app.include_router(validators.router)
+app.include_router(relayer.router)
 app.include_router(agents.router)
 app.include_router(analytics.router)
 

@@ -12,7 +12,7 @@
     "deploy:contracts": "tsx scripts/deploy.ts"
   },
   "dependencies": {
-    "genlayer-js": "^1.1.8",
+    "genlayer-js": "^2.0.0-rc.2",
     "next": "^16.3.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",

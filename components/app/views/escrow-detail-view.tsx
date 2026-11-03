@@ -1,3 +1,5 @@
+import { useState } from "react";
+import * as api from "@/lib/api";
 import type { Escrow, EscrowVerdict } from "@/components/app/types";
 import { StatusBadge } from "@/components/app/status-badge";
 import { ChainStatusBadge } from "@/components/app/chain-status-badge";
@@ -84,6 +86,28 @@ export function EscrowDetailView({
   // dispute room instead of offering to file a new one.
   onViewExistingDispute?: () => void;
 }) {
+  const [isRequestingRelayer, setIsRequestingRelayer] = useState(false);
+  const [relayerMessage, setRelayerMessage] = useState<string | null>(null);
+
+  async function handleRequestRelayer(actionType: string) {
+    if (!escrow.contractAddress) return;
+    setIsRequestingRelayer(true);
+    setRelayerMessage(null);
+    try {
+      const data = await api.requestRescueRelayer(
+        escrow.contractAddress,
+        connectedWalletAddress || escrow.creatorAddress,
+        actionType,
+        escrow.cancelledTxHash || escrow.fundedTxHash || ""
+      );
+      setRelayerMessage(data.message || "Rescue requested successfully.");
+    } catch {
+      setRelayerMessage("Failed to request relayer rescue.");
+    } finally {
+      setIsRequestingRelayer(false);
+    }
+  }
+
   const isConnectedAsCreator =
     connectedWalletAddress != null &&
     connectedWalletAddress.toLowerCase() === escrow.creatorAddress.toLowerCase();
@@ -362,15 +386,38 @@ export function EscrowDetailView({
           escrow status since a milestone can be released mid-escrow. */}
       {!isCancelledOnChain && isPayoutStuck && (
         <div className="mt-5 rounded-xl border border-negative/30 bg-negative/10 p-4.5">
-          <div className="text-[13px] font-semibold text-negative-text">
-            ⚠ A milestone payout hasn&rsquo;t been delivered yet
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[13px] font-semibold text-negative-text">
+              ⚠ Milestone Payout Blocked on Chain
+            </div>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-500 border border-amber-500/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+              Stuck (genvm-manager#20)
+            </div>
           </div>
           <div className="mt-1 text-xs text-fg-meta">
-            The contract recorded a release, but a currently-open GenLayer network issue is
-            blocking outbound transfers from Intelligent Contracts (tracked publicly as
-            genlayerlabs/genvm-manager#20) — the counterparty&rsquo;s GEN is still sitting at the
-            contract&rsquo;s address for now, not lost.
+            The contract approved the release, but validator execution nodes failed to dispatch native GEN.
+            Your tokens remain safely secured at the contract address.
           </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => handleRequestRelayer("escrow_payout")}
+              disabled={isRequestingRelayer}
+              className="px-3 py-1.5 rounded-lg bg-accent text-accent-fg hover:opacity-90 font-medium text-xs flex items-center gap-1.5 transition-all disabled:opacity-50"
+            >
+              ⚡ Request Faucet Relayer
+            </button>
+            <button
+              onClick={onReleasePayment}
+              disabled={releasingDisabled}
+              className="px-3 py-1.5 rounded-lg border border-border-3 bg-surface-2 hover:bg-surface-3 font-medium text-xs flex items-center gap-1.5 transition-all disabled:opacity-50"
+            >
+              🔄 Retry On-Chain Payout
+            </button>
+          </div>
+          {relayerMessage && (
+            <div className="mt-2 text-xs text-positive-text font-medium">{relayerMessage}</div>
+          )}
         </div>
       )}
 
@@ -413,18 +460,41 @@ export function EscrowDetailView({
           moved. */}
       {isRefundStuck && (
         <div className="mt-5 rounded-xl border border-negative/30 bg-negative/10 p-4.5">
-          <div className="text-[13px] font-semibold text-negative-text">
-            ⚠ Cancelled on-chain — refund not yet delivered
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[13px] font-semibold text-negative-text">
+              ⚠ Refund Blocked on Chain
+            </div>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-500 border border-amber-500/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+              Stuck (genvm-manager#20)
+            </div>
           </div>
           <div className="mt-1 text-xs text-fg-meta">
-            The contract recorded the cancellation and tried to send back{" "}
-            {escrow.contractBalance?.toLocaleString()} {escrow.asset.symbol}, but a currently-open
-            GenLayer network issue is blocking outbound transfers from Intelligent Contracts
-            (tracked publicly as genlayerlabs/genvm-manager#20) — this isn&rsquo;t something Nuance
-            can fix on its own. Your GEN is still provably at the escrow contract&rsquo;s address (
-            <span className="font-brand-mono">{formatAddress(escrow.contractAddress ?? "")}</span>
-            ) and will be re-checked automatically once the network delivers it.
+            The contract processed the cancellation, but outbound native GEN was not dispatched to your wallet by the validators.
+            Your {escrow.contractBalance?.toLocaleString()} {escrow.asset.symbol} is still safely held at the contract address (
+            <span className="font-brand-mono">{formatAddress(escrow.contractAddress ?? "")}</span>).
           </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => handleRequestRelayer("escrow_refund")}
+              disabled={isRequestingRelayer}
+              className="px-3 py-1.5 rounded-lg bg-accent text-accent-fg hover:opacity-90 font-medium text-xs flex items-center gap-1.5 transition-all disabled:opacity-50"
+            >
+              ⚡ Request Faucet Relayer
+            </button>
+            {onCancelEscrow && (
+              <button
+                onClick={onCancelEscrow}
+                disabled={cancellingDisabled}
+                className="px-3 py-1.5 rounded-lg border border-border-3 bg-surface-2 hover:bg-surface-3 font-medium text-xs flex items-center gap-1.5 transition-all disabled:opacity-50"
+              >
+                🔄 Retry On-Chain Refund
+              </button>
+            )}
+          </div>
+          {relayerMessage && (
+            <div className="mt-2 text-xs text-positive-text font-medium">{relayerMessage}</div>
+          )}
         </div>
       )}
 

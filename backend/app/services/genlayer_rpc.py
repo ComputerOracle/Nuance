@@ -71,24 +71,64 @@ def _repo_root() -> Path:
 _SCRIPT_PATH = _repo_root() / "scripts" / "genlayer-read.ts"
 
 
+import httpx
+
+_RPC_URL = "https://rpc-bradbury.genlayer.com"
+
+
+async def _fetch_native_balance(client: httpx.AsyncClient, address: str) -> str:
+    """Queries eth_getBalance directly from Bradbury JSON-RPC via Python httpx."""
+    try:
+        resp = await client.post(
+            _RPC_URL,
+            json={"jsonrpc": "2.0", "method": "eth_getBalance", "params": [address, "latest"], "id": 1},
+        )
+        data = resp.json()
+        raw_hex = data.get("result", "0x0")
+        return str(int(raw_hex, 16))
+    except Exception as exc:
+        logger.warning("Direct RPC eth_getBalance failed for %s: %s", address, exc)
+        raise
+
+
 async def read_and_check(
     reads: list[ReadRequest], transaction_hashes: list[str]
 ) -> tuple[dict[str, ReadResult], dict[str, TransactionResult]]:
-    """One batched round-trip to scripts/genlayer-read.ts: `reads` (contract
-    view calls) plus `transaction_hashes` (status checks) in a single
-    subprocess call. Every item is independently ok/error inside the
-    response (see that script's own header) — a bad address or a
-    momentary chain hiccup on one item never loses the rest of the batch.
-
-    Returns ({}, {}) rather than raising if the subprocess itself can't
-    even run (missing `npx`/`tsx`, e.g.) — genlayer_indexer.py treats that
-    as "nothing synced this cycle" and logs it, rather than crashing the
-    whole poll loop over one bad cycle.
-    """
+    """Optimized round-trip: resolves __native_balance__ reads directly via
+    Python httpx JSON-RPC (0 subprocess overhead). Only delegates complex
+    calldata view calls and transaction status checks to genlayer-read.ts
+    when strictly necessary."""
     if not reads and not transaction_hashes:
         return {}, {}
 
-    payload = json.dumps({"reads": reads, "transactions": transaction_hashes}).encode("utf-8")
+    direct_reads: dict[str, ReadResult] = {}
+    subproc_reads: list[ReadRequest] = []
+
+    # Fast-path native balance queries via direct Python httpx
+    native_balance_items = [r for r in reads if r.get("functionName") == "__native_balance__"]
+    other_reads = [r for r in reads if r.get("functionName") != "__native_balance__"]
+
+    if native_balance_items:
+        async with httpx.AsyncClient(timeout=10.0) as http_client:
+            tasks = [
+                _fetch_native_balance(http_client, r["address"])
+                for r in native_balance_items
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r, res in zip(native_balance_items, results):
+                if isinstance(res, Exception):
+                    # Fallback to subprocess if direct HTTP call fails
+                    subproc_reads.append(r)
+                else:
+                    direct_reads[r["id"]] = {"ok": True, "result": res}
+
+    subproc_reads.extend(other_reads)
+
+    # If no subprocess calls required, return early!
+    if not subproc_reads and not transaction_hashes:
+        return direct_reads, {}
+
+    payload = json.dumps({"reads": subproc_reads, "transactions": transaction_hashes}).encode("utf-8")
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -140,4 +180,5 @@ async def read_and_check(
         logger.error("genlayer-read produced non-JSON stdout: %r", stdout[:2000])
         return {}, {}
 
-    return parsed.get("reads", {}), parsed.get("transactions", {})
+    all_reads = {**direct_reads, **parsed.get("reads", {})}
+    return all_reads, parsed.get("transactions", {})

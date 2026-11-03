@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import * as api from "@/lib/api";
 import type { Position, Prediction } from "@/components/app/types";
 import { ChainStatusBadge } from "@/components/app/chain-status-badge";
 import { LEGACY_OFFCHAIN } from "@/lib/chain-status";
@@ -35,6 +36,7 @@ export function PredictionDetailView({
   onPlaceBet,
   onResolveMarket,
   onClaimWinnings,
+  connectedWalletAddress = null,
 }: {
   prediction: Prediction;
   betAmountMilliGen: number | null;
@@ -43,10 +45,6 @@ export function PredictionDetailView({
   isBetting?: boolean;
   isResolving?: boolean;
   isClaiming?: boolean;
-  // Per-session only (no read call yet for the contract's own `claimed`
-  // map) — hides the button right after a successful claim in this
-  // browser session; a reload won't remember it. See nuance-app.tsx's
-  // claimedPredictionIds for the full caveat.
   hasClaimed?: boolean;
   bettingError?: string | null;
   onBack: () => void;
@@ -56,7 +54,30 @@ export function PredictionDetailView({
   onPlaceBet: () => void;
   onResolveMarket?: () => void;
   onClaimWinnings?: () => void;
+  connectedWalletAddress?: string | null;
 }) {
+  const [isRequestingRelayer, setIsRequestingRelayer] = useState(false);
+  const [relayerMessage, setRelayerMessage] = useState<string | null>(null);
+
+  async function handleRequestRelayer() {
+    if (!prediction.contractAddress) return;
+    setIsRequestingRelayer(true);
+    setRelayerMessage(null);
+    try {
+      const data = await api.requestRescueRelayer(
+        prediction.contractAddress,
+        connectedWalletAddress || "",
+        "prediction_claim",
+        prediction.resolutionTriggerTxHash || ""
+      );
+      setRelayerMessage(data.message || "Rescue requested successfully.");
+    } catch {
+      setRelayerMessage("Failed to request relayer rescue.");
+    } finally {
+      setIsRequestingRelayer(false);
+    }
+  }
+
   const isResolved =
     prediction.statusKey?.toUpperCase() === "RESOLVED" ||
     Boolean(prediction.outcome);
@@ -302,12 +323,40 @@ export function PredictionDetailView({
                             resolved — check your wallet balance to see your payout.
                           </div>
                         ) : (
-                          <div className="mt-2 text-[11px] leading-snug text-negative-text">
-                            ⚠ Confirmed on-chain: no GEN has left this contract since it resolved
-                            — your claim is very likely stuck behind a currently-open GenLayer
-                            platform issue (genlayerlabs/genvm-manager#20), not a bug in this app.
-                            A &ldquo;Submitted&rdquo; transaction only means the call itself was
-                            finalized, not that the payout was delivered.
+                          <div className="mt-3 rounded-lg border border-negative/30 bg-negative/10 p-3 text-left">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-[12px] font-semibold text-negative-text">
+                                ⚠ Payout Blocked on Chain
+                              </div>
+                              <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                                Stuck (genvm-manager#20)
+                              </div>
+                            </div>
+                            <div className="mt-1 text-[11px] leading-snug text-fg-meta">
+                              Claim finalized on-chain, but validator execution nodes failed to dispatch your GEN payout.
+                            </div>
+                            <div className="mt-2.5 flex items-center gap-2">
+                              <button
+                                onClick={handleRequestRelayer}
+                                disabled={isRequestingRelayer}
+                                className="px-2.5 py-1 rounded bg-accent text-accent-fg hover:opacity-90 font-medium text-xs transition-all disabled:opacity-50"
+                              >
+                                ⚡ Request Faucet Relayer
+                              </button>
+                              {onClaimWinnings && (
+                                <button
+                                  onClick={onClaimWinnings}
+                                  disabled={isClaiming}
+                                  className="px-2.5 py-1 rounded border border-border-3 bg-surface-2 hover:bg-surface-3 font-medium text-xs transition-all disabled:opacity-50"
+                                >
+                                  🔄 Retry On-Chain Claim
+                                </button>
+                              )}
+                            </div>
+                            {relayerMessage && (
+                              <div className="mt-2 text-xs text-positive-text font-medium">{relayerMessage}</div>
+                            )}
                           </div>
                         )}
                       </>
