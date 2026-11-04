@@ -24,22 +24,31 @@
 // null contract address as "route this through the legacy off-chain
 // path," exactly like an escrow/dispute created before any cutover.
 
+export const BRADBURY_DISPUTE_COURT_ADDRESS = "0xD140A876aBe1180d2436508a8Ea1b674e4724402" as `0x${string}`;
+export const BRADBURY_GOVERNANCE_ADDRESS = "0xF0a2F4c8eF813cF4F8dcc7Bfe94f0E82aF0ED7A7" as `0x${string}`;
+export const BRADBURY_VALIDATORS_ADDRESS = "0xBdA1dB02Ff6a1ddF8A306567100dAfbA26570E61" as `0x${string}`;
+export const BRADBURY_AGENT_DIRECTORY_ADDRESS = "0x044b000fc9DE64a1c75C1F2531bcFc5Ea627BaA8" as `0x${string}`;
+export const BRADBURY_ESCROW_ADDRESS = "0xD397cF79B368a221C84c214725e6c7BC1F29A2FF" as `0x${string}`;
+export const BRADBURY_PREDICTION_MARKET_ADDRESS = "0x08149602c5cAaE87beFb0631B5Cf983a944aD67C" as `0x${string}`;
+
 /** NuanceDisputeCourt's one deployed address, or null if it isn't
  * configured yet. Global on purpose — every dispute shares this one
  * registry. */
 export function disputeCourtContractAddress(): `0x${string}` | null {
-  const raw = process.env.NEXT_PUBLIC_DISPUTE_COURT_CONTRACT_ADDRESS?.trim();
+  const raw =
+    process.env.NEXT_PUBLIC_DISPUTE_COURT_CONTRACT_ADDRESS?.trim() ||
+    BRADBURY_DISPUTE_COURT_ADDRESS;
   return raw ? (raw as `0x${string}`) : null;
 }
 
 /** NuanceGovernance's one deployed address, or null. Same "genuinely
  * global, not per-row" reasoning as disputeCourtContractAddress above —
  * see ROADMAP.md 4.4.1's own account of which of the six deployed
- * contracts are real shared registries vs. per-agreement instances.
- * Read-only for now (app/docs's contract-address reference) — no
- * frontend signing wiring against it yet, unlike disputeCourtContractAddress. */
+ * contracts are real shared registries vs. per-agreement instances. */
 export function governanceContractAddress(): `0x${string}` | null {
-  const raw = process.env.NEXT_PUBLIC_GOVERNANCE_CONTRACT_ADDRESS?.trim();
+  const raw =
+    process.env.NEXT_PUBLIC_GOVERNANCE_CONTRACT_ADDRESS?.trim() ||
+    BRADBURY_GOVERNANCE_ADDRESS;
   return raw ? (raw as `0x${string}`) : null;
 }
 
@@ -49,7 +58,9 @@ export function governanceContractAddress(): `0x${string}` | null {
  * reading this contract. Exposed here purely for app/docs's reference
  * table, honestly labeled as such — see that page for the caveat. */
 export function validatorsContractAddress(): `0x${string}` | null {
-  const raw = process.env.NEXT_PUBLIC_VALIDATORS_CONTRACT_ADDRESS?.trim();
+  const raw =
+    process.env.NEXT_PUBLIC_VALIDATORS_CONTRACT_ADDRESS?.trim() ||
+    BRADBURY_VALIDATORS_ADDRESS;
   return raw ? (raw as `0x${string}`) : null;
 }
 
@@ -57,20 +68,21 @@ export function validatorsContractAddress(): `0x${string}` | null {
  * deployed, not yet load-bearing (routers/agents.py computes the real
  * agent directory from ConsensusJob history too). */
 export function agentDirectoryContractAddress(): `0x${string}` | null {
-  const raw = process.env.NEXT_PUBLIC_AGENT_DIRECTORY_CONTRACT_ADDRESS?.trim();
+  const raw =
+    process.env.NEXT_PUBLIC_AGENT_DIRECTORY_CONTRACT_ADDRESS?.trim() ||
+    BRADBURY_AGENT_DIRECTORY_ADDRESS;
   return raw ? (raw as `0x${string}`) : null;
 }
 
 /** The deployed NuanceEscrow instance backing a specific escrow, or null
- * if that escrow hasn't been linked to one — the normal state today. Takes
- * the row itself (not an id) so a call site that already has the fetched
- * ApiEscrow doesn't need a second lookup just to check this. */
+ * if that escrow hasn't been linked to one. */
 export function escrowContractAddress(
   escrow: { contract_address?: string | null } | null | undefined
 ): `0x${string}` | null {
   const raw =
     escrow?.contract_address?.trim() ||
-    process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS?.trim();
+    process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS?.trim() ||
+    BRADBURY_ESCROW_ADDRESS;
   return raw ? (raw as `0x${string}`) : null;
 }
 
@@ -80,7 +92,8 @@ export function predictionContractAddress(
 ): `0x${string}` | null {
   const raw =
     prediction?.contract_address?.trim() ||
-    process.env.NEXT_PUBLIC_PREDICTION_MARKET_CONTRACT_ADDRESS?.trim();
+    process.env.NEXT_PUBLIC_PREDICTION_MARKET_CONTRACT_ADDRESS?.trim() ||
+    BRADBURY_PREDICTION_MARKET_ADDRESS;
   return raw ? (raw as `0x${string}`) : null;
 }
 

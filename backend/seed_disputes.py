@@ -395,10 +395,41 @@ async def seed_disputes() -> None:
                     )
                 )
             print(f"Seeded {len(PROPOSAL_SPECS)} governance proposal(s).")
-        else:
-            print(f"Proposals already seeded ({prop_count} existing).")
+        # 5. Backfill/update existing records to ensure live Bradbury contracts and active status
+        now = datetime.now(timezone.utc)
+
+        def _make_aware(dt: datetime | None) -> datetime | None:
+            if dt is None:
+                return None
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+        existing_preds = (await session.scalars(select(Prediction))).all()
+        for p in existing_preds:
+            if not p.contract_address:
+                p.contract_address = "0x08149602c5cAaE87beFb0631B5Cf983a944aD67C"
+            if p.chain_status != ChainStatus.FINALIZED:
+                p.chain_status = ChainStatus.FINALIZED
+            aware_res = _make_aware(p.resolution_date)
+            if not aware_res or aware_res < now:
+                p.resolution_date = now + timedelta(days=365)
+            if p.status_key != "open":
+                p.status_key = "open"
+
+        existing_props = (await session.scalars(select(Proposal))).all()
+        for p in existing_props:
+            if p.id == 1:
+                p.on_chain_proposal_id = 1
+                p.chain_status = ChainStatus.FINALIZED
+            p.end_time = now + timedelta(days=365)
+            p.status = ProposalStatus.ACTIVE
+
+        existing_escrows = (await session.scalars(select(Escrow))).all()
+        for e in existing_escrows:
+            if not e.contract_address:
+                e.contract_address = "0xD397cF79B368a221C84c214725e6c7BC1F29A2FF"
 
         await session.commit()
+        print("Ensured all existing escrows, predictions, and proposals are linked to Bradbury on-chain contracts.")
 
 
 if __name__ == "__main__":
