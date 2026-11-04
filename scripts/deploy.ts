@@ -216,10 +216,10 @@ async function main() {
       name: "NuanceEscrow",
       file: "nuance_escrow.py",
       args: [
+        account.address,
         DEMO_COUNTERPARTY,
         "Bootstrap milestone",
-        BigInt(1), // milestone_amount: u256 — 1 wei-equivalent unit, this is a
-        // proof-of-deployment instance, not a real agreement (see header)
+        BigInt(1), // milestone_amount: u256 — 1 wei-equivalent unit
         "Deployment smoke-test placeholder — not a real milestone.",
       ],
       backendEnvKey: "ESCROW_CONTRACT_ADDRESS",
@@ -260,10 +260,27 @@ async function main() {
     },
   ];
 
+  const targetFilter = process.argv[2];
+  const targetSpecs = targetFilter
+    ? specs.filter(
+        (s) =>
+          s.name.toLowerCase() === targetFilter.toLowerCase() ||
+          s.file.toLowerCase() === targetFilter.toLowerCase()
+      )
+    : specs;
+
+  if (targetSpecs.length === 0) {
+    console.error(`Unknown contract "${targetFilter}". Available: ${specs.map((s) => s.name).join(", ")}`);
+    process.exit(1);
+  }
+
   const deployed: Record<string, string> = {};
 
-  for (let i = 0; i < specs.length; i++) {
-    const spec = specs[i];
+  for (let i = 0; i < targetSpecs.length; i++) {
+    const spec = targetSpecs[i];
+    if (spec.name === "NuanceEscrow" && deployed["DISPUTE_COURT_CONTRACT_ADDRESS"]) {
+      spec.args[5] = deployed["DISPUTE_COURT_CONTRACT_ADDRESS"];
+    }
     console.log(`--- Deploying ${spec.name} ---`);
     const address = await deployOne(client, spec);
     deployed[spec.backendEnvKey] = address;
@@ -272,14 +289,14 @@ async function main() {
     upsertEnvVar(BACKEND_ENV_PATH, spec.backendEnvKey, address);
     upsertEnvVar(FRONTEND_ENV_PATH, spec.frontendEnvKey, address);
 
-    if (i < specs.length - 1) {
+    if (i < targetSpecs.length - 1) {
       console.log(`  (waiting ${DELAY_BETWEEN_DEPLOYMENTS_MS}ms before the next deployment)\n`);
       await sleep(DELAY_BETWEEN_DEPLOYMENTS_MS);
     }
   }
 
-  console.log("All contracts deployed and addresses written:");
-  for (const spec of specs) {
+  console.log("Target contracts deployed and addresses written:");
+  for (const spec of targetSpecs) {
     console.log(`  ${spec.backendEnvKey} / ${spec.frontendEnvKey} = ${deployed[spec.backendEnvKey]}`);
   }
   console.log(`\nWritten to:\n  ${BACKEND_ENV_PATH}\n  ${FRONTEND_ENV_PATH}`);

@@ -796,8 +796,8 @@ async def _apply_dispute_view(
     status = d.get("status")
 
     if status == "resolved":
-        ruling = d.get("ruling")
-        upheld = ruling == "favor_claimant"
+        ruling = str(d.get("ruling", "")).lower()
+        upheld = ruling in ("favor_claimant", "creator")
         target_key = StatusKey.APPROVED if upheld else StatusKey.REJECTED
         if dispute.status_key != target_key:
             await _apply_verdict_to_state(

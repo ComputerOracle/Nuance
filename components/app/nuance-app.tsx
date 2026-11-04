@@ -37,6 +37,7 @@ import {
   fundEscrowOnChain,
   cancelEscrowOnChain,
   releaseMilestoneOnChain,
+  waitForTransactionFinalized,
   castVoteOnChain,
   retractVoteOnChain,
   describeWriteError,
@@ -1119,16 +1120,16 @@ export function NuanceApp() {
       wallet.status === "connected" &&
       wallet.provider
     ) {
-      if (wallet.address.toLowerCase() !== escrowData.creator_address.toLowerCase()) {
-        setEscrowActionError("Connect the escrow creator's wallet to release payment.");
+      const isAuthorized =
+        wallet.address.toLowerCase() === escrowData.creator_address.toLowerCase() ||
+        wallet.address.toLowerCase() === escrowData.counterparty_address.toLowerCase();
+      if (!isAuthorized) {
+        setEscrowActionError("Connect the escrow creator or counterparty's wallet to release payment.");
         return;
       }
       // On-chain path: sign and send NuanceEscrow.release_milestone
       // directly from this browser via the connected wallet — real GEN
       // actually leaves the contract's balance once this confirms.
-      // released_at itself is only ever set once services/
-      // genlayer_indexer.py reads the confirmed `released: true` back
-      // from the contract's own get_milestone, not from this ack.
       setIsReleasingPayment(true);
       try {
         const txHash = await releaseMilestoneOnChain({
@@ -1143,9 +1144,18 @@ export function NuanceApp() {
         setActiveEscrowJobId(null);
         setDeliverableText("");
         setOnChainSubmitNotice(
-          `Release submitted on-chain — tx ${txHash.slice(0, 10)}…${txHash.slice(-6)}. ` +
-            "Funds move once GenLayer confirms this transaction."
+          `Payout Pending — tx ${txHash.slice(0, 10)}…${txHash.slice(-6)}. Waiting for finality on GenLayer…`
         );
+
+        // Track through finality: Payout Pending -> Settled
+        waitForTransactionFinalized(wallet.address, wallet.provider, txHash)
+          .then(() => {
+            wallet.refreshBalanceAfterTx();
+            setOnChainSubmitNotice("Payout Settled! On-chain balance updated.");
+          })
+          .catch((err) => {
+            console.warn("Finality tracking:", err);
+          });
       } catch (err) {
         setEscrowActionError(describeWriteError(err));
       } finally {
@@ -1284,6 +1294,19 @@ export function NuanceApp() {
       wallet.refreshBalanceAfterTx();
       const updated = mapEscrow(await api.cancelEscrowOnChainAck(escrowId, txHash));
       setEscrows((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+      setOnChainSubmitNotice(
+        `Refund Pending — tx ${txHash.slice(0, 10)}…${txHash.slice(-6)}. Waiting for finality on GenLayer…`
+      );
+
+      // Track through finality: Refund Pending -> Settled
+      waitForTransactionFinalized(wallet.address, wallet.provider, txHash)
+        .then(() => {
+          wallet.refreshBalanceAfterTx();
+          setOnChainSubmitNotice("Refund Settled! Creator refund received.");
+        })
+        .catch((err) => {
+          console.warn("Finality tracking:", err);
+        });
     } catch (err) {
       setEscrowActionError(describeWriteError(err));
     } finally {
@@ -1560,13 +1583,26 @@ export function NuanceApp() {
     }
 
     try {
-      await claimWinningsOnChain({
+      const txHash = await claimWinningsOnChain({
         walletAddress: wallet.address,
         provider: wallet.provider,
         contractAddress,
       });
       wallet.refreshBalanceAfterTx();
       setClaimedPredictionIds((prev) => new Set(prev).add(predictionId));
+      setOnChainSubmitNotice(
+        `Payout Pending — tx ${txHash.slice(0, 10)}…${txHash.slice(-6)}. Waiting for finality on GenLayer…`
+      );
+
+      // Track through finality: Payout Pending -> Settled
+      waitForTransactionFinalized(wallet.address, wallet.provider, txHash)
+        .then(() => {
+          wallet.refreshBalanceAfterTx();
+          setOnChainSubmitNotice("Payout Settled! Winnings received.");
+        })
+        .catch((err) => {
+          console.warn("Finality tracking:", err);
+        });
     } catch (err) {
       setBettingError(describeWriteError(err));
     } finally {
@@ -1616,12 +1652,22 @@ export function NuanceApp() {
     if (!evidenceText.trim() || selectedDisputeId == null || isSubmittingEvidence) return;
     const disputeId = selectedDisputeId;
     setDisputeActionError(null);
+    // FIXED 2026-09-15 — this used to only flip on after the getDispute
+    // round-trip below resolved, so on a slow connection the button sat
+    // visually dead (no disabled state, no "Submitting…" label) for
+    // however long that fetch took, reading as broken even though the
+    // click had registered and the flow was already running underneath.
+    // Setting it here makes the button respond the instant it's clicked.
+    // Every early return between here and the real submission below now
+    // has to flip it back off, since nothing was actually submitted yet.
+    setIsSubmittingEvidence(true);
 
     let disputeData: api.ApiDispute;
     try {
       disputeData = await api.getDispute(disputeId);
     } catch (err) {
       setDisputeActionError(errorText(err, "Failed to submit evidence."));
+      setIsSubmittingEvidence(false);
       return;
     }
     const disputeCourtAddress = disputeCourtContractAddress();
@@ -1640,6 +1686,7 @@ export function NuanceApp() {
         setDisputeActionError(
           "This dispute was filed on-chain — connect your wallet to submit evidence for it."
         );
+        setIsSubmittingEvidence(false);
         return;
       }
       // On-chain path — requires the real numeric dispute id, which only
@@ -1652,6 +1699,7 @@ export function NuanceApp() {
           "This dispute was filed on-chain, but hasn't finished linking to its on-chain id yet " +
             "(usually a few minutes) — try again shortly rather than submitting off-chain evidence for it."
         );
+        setIsSubmittingEvidence(false);
         return;
       }
       // The contract's own add_evidence only accepts a URL — there's
@@ -1661,10 +1709,10 @@ export function NuanceApp() {
           "This dispute is on-chain — evidence needs a real link (URL) for validators to fetch. " +
             "A description with no link can't be submitted on-chain."
         );
+        setIsSubmittingEvidence(false);
         return;
       }
 
-      setIsSubmittingEvidence(true);
       try {
         const txHash = await addEvidenceOnChain({
           walletAddress: wallet.address,
@@ -1686,7 +1734,6 @@ export function NuanceApp() {
     }
 
     // Legacy off-chain path — unchanged: Nuance's own AI review judges it.
-    setIsSubmittingEvidence(true);
     try {
       const submission = await api.submitEvidence(disputeId, evidenceText, evidenceLink.trim() || null);
       setEvidenceText("");
@@ -2137,6 +2184,7 @@ export function NuanceApp() {
             onPlaceBet={placeBet}
             onResolveMarket={resolveMarket}
             onClaimWinnings={claimWinnings}
+            connectedWalletAddress={wallet.address}
           />
         )}
 
@@ -2253,6 +2301,7 @@ export function NuanceApp() {
             autoEscalateOn={autoEscalateOn}
             onToggleNotify={handleToggleNotify}
             onToggleAutoEscalate={handleToggleAutoEscalate}
+            connectedWalletAddress={wallet.status === "connected" ? wallet.address : null}
           />
         )}
       </div>

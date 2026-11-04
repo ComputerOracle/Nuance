@@ -1,41 +1,8 @@
-# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
+# { "Depends": "py-genlayer:babwp9t37jw9g4j2bccgn14g6x7x9s1f7dsmh7emvz735pz4zxa0" }
 
-# ACTUAL ROOT CAUSE (found 2026-09-06 via GenLayer Studio bisection, not
-# guessed): GenVM's runner-comment parser treats the Depends line plus any
-# *immediately following, contiguous* "#" comment lines as one block, and
-# it can only contain that single JSON directive. A long doc comment
-# placed directly under Depends (no blank line) breaks parsing on every
-# contract, regardless of hash or contract body — confirmed by bisecting
-# a minimal contract on Studio down to this exact rule. The blank line
-# above this paragraph is the actual fix. Two prior "fixes" turned out to
-# be red herrings that happened to correlate with real deploy attempts:
-# switching the Depends hash (round 1) and TreeMap[K,V]() -> TreeMap()
-# (round 3, still correct Python hygiene — GenericAlias really isn't
-# callable — but not what was blocking deployment here, confirmed by a
-# controlled 2x2 test isolating hash vs. TreeMap style).
-#
-# Nuance Dispute Court — Part 2, Step 2 (1 of 2).
-#
-# Architecture note: unlike NuanceEscrow (one contract instance deployed
-# per escrow agreement), this is a single SHARED REGISTRY — one Dispute
-# Court contract for the whole app, holding many disputes keyed by
-# dispute_id. That's the more natural reading of the spec (it lists
-# "dispute ID" as a field a single dispute record needs, which only makes
-# sense if many disputes share one contract), it mirrors backend/app/
-# models/core.py's Dispute table today (many rows, one table), and it
-# avoids paying GenVM deployment cost for every single dispute the way a
-# real court hears many cases rather than being rebuilt per case.
-#
-# Sources & confidence: identical citation list to nuance_escrow.py's own
-# header (football_bets.py, the first-contract + prediction-market docs
-# examples, the equivalence-principle page) — not re-quoted here, see that
-# file. This contract intentionally never calls emit_transfer/moves funds
-# — it only produces a ruling. Whatever acts on that ruling (the Escrow
-# contract, or an off-chain relayer once Step 3/4 exist) is a separate
-# concern, kept separate on purpose rather than have the court double as
-# a payer.
-
-from genlayer import *
+import genlayer as gl
+from genlayer.types import *
+from genlayer.storage import TreeMap, allow as allow_storage
 from dataclasses import dataclass
 
 
@@ -48,36 +15,18 @@ class Dispute:
     respondent: Address
     claim_statement: str
     evidence_url: str
-    # "open" | "resolved" | "dismissed". The spec named these three states
-    # but not what drives dismissed vs. resolved — this file's own
-    # interpretation, flagged for review: "dismissed" is the claimant
-    # withdrawing their own claim before adjudication (dismiss_dispute);
-    # "resolved" covers either ruling direction once adjudicate_dispute
-    # has actually run.
     status: str
-    # "" until resolved, then exactly "favor_claimant" | "favor_respondent"
     ruling: str
     reasoning: str
 
 
-class NuanceDisputeCourt(gl.Contract):
+class NuanceDisputeCourt(gl.contract.Contract):
     disputes: TreeMap[u256, Dispute]
     dispute_count: u256
 
     def __init__(self):
-        """Correction (2026-09-06, third round): the previous fix
-        (`TreeMap[u256, Dispute]()`) was itself the bug — a live deploy
-        came back ACCEPTED at the consensus layer but
-        txExecutionResultName: FINISHED_WITH_ERROR (all 5 validators
-        voted DISAGREE), because subscripting a generic and then calling
-        it (`SomeGeneric[X, Y]()`) produces a GenericAlias, which isn't
-        callable in GenVM's Python runtime — a TypeError at execution
-        time, not a type-checking issue. The bracket form stays on the
-        class-level *annotation* above (that's just a type hint); the
-        actual runtime instantiation is bare `TreeMap()`, exactly like
-        official GenVM examples (football_bets.py, wizard-of-coin) use."""
-        self.disputes = TreeMap()
-        self.dispute_count = 0
+        self.dispute_count = u256(0)
+
 
     @gl.public.write
     def file_dispute(

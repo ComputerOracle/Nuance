@@ -935,4 +935,56 @@ export async function getAnalyticsOverview(): Promise<ApiAnalyticsOverview> {
   return apiFetch<ApiAnalyticsOverview>("/analytics/overview");
 }
 
+// --- Stuck Funds & Relayer Rescue (Master Build Plan M5) ------------------
+
+export interface CheckClaimResponse {
+  contract_address: string;
+  recipient_address: string;
+  contract_balance_wei: number;
+  recipient_balance_wei: number;
+  is_stuck: boolean;
+  eligible_for_relayer: boolean;
+  message: string;
+}
+
+export interface RescueResponse {
+  success: boolean;
+  message: string;
+  status: CheckClaimResponse;
+  action_type?: string;
+  tx_hash?: string;
+}
+
+export async function checkClaimRelayer(
+  contractAddress: string,
+  recipientAddress: string,
+  expectedAmountWei = 0
+): Promise<CheckClaimResponse> {
+  return apiFetch<CheckClaimResponse>("/relayer/check-claim", {
+    method: "POST",
+    body: JSON.stringify({
+      contract_address: contractAddress,
+      recipient_address: recipientAddress,
+      expected_amount_wei: expectedAmountWei,
+    }),
+  });
+}
+
+export async function requestRescueRelayer(
+  contractAddress: string,
+  recipientAddress: string,
+  actionType: string,
+  txHash: string
+): Promise<RescueResponse> {
+  return apiFetch<RescueResponse>("/relayer/request-rescue", {
+    method: "POST",
+    body: JSON.stringify({
+      contract_address: contractAddress,
+      recipient_address: recipientAddress,
+      action_type: actionType,
+      tx_hash: txHash,
+    }),
+  });
+}
+
 
