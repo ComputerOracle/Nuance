@@ -32,9 +32,13 @@
 
 import { createClient, chains } from "genlayer-js";
 import { TransactionStatus, type TransactionHash } from "genlayer-js/types";
-import type { Eip1193Provider } from "@/components/app/eip1193";
-import { isEip1193Error } from "@/components/app/eip1193";
-import { milliGenToWei, parseGenToWei } from "@/components/app/genlayer-chain";
+import { type Eip1193Provider, isEip1193Error } from "@/components/app/eip1193";
+import {
+  milliGenToWei,
+  parseGenToWei,
+  GENLAYER_BRADBURY,
+  GENLAYER_BRADBURY_ADD_CHAIN_PARAMS,
+} from "@/components/app/genlayer-chain";
 
 export interface SubmitDeliverableOnChainArgs {
   walletAddress: string;
@@ -78,6 +82,30 @@ export function describeWriteError(err: unknown): string {
   return "Wallet transaction failed.";
 }
 
+/** Ensures wallet is on GenLayer Bradbury Testnet (4221) before sending transactions. */
+export async function ensureBradburyNetwork(provider: Eip1193Provider): Promise<void> {
+  try {
+    const chainIdHex = (await provider.request({ method: "eth_chainId" })) as string;
+    if (chainIdHex?.toLowerCase() !== GENLAYER_BRADBURY.chainIdHex.toLowerCase()) {
+      try {
+        await provider.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: GENLAYER_BRADBURY.chainIdHex }],
+        });
+      } catch (switchErr: unknown) {
+        if (isEip1193Error(switchErr) && switchErr.code === 4902) {
+          await provider.request({
+            method: "wallet_addEthereumChain",
+            params: [GENLAYER_BRADBURY_ADD_CHAIN_PARAMS],
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Auto switch to Bradbury network warning:", err);
+  }
+}
+
 function createWriteClient(walletAddress: string, provider: Eip1193Provider) {
   return createClient({
     chain: chains.testnetBradbury,
@@ -117,6 +145,7 @@ async function resolveFees(client: ReturnType<typeof createWriteClient>) {
 export async function submitDeliverableOnChain(
   args: SubmitDeliverableOnChainArgs
 ): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 
@@ -145,6 +174,7 @@ export async function submitDeliverableOnChain(
  * MUST be passed through to that ack endpoint's `issue` field verbatim
  * (exact string equality is what the indexer matches on). */
 export async function fileDisputeOnChain(args: FileDisputeOnChainArgs): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 
@@ -189,6 +219,7 @@ export interface AddEvidenceOnChainArgs {
  * duplicated here. Not payable — a rejected call costs only gas, none of
  * the fund-loss risk fund_escrow's own sender check carries. */
 export async function addEvidenceOnChain(args: AddEvidenceOnChainArgs): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 
@@ -285,6 +316,7 @@ export interface ReleaseMilestoneOnChainArgs {
  * docstring on why — the indexer's view-sync doesn't track individual
  * bettors' on-chain stakes, only the market's own state as a whole). */
 export async function betOnChain(args: BetOnChainArgs): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 
@@ -307,6 +339,7 @@ export async function betOnChain(args: BetOnChainArgs): Promise<string> {
  * existing "Resolve Market" button, for someone who doesn't want to wait
  * for the indexer's own poll cycle), not the primary mechanism. */
 export async function resolveMarketOnChain(args: ResolveMarketOnChainArgs): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 
@@ -327,6 +360,7 @@ export async function resolveMarketOnChain(args: ResolveMarketOnChainArgs): Prom
  * the ONLY way a winning on-chain bet actually pays out; nothing
  * server-side ever calls this on a bettor's behalf. */
 export async function claimWinningsOnChain(args: ClaimWinningsOnChainArgs): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 
@@ -353,6 +387,7 @@ export async function claimWinningsOnChain(args: ClaimWinningsOnChainArgs): Prom
  * duplicate that check client-side; a rejected call surfaces as a normal
  * thrown error, same as any other reverted write here. */
 export async function castVoteOnChain(args: CastVoteOnChainArgs): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 
@@ -375,6 +410,7 @@ export async function castVoteOnChain(args: CastVoteOnChainArgs): Promise<string
  * call sends no value of its own, it only triggers the contract to send
  * value back. */
 export async function retractVoteOnChain(args: RetractVoteOnChainArgs): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 
@@ -398,6 +434,7 @@ export async function retractVoteOnChain(args: RetractVoteOnChainArgs): Promise<
  * contract does, the same way every other write here relies on the
  * contract's own checks rather than duplicating them client-side. */
 export async function fundEscrowOnChain(args: FundEscrowOnChainArgs): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 
@@ -420,6 +457,7 @@ export async function fundEscrowOnChain(args: FundEscrowOnChainArgs): Promise<st
  * Only the escrow creator may call this, and only before any milestone
  * has been approved — both enforced contract-side, not duplicated here. */
 export async function cancelEscrowOnChain(args: CancelEscrowOnChainArgs): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 
@@ -444,6 +482,7 @@ export async function cancelEscrowOnChain(args: CancelEscrowOnChainArgs): Promis
  * only once the milestone is actually approved and funded — both
  * enforced contract-side, not duplicated here. */
 export async function releaseMilestoneOnChain(args: ReleaseMilestoneOnChainArgs): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 
@@ -470,6 +509,7 @@ export interface EmergencyWithdrawOnChainArgs {
 export async function emergencyWithdrawOnChain(
   args: EmergencyWithdrawOnChainArgs
 ): Promise<string> {
+  await ensureBradburyNetwork(args.provider);
   const client = createWriteClient(args.walletAddress, args.provider);
   const fees = await resolveFees(client);
 

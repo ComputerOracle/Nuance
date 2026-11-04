@@ -80,17 +80,23 @@ services:
       - key: GENLAYER_PRIVATE_KEY
         sync: false
       - key: DISPUTE_COURT_CONTRACT_ADDRESS
-        value: "0xf7b4C186fF9d69701F41AA3Aa1aCF8cED0c9b057"
+        value: "0xD140A876aBe1180d2436508a8Ea1b674e4724402"
       - key: ESCROW_CONTRACT_ADDRESS
-        value: "0xDB6939bD12775e5F77e48138F0DE103D804268f7"
+        value: "0xD397cF79B368a221C84c214725e6c7BC1F29A2FF"
       - key: PREDICTION_MARKET_CONTRACT_ADDRESS
-        value: "0xF34c75330bEd61B7e559e554a5628b4fa50CDd24"
+        value: "0x08149602c5cAaE87beFb0631B5Cf983a944aD67C"
       - key: GOVERNANCE_CONTRACT_ADDRESS
-        value: "0x37303291cA1438F05b2236b7Dd9667aEeFA8f310"
+        value: "0xF0a2F4c8eF813cF4F8dcc7Bfe94f0E82aF0ED7A7"
       - key: VALIDATORS_CONTRACT_ADDRESS
-        value: "0x4E2B213a80c5e20CEB45Ce444cC59dB593D704FE"
+        value: "0xBdA1dB02Ff6a1ddF8A306567100dAfbA26570E61"
       - key: AGENT_DIRECTORY_CONTRACT_ADDRESS
-        value: "0x3EF04900e7c535dDEfb771664FE04541d8b6D463"
+        value: "0x044b000fc9DE64a1c75C1F2531bcFc5Ea627BaA8"
+      - key: AUTO_DEPLOY_ESCROW_CONTRACTS
+        value: "true"
+      - key: AUTO_DEPLOY_PREDICTION_CONTRACTS
+        value: "true"
+      - key: AUTO_CREATE_PROPOSALS_ON_CHAIN
+        value: "true"
 
       # --- monitoring — optional, a true no-op until set (app/
       # observability.py::init_sentry) ---

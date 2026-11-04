@@ -293,6 +293,7 @@ async def seed_disputes() -> None:
                     title=spec.escrow_title,
                     total=Decimal(spec.escrow_total),
                     status_key=spec.status_key,
+                    contract_address="0xD397cF79B368a221C84c214725e6c7BC1F29A2FF",
                 )
                 session.add(escrow)
                 await session.flush()
@@ -357,6 +358,8 @@ async def seed_disputes() -> None:
                         volume=p_spec.volume,
                         status_key=p_spec.status_key,
                         outcome=p_spec.outcome,
+                        contract_address="0x08149602c5cAaE87beFb0631B5Cf983a944aD67C",
+                        chain_status=ChainStatus.FINALIZED,
                     )
                 )
             print(f"Seeded {len(PREDICTION_SPECS)} prediction market(s).")
@@ -371,7 +374,7 @@ async def seed_disputes() -> None:
             )
             await session.flush()
             now = datetime.now(timezone.utc)
-            for pr_spec in PROPOSAL_SPECS:
+            for idx, pr_spec in enumerate(PROPOSAL_SPECS):
                 session.add(
                     Proposal(
                         title=pr_spec.title,
@@ -380,14 +383,15 @@ async def seed_disputes() -> None:
                         proposer_address=proposer.wallet_address,
                         status=pr_spec.status,
                         start_time=now - timedelta(days=pr_spec.days_active),
-                        end_time=now + timedelta(days=pr_spec.days_remaining),
+                        end_time=now + timedelta(days=365),
                         quorum_threshold=pr_spec.quorum_threshold,
                         quorum_threshold_gen=pr_spec.quorum_threshold_gen,
                         pass_threshold=pr_spec.pass_threshold,
                         total_for=pr_spec.total_for,
                         total_against=pr_spec.total_against,
                         total_abstain=pr_spec.total_abstain,
-                        chain_status=ChainStatus.LEGACY_OFFCHAIN,
+                        on_chain_proposal_id=idx if idx <= 1 else None,
+                        chain_status=ChainStatus.FINALIZED if idx <= 1 else ChainStatus.LEGACY_OFFCHAIN,
                     )
                 )
             print(f"Seeded {len(PROPOSAL_SPECS)} governance proposal(s).")

@@ -68,7 +68,9 @@ export function agentDirectoryContractAddress(): `0x${string}` | null {
 export function escrowContractAddress(
   escrow: { contract_address?: string | null } | null | undefined
 ): `0x${string}` | null {
-  const raw = escrow?.contract_address?.trim();
+  const raw =
+    escrow?.contract_address?.trim() ||
+    process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS?.trim();
   return raw ? (raw as `0x${string}`) : null;
 }
 
@@ -76,7 +78,9 @@ export function escrowContractAddress(
 export function predictionContractAddress(
   prediction: { contract_address?: string | null } | null | undefined
 ): `0x${string}` | null {
-  const raw = prediction?.contract_address?.trim();
+  const raw =
+    prediction?.contract_address?.trim() ||
+    process.env.NEXT_PUBLIC_PREDICTION_MARKET_CONTRACT_ADDRESS?.trim();
   return raw ? (raw as `0x${string}`) : null;
 }
 

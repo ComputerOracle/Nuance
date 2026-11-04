@@ -261,11 +261,14 @@ async def place_bet_on_chain(
     """
     prediction = await _get_prediction_for_update_or_404(prediction_id, db)
     if prediction.contract_address is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This market isn't linked to a deployed contract — use the "
-            "off-chain POST /predictions/{id}/bet instead.",
-        )
+        contract_addr = get_settings().prediction_market_contract_address
+        if not contract_addr:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This market isn't linked to a deployed contract — use the "
+                "off-chain POST /predictions/{id}/bet instead.",
+            )
+        prediction.contract_address = contract_addr
     _assert_market_open_for_betting(prediction)
 
     position = PredictionPosition(

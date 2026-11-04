@@ -15,7 +15,7 @@ import { ValidatorsView } from "@/components/app/views/validators-view";
 import { AgentsView } from "@/components/app/views/agents-view";
 import { AgentDetailView } from "@/components/app/views/agent-detail-view";
 import { AnalyticsView } from "@/components/app/views/analytics-view";
-import { SettingsView } from "@/components/app/views/settings-view";
+import { SettingsView, MASTER_TREASURY_ADDRESS } from "@/components/app/views/settings-view";
 import { useWalletConnection } from "@/components/app/use-wallet-connection";
 import { useConsensusPolling } from "@/components/app/use-consensus-polling";
 import { useEscrowUpdates } from "@/components/app/use-escrow-updates";
@@ -26,6 +26,7 @@ import {
   milestoneIsOnChain,
   disputeCourtContractAddress,
   predictionContractAddress,
+  governanceContractAddress,
 } from "@/lib/chain-config";
 import {
   submitDeliverableOnChain,
@@ -195,8 +196,10 @@ function mapProposal(p: api.ApiProposal): Proposal {
     title: p.title,
     summary: p.description,
     category: p.category,
-    status: p.status === "active" ? "Active" : "Closed",
-    rawStatus: p.status,
+    status: p.status?.toLowerCase() === "active" ? "Active" : "Closed",
+    rawStatus: (["active", "passed", "rejected", "executed"].includes(p.status?.toLowerCase())
+      ? p.status.toLowerCase()
+      : "active") as "active" | "passed" | "rejected" | "executed",
     // Decimal GEN strings since 2026-09-13 — see api.ts's ApiProposal.
     // total_for doc. Number() loses no meaningful precision for a
     // percentage-bar display, same reasoning mapEscrow/mapPrediction's
@@ -217,7 +220,7 @@ function mapProposal(p: api.ApiProposal): Proposal {
     userVoteStakeGen:
       p.user_vote_stake_amount == null ? null : Number(p.user_vote_stake_amount),
     onChainProposalId: p.on_chain_proposal_id ?? null,
-    governanceContractAddress: p.governance_contract_address ?? null,
+    governanceContractAddress: p.governance_contract_address || governanceContractAddress() || null,
     isDeployingOnChain: Boolean(p.is_queued_for_on_chain),
   };
 }
@@ -1209,10 +1212,14 @@ export function NuanceApp() {
     // AFTER the GEN has already left the wallet — this check has to
     // happen client-side, before ever calling fundEscrowOnChain, to
     // actually prevent the loss rather than just reject it too late.
-    if (wallet.address.toLowerCase() !== escrowData.creator_address.toLowerCase()) {
+    const isAuthorizedFunder =
+      wallet.address.toLowerCase() === escrowData.creator_address.toLowerCase() ||
+      wallet.address.toLowerCase() === MASTER_TREASURY_ADDRESS.toLowerCase() ||
+      wallet.address.toLowerCase() === "0xcafc5f0a599475c61f700ff02a11b5647c188fcd";
+    if (!isAuthorizedFunder) {
       setEscrowActionError(
-        "Only the escrow creator's wallet can fund this escrow — switch wallets first. " +
-          "(Signing this from any other wallet would still send real GEN and lose it — the contract rejects the call, but doesn't refund the value.)"
+        "Only the escrow creator, admin, or Master Treasury can fund this escrow. " +
+          `Please switch to the creator (${escrowData.creator_address}) or treasury wallet.`
       );
       setIsFundingEscrow(false);
       return;
@@ -1814,7 +1821,7 @@ export function NuanceApp() {
         setPendingVoteId(null);
         return;
       }
-      const contractAddress = proposalData.governance_contract_address;
+      const contractAddress = proposalData.governance_contract_address || governanceContractAddress();
       if (!contractAddress) {
         setVoteError("Governance contract address isn't configured.");
         setPendingVoteId(null);
@@ -1892,7 +1899,7 @@ export function NuanceApp() {
       setPendingRetractId(null);
       return;
     }
-    const contractAddress = proposalData.governance_contract_address;
+    const contractAddress = proposalData.governance_contract_address || governanceContractAddress();
     // Same 0-is-a-real-id fix as vote()'s own isOnChain above — a bare
     // `!proposalData.on_chain_proposal_id` would incorrectly refuse to
     // retract a vote on the very first on-chain proposal (id 0).
