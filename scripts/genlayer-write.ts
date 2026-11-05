@@ -76,14 +76,40 @@ async function main() {
   });
 
   try {
-    const distribution = await client.estimateFeesDistribution({});
+    let fees: { distribution: any; feeValue?: bigint } | undefined;
+    try {
+      const estimated = await client.estimateTransactionFees({});
+      if (estimated?.feeValue && estimated.feeValue > BigInt(0)) {
+        fees = {
+          distribution: estimated.distribution,
+          feeValue: estimated.feeValue,
+        };
+      }
+    } catch {
+      fees = {
+        distribution: {
+          leaderTimeunitsAllocation: BigInt(100),
+          validatorTimeunitsAllocation: BigInt(200),
+          appealRounds: BigInt(0),
+          executionBudgetPerRound: BigInt("25000000000000000"),
+          executionConsumed: BigInt(0),
+          totalMessageFees: BigInt(0),
+          rotations: [BigInt(3)],
+          maxPriceGenPerTimeUnit: BigInt(2),
+          storageFeeMaxGasPrice: BigInt(300000000),
+          receiptFeeMaxGasPrice: BigInt(300000000),
+        },
+        feeValue: BigInt("100000000000010352"),
+      };
+    }
+
     const txHash = await withRateLimitRetry(`writeContract ${request.functionName}`, () =>
       client.writeContract({
         address: request.address as `0x${string}`,
         functionName: request.functionName,
         args: (request.args ?? []) as never,
         value: BigInt(0),
-        fees: { distribution },
+        fees,
       })
     );
     process.stdout.write(safeStringify({ ok: true, txHash: String(txHash) }));
