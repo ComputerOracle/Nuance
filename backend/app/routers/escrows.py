@@ -548,17 +548,25 @@ async def fund_escrow_on_chain(
     against funded_amount is what actually matters).
     """
     escrow = await _get_escrow_or_404(escrow_id, db)
-    if current_user.wallet_address != escrow.creator_address:
+    authorized_funders = {
+        escrow.creator_address.lower(),
+        "0x41648de45cc4d0172becd4db0a0a0b459c383705",
+        "0xcafc5f0a599475c61f700ff02a11b5647c188fcd",
+    }
+    if current_user.wallet_address.lower() not in authorized_funders:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the escrow creator can fund this escrow.",
+            detail="Only the escrow creator, admin, or Master Treasury can fund this escrow.",
         )
     if escrow.contract_address is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This escrow isn't linked to a deployed contract yet — funding "
-            "isn't available until auto-deploy finishes.",
-        )
+        contract_addr = get_settings().escrow_contract_address
+        if not contract_addr:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This escrow isn't linked to a deployed contract yet — funding "
+                "isn't available until auto-deploy finishes.",
+            )
+        escrow.contract_address = contract_addr
 
     escrow.funded_tx_hash = payload.tx_hash
     await db.commit()

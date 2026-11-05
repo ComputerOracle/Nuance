@@ -95,7 +95,7 @@ export function GovernanceView({
             !isRetracting;
           const canRetract = isOnChain && voted && walletConnected && !isRetracting && !isPending;
           const isExecuting = pendingExecuteId === pr.id;
-          const canExecute = pr.rawStatus === "passed" && walletConnected && !isExecuting;
+          const canExecute = pr.rawStatus?.toLowerCase() === "passed" && walletConnected && !isExecuting;
           return (
             <div
               key={pr.id}
