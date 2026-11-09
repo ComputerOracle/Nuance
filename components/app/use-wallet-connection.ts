@@ -56,6 +56,7 @@ function describeError(err: unknown): string {
 
 export function useWalletConnection() {
   const [status, setStatus] = useState<WalletConnectionStatus>("idle");
+  const [connectMessage, setConnectMessage] = useState<string>("");
   const [walletName, setWalletName] = useState("");
   const [address, setAddress] = useState("");
   const [balance, setBalance] = useState("");
@@ -148,6 +149,7 @@ export function useWalletConnection() {
     setConnectedProvider(null);
     clearAuthToken();
     setStatus("idle");
+    setConnectMessage("");
     setWalletName("");
     setAddress("");
     setBalance("");
@@ -158,6 +160,7 @@ export function useWalletConnection() {
   const connect = useCallback(
     async (provider: Eip1193Provider, name: string) => {
       setStatus("connecting");
+      setConnectMessage(`Confirm connection in ${name}…`);
       setError(null);
       try {
         const accounts = (await provider.request({
@@ -166,18 +169,16 @@ export function useWalletConnection() {
         const addr = accounts[0];
         if (!addr) throw new Error("No account returned by wallet.");
 
-        // Server-issued nonce + message: signing the exact string the
-        // backend hands back (rather than one built locally) is what lets
-        // POST /auth/verify recover the signer and issue a session JWT —
-        // no transaction, no gas, matching what the connect modal tells
-        // the user this step does. Rejecting the signature, or a failed
-        // verify, aborts the connection rather than falling back to an
-        // unverified account.
+        setConnectMessage("Fetching sign-in message from server…");
         const { message } = await requestNonce(addr);
+
+        setConnectMessage(`Please sign the sign-in message in ${name}…`);
         const signature = (await provider.request({
           method: "personal_sign",
           params: [utf8ToHex(message), addr],
         })) as string;
+
+        setConnectMessage("Verifying signature…");
         await verifySignature(addr, message, signature);
 
         const chainIdHex = (await provider.request({ method: "eth_chainId" })) as string;
@@ -188,6 +189,7 @@ export function useWalletConnection() {
         setAddress(addr);
         setChainIdDecimal(parseInt(chainIdHex, 16));
         setStatus("connected");
+        setConnectMessage("");
         void refreshBalance(provider, addr);
 
         const onAccountsChanged = (...args: unknown[]) => {
@@ -213,6 +215,7 @@ export function useWalletConnection() {
         setConnectedProvider(null);
         clearAuthToken();
         setStatus("idle");
+        setConnectMessage("");
         setError(describeError(err));
         return false;
       }
@@ -230,19 +233,22 @@ export function useWalletConnection() {
         params: [{ chainId: GENLAYER_BRADBURY.chainIdHex }],
       });
     } catch (err) {
-      // 4902: chain not yet added to the wallet — add it, then switch.
-      if (isEip1193Error(err) && err.code === 4902) {
+      // 4902 or -32603: chain not yet added to the wallet (MetaMask, Rabby, etc.)
+      const isUnrecognizedChain =
+        (isEip1193Error(err) && (err.code === 4902 || err.code === -32603)) ||
+        (typeof err === "object" &&
+          err !== null &&
+          "message" in err &&
+          typeof (err as { message: unknown }).message === "string" &&
+          /chain|unrecognized|not found|not added/i.test((err as { message: string }).message));
+
+      if (isUnrecognizedChain) {
         try {
           await provider.request({
             method: "wallet_addEthereumChain",
             params: [GENLAYER_BRADBURY_ADD_CHAIN_PARAMS],
           });
         } catch (addErr) {
-          // A wallet's own "add network" dialog validates the RPC itself
-          // before accepting it — if that check fails client-side (a flaky
-          // path between the wallet and the RPC, not this app), the wallet's
-          // generic error leaves no way forward. Give the manual fallback
-          // inline rather than a dead end.
           setError(
             `${describeError(addErr)} You can add the network manually in ` +
               `your wallet: Chain ID ${GENLAYER_BRADBURY.chainIdDecimal}, ` +
@@ -257,9 +263,6 @@ export function useWalletConnection() {
 
   useEffect(() => teardownListeners, [teardownListeners]);
 
-  // lib/api.ts has no React state of its own — wiring disconnect() up as
-  // its unauthorized handler is what lets a 401 (expired/invalid JWT) on
-  // any request drop the wallet's connected state too.
   useEffect(() => {
     setUnauthorizedHandler(disconnect);
     return () => setUnauthorizedHandler(null);
@@ -267,6 +270,7 @@ export function useWalletConnection() {
 
   return {
     status,
+    connectMessage,
     walletName,
     address,
     addressShort: address ? formatAddress(address) : "",

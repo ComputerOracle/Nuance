@@ -29,6 +29,7 @@ function legacyDetect(): Map<string, Eip1193Provider> {
   const w = window as unknown as {
     ethereum?: Eip1193Provider & { providers?: (Eip1193Provider & Record<string, unknown>)[] } & Record<string, unknown>;
     phantom?: { ethereum?: Eip1193Provider };
+    rabby?: Eip1193Provider;
   };
 
   const candidates = w.ethereum ? [w.ethereum, ...(w.ethereum.providers ?? [])] : [];
@@ -42,6 +43,7 @@ function legacyDetect(): Map<string, Eip1193Provider> {
     if (flags.isOkxWallet || flags.isOKExWallet) found.set("com.okex.wallet", p as Eip1193Provider);
   }
   if (w.phantom?.ethereum) found.set("app.phantom", w.phantom.ethereum);
+  if (w.rabby) found.set("io.rabby", w.rabby);
 
   return found;
 }

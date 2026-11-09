@@ -7,11 +7,13 @@ export function WalletModal({
   onClose,
   onSelect,
   connecting,
+  connectMessage,
   error,
 }: {
   onClose: () => void;
   onSelect: (provider: Eip1193Provider, name: string) => void;
   connecting: boolean;
+  connectMessage?: string;
   error: string | null;
 }) {
   const detected = useWalletDetection();
@@ -46,7 +48,7 @@ export function WalletModal({
               className="normal-case tracking-normal text-fg-hover"
               style={{ animation: "pulse-dot 1.2s ease infinite" }}
             >
-              Confirm in your wallet…
+              {connectMessage || "Confirm in your wallet…"}
             </span>
           ) : (
             <span className="flex items-center gap-1.5 normal-case tracking-normal text-positive-text">

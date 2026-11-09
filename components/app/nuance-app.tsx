@@ -698,6 +698,7 @@ export function NuanceApp() {
   // loading actually starts; it just genuinely isn't "synchronously
   // inside the effect" by the time loadData's own setState calls run.
   useEffect(() => {
+    api.warmupBackend();
     queueMicrotask(() => {
       loadData();
     });
@@ -2079,7 +2080,10 @@ export function NuanceApp() {
         walletBalance={wallet.balance}
         isWrongNetwork={wallet.isWrongNetwork}
         walletError={showWalletModal ? null : wallet.error}
-        onOpenWalletModal={() => setShowWalletModal(true)}
+        onOpenWalletModal={() => {
+          api.warmupBackend();
+          setShowWalletModal(true);
+        }}
         onDisconnect={wallet.disconnect}
         onSwitchNetwork={wallet.switchNetwork}
       />
@@ -2089,6 +2093,7 @@ export function NuanceApp() {
           onClose={() => setShowWalletModal(false)}
           onSelect={selectWallet}
           connecting={wallet.status === "connecting"}
+          connectMessage={wallet.connectMessage}
           error={wallet.error}
         />
       )}

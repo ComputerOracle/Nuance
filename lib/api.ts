@@ -23,6 +23,12 @@ import type { StatusKey } from "@/components/app/types";
 // stray edit) can never do that again.
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8010").replace(/\/+$/, "");
 
+/** Fire-and-forget ping to wake up free-tier backend cold starts as soon as the app loads. */
+export function warmupBackend(): void {
+  if (typeof window === "undefined") return;
+  fetch(`${API_BASE}/health`, { method: "GET" }).catch(() => {});
+}
+
 const TOKEN_STORAGE_KEY = "nuance_token";
 
 // --- Token storage -----------------------------------------------------
