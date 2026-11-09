@@ -29,6 +29,7 @@
 //   { "ok": true, "txHash": "0x..." } | { "ok": false, "error": "..." }
 
 import { createAccount, createClient, chains } from "genlayer-js";
+import type { TransactionFeeOptions } from "genlayer-js/types";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { withRateLimitRetry, safeStringify, REPO_ROOT } from "./genlayer-deploy-core";
@@ -76,7 +77,7 @@ async function main() {
   });
 
   try {
-    let fees: { distribution: any; feeValue?: bigint } | undefined;
+    let fees: TransactionFeeOptions | undefined;
     try {
       const estimated = await client.estimateTransactionFees({});
       if (estimated?.feeValue && estimated.feeValue > BigInt(0)) {
